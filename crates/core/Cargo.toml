@@ -1,0 +1,22 @@
+[package]
+name = "doxus-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+# ONNX Runtime (Track A)
+ort = { version = "2", features = ["load-dynamic"] }
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+ndarray = "0.16"
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+approx = "0.5"
+tempfile = "3"

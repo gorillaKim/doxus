@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/extism-poc",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["doxus contributors"]
+license = "MIT"
+
+[workspace.dependencies]
+# async
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+# error handling
+thiserror = "2"
+anyhow = "1"
+# serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# testing
+tokio-test = "0.4"
