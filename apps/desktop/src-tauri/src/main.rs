@@ -17,6 +17,7 @@ fn main() {
     let state = AppState::new(conn, plugins_dir);
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             doxus_desktop_lib::commands::market::market_list_installed,

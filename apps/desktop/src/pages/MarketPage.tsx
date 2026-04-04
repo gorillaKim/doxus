@@ -71,8 +71,11 @@ export default function MarketPage() {
   const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    invoke<Plugin[]>('market_list_installed')
-      .then(setPlugins)
+    invoke('market_list_installed')
+      .then((res) => {
+        const arr = Array.isArray(res) ? res : (res as { plugins?: Plugin[] })?.plugins ?? null;
+        setPlugins(Array.isArray(arr) ? arr : MOCK_PLUGINS);
+      })
       .catch(() => setPlugins(MOCK_PLUGINS))
       .finally(() => setIsLoading(false));
   }, []);
