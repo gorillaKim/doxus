@@ -106,6 +106,208 @@ doxus는 obsidian-nexus의 차세대 진화판으로, WASM 플러그인 기반 �
 - **환경변수 테스트 격리**: `std::env::set_var`는 프로세스 전역 상태를 변경하므로 병렬 테스트에서 race condition이 발생한다. `static Mutex`로 직렬화하거나, 환경변수 대신 의존성 주입(DI) 패턴으로 설계하는 것이 근본적인 해결책이다.
 - **ndarray 버전 충돌**: ort 내부에서 ndarray 0.17을 사용하는데 Cargo.toml에 0.16을 명시하면 충돌한다. ort가 re-export하는 버전을 직접 사용하거나 standalone 의존성을 제거해야 한다.
 
+---
+
+## 2026-04-04 세션 2 — Phase 4~8 구현 완료
+
+### 배경
+
+이전 세션에서 Phase 0~3 기반 구현을 완료한 뒤, 남은 미구현 트랙 5개(Track A~E)를 우선순위 순서로 TDD 방식으로 구현했다.
+
+### 구현 내용
+
+**Track B (CLI) — 2순위**
+- `plugin list/status` 서브커맨드 추가 (source_instances 테이블 조회)
+- `workspace list/create` 서브커맨드 추가 (workspaces V8 테이블)
+- 통합 테스트 8개 (TempDir + doxus_core::db::open)
+
+**Track A (MCP) — 1순위**
+- `McpServer` struct 도입 (dispatch_tool을 free fn → method로 리팩토링)
+- DB 연결: rusqlite::Connection 보유
+- 13개 도구 실제 구현: list_projects, add_project, remove_project, search, get_document, get_section, get_metadata, list_documents, get_backlinks, get_links, plugin_list, diagnose, system_report
+- 테스트 17개
+
+**Track C (Desktop) — 3순위**
+- `AppState { conn: Mutex<Connection>, plugin_manager: PluginManager }` 완성
+- IPC 커맨드 4개: search_documents, list_projects, market_list_installed, get_workspaces
+- tauri.conf.json 추가, `[[bin]] test=false` 설정
+- 테스트 1개
+
+**Track D (Agent) — 4순위**
+- `cli_detector.rs`: CliKind enum + detect_cli() (env var + PATH)
+- `manager.rs`: AgentManager (start/stop/is_running + Drop)
+- `protocol.rs`: HostMessage/AgentMessage 직렬화 타입
+- 테스트 13개
+
+**Track E (RegistryClient HTTP) — 5순위**
+- `RegistryClient::fetch_entries()` async 구현 (reqwest)
+- wiremock 테스트 3개 (성공, HTTP 500, trailing slash)
+
+### Phase 4 보안 검토 (security-reviewer + code-reviewer 에이전트)
+
+발견된 이슈와 수정:
+- **CRITICAL**: `RegistryClient::new()` 에서 `expect()` → `Result<Self, RegistryError>` 반환으로 변경
+- **HIGH**: `install_from_bytes()` pub → `pub(crate)` 제한 (서명 우회 방지)
+- **HIGH**: MCP server `db::open().expect()` → `?` 연산자로 대체
+- **MEDIUM**: GitHub plugin `base_url` SSRF (문서화, 향후 allowlist 추가 예정)
+
+### 미구현 갭 추가 구현 (설계 대비 점검 후)
+
+**Priority 1: http_request Host Function** (`wasm_adapter.rs`)
+- `HttpRequest` / `HttpResponse` 타입 정의
+- `http_request()` async 메서드: URL 파싱 → 도메인 allowlist 검사 (SSRF) → reqwest 실행
+- 와일드카드 도메인 지원 (`*.atlassian.net`)
+- `new_with_domains()` 생성자 추가
+- 테스트 6개
+
+**Priority 3: SyncDb — DB 연동** (`sync/db.rs`)
+- `mark_synced(instance_id, cursor)`: source_instances.last_synced 업데이트
+- `due_instances(interval_secs)`: 동기화 대상 조회 (비활성 프로젝트 제외)
+- `get_cursor(instance_id)`: cursor 조회
+- 테스트 7개
+
+**Priority 2: Node.js Agent Sidecar** (`crates/agent/sidecar/`)
+- `sidecar.js`: JSONL stdio bridge (start/message/cancel/close 처리)
+- `package.json`: node >=18, `node --test` 연동
+- `sidecar.test.js`: 5개 테스트 (init, start, cancel, invalid JSON)
+- `default_sidecar_path()`: 프로덕션(`~/.doxus/agents/`) / 개발(`CARGO_MANIFEST_DIR`) 폴백
+
+**Priority 4+5: React UI + Zustand Stores** (`apps/desktop/src/`)
+- `useSearchStore`: query/hits + invoke('search_documents')
+- `useProjectStore`: projects + invoke('list_projects')
+- `useChatStore`: drawer open/close + message history
+- `SearchPage`: 검색 폼 + 결과 카드 (score, 프로젝트 뱃지, snippet)
+- `ProjectsPage`: 프로젝트 목록 + active/disabled 뱃지
+- `ChatDrawer`: 우측 고정 오버레이 (w-96), 역할별 말풍선
+
+### 최종 테스트 현황
+
+- Rust: 94 passed (core) + 8 CLI + 17 MCP + 1 Desktop + 13 Agent = **133+ passed**
+- JavaScript: 5 passed (sidecar)
+- 0 failures, 0 errors
+
+### 커밋
+
+- `dd17ede`: Track B+A+C+D+E 전체 구현
+- `8f4c38c`: 보안 검토 수정
+- `0a76402`: http_request + SyncDb + sidecar + React UI
+
+### 남은 항목
+
+- React App.tsx 라우터 연결 (SearchPage/ProjectsPage 미등록)
+- Desktop package.json / Vite 빌드 설정
+- Agent sidecar Claude API 실제 연동 (현재 echo stub)
+- MCP 나머지 24개 도구 실제 구현
+
+---
+
+## 2026-04-04 세션 3 — 보안 강화 + 프론트엔드 스캐폴드 + 남은 트랙 완료
+
+### 배경
+
+세션 2에서 남긴 미구현 항목(MCP 24개 도구, Agent Claude API 연동, Desktop 빌드 설정, SyncScheduler/Runner, 워크스페이스 템플릿)을 완료하고, 추가 보안 QA에서 발견된 CRITICAL/HIGH/MEDIUM 이슈를 수정했다.
+
+### 구현 내용
+
+#### 작업 1: 보안 강화 (commit: 33b21f1)
+
+**SHA-256으로 콘텐츠 해시 교체** (`crates/cli/src/main.rs`)
+- 기존: `DefaultHasher` (비암호학적 해시) — 콘텐츠 해시 충돌 가능성
+- 변경: `sha2::Sha256` + `hex::encode`로 32바이트 hex digest 반환
+- Cargo.toml workspace에 `sha2 = "0.10"`, `hex = "0.4"` 추가
+
+**공개키 핀닝** (`crates/core/src/plugin/manager.rs`)
+- 기존: `install_signed()`가 `SignedPlugin.public_key`만 신뢰 (플러그인 자기 신고)
+- 변경: `entry.public_key_hex`와 `plugin.public_key` 일치 여부 검증 후 ED25519 서명 검증
+- 신규 테스트: `install_signed_rejects_key_mismatch`
+- 기존 테스트 업데이트: `make_pinned_entry()` 헬퍼 추가
+
+**GitHub SSRF 방어** (`crates/plugins/github/src/lib.rs`)
+- `validate_base_url()` 추가: HTTPS 필수, localhost / 127.0.0.1 / 169.254.169.254 / .local 차단
+- `validate_config()`에서 `base_url` 필드 검증 호출
+- 신규 테스트 4개: https 허용, http 거부, localhost 거부, 링크로컬 거부
+
+**`AgentManager::is_running()` 수정** (`crates/agent/src/manager.rs`)
+- 기존: `self.process.is_some()` — 이미 종료된 프로세스도 running으로 오인
+- 변경: `child.try_wait()`로 실제 프로세스 생존 확인
+- 서명 변경: `&self` → `&mut self` (try_wait이 &mut Child 필요)
+
+#### 작업 2: 프론트엔드 스캐폴드 (commit: 33b21f1)
+
+**Desktop 빌드 문제 해결:**
+- `build.rs` 누락 → `tauri_build::build()` 추가
+- PNG 아이콘 채널 오류: RGB(3ch) → RGBA(4ch) Python 스크립트로 재생성
+- 결과: `cargo build -p doxus-desktop` 성공
+
+**신규 파일:**
+- `apps/desktop/package.json` (react-router-dom 7, zustand 5, tauri api 2)
+- `apps/desktop/vite.config.ts`, `tsconfig.json`
+- `apps/desktop/src/App.tsx` — BrowserRouter + Routes (search / projects / workspace / market)
+- `apps/desktop/src/main.tsx` — ReactDOM.createRoot
+- `apps/desktop/src/components/layout/AppShell.tsx` — Sidebar + NavLink + ChatDrawer
+
+#### 작업 3: MCP 24개 도구 추가 구현 (commit: 1b5729a)
+
+`crates/mcp-server/src/main.rs`에 21개 도구 추가 구현:
+- **그래프**: find_related (FTS 기반), find_path (BFS with recursive CTE), get_cluster (멀티홉)
+- **동기화**: sync_project (source_instances cursor 상태 반환)
+- **플러그인**: plugin_install / remove / update / search / status / logs / info (V7 테이블)
+- **워크스페이스**: workspace_documents CRUD + apply_template (V8 테이블)
+- **진단**: explain_search (BM25 term frequency 분석)
+- MCP 테스트: 17 → 38개
+
+#### 작업 4: SyncScheduler + SyncRunner (commit: 1b5729a)
+
+신규 파일:
+- `crates/core/src/sync/scheduler.rs`: `SyncScheduler::due_instances()` → SyncDb 위임
+- `crates/core/src/sync/runner.rs`: `SyncRunner<S: DocSource>::run_once()` → fetch_changes + mark_synced
+- sync 테스트: 7 → 20개
+
+#### 작업 5: Agent Sidecar Claude API 연동 (commit: 1b5729a)
+
+`crates/agent/sidecar/sidecar.js` 교체:
+- ESM 방식으로 `@anthropic-ai/sdk` import
+- streaming 방식: `client.messages.stream()` → content_block_delta 이벤트로 text 청크 전송
+- 세션별 대화 히스토리: `sessions = new Map(session_id → messages[])`
+- `ANTHROPIC_API_KEY` 없으면 echo fallback 자동 전환
+- cancel 수신 시 in-flight stream 중단 플래그
+- sidecar 테스트: 5 → 9개
+
+#### 작업 6: Handlebars 워크스페이스 템플릿 (commit: 1b5729a)
+
+신규: `crates/core/src/workspace/template.rs`
+- `TemplateEngine::register()`, `render()`, `with_builtins()`
+- 내장 템플릿 5개: note, meeting, decision, journal, retrospective
+- `handlebars = "6"` 추가
+- workspace 테스트: 6 → 14개
+
+### 트러블슈팅
+
+| 문제 | 원인 | 해결 |
+|------|------|------|
+| `cargo build -p doxus-desktop` proc macro panic | `build.rs` 누락 | `tauri_build::build()` 추가 |
+| icon.png is not RGBA | Python으로 RGB PNG 생성 | `color_type=6` (RGBA) 재생성 |
+| `is_running()` 컴파일 오류 | `&self` → `&mut self` 변경 후 테스트에서 `mut` 없음 | `let mut mgr` 선언으로 수정 |
+| 워크트리 브랜치에 커밋 없음 | isolation:worktree 에이전트가 uncommitted 상태 | git status 확인 후 메인 repo에서 직접 커밋 |
+
+### 최종 테스트 현황
+
+- Rust: 147 → **182 passed** (35개 신규)
+- JavaScript (sidecar): 5 → **9 passed**
+- 커밋: `33b21f1` (보안 강화 + Desktop 빌드), `1b5729a` (MCP 24개 + Sync + Sidecar + Template)
+
+### 남은 항목
+
+- Desktop Tailwind 스타일 완성 + MarketPage 실제 연동
+- MCP 워크트리 에이전트 uncommitted 상태 잔존 주의
+
+### 교훈
+
+- **공개키 핀닝**: 플러그인 자기 서명만 검증하는 것은 불충분하다. 레지스트리 entry의 `public_key_hex`와 플러그인 번들의 공개키를 교차 검증해야 신뢰 체인이 완성된다.
+- **프로세스 생존 확인**: `Option<Child>.is_some()`은 프로세스 종료를 감지하지 못한다. `try_wait()`로 실제 exit status를 확인해야 하며, 이는 `&mut self`를 요구하므로 API 서명 변경이 수반된다.
+- **RGBA vs RGB 아이콘**: Tauri는 icon.png가 반드시 RGBA(4채널)여야 한다. PIL/Pillow로 생성 시 `mode='RGBA'`를 명시하거나 `convert('RGBA')` 후 저장해야 한다.
+- **워크트리 에이전트 격리**: 멀티 에이전트 워크트리 환경에서 하위 에이전트가 uncommitted 상태로 종료될 수 있다. 오케스트레이터는 완료 후 반드시 각 워크트리의 git status를 확인하고 커밋을 통합해야 한다.
+
 ## 관련 문서
 
 - [[doxus 아키텍처 설계]]
