@@ -25,6 +25,10 @@ fn main() {
             doxus_desktop_lib::commands::market::get_system_status,
             doxus_desktop_lib::commands::search::search_documents,
             doxus_desktop_lib::commands::search::list_projects,
+            doxus_desktop_lib::commands::search::add_project,
+            doxus_desktop_lib::commands::search::toggle_project_status,
+            doxus_desktop_lib::commands::workspace::list_workspace_documents,
+            doxus_desktop_lib::commands::workspace::create_workspace_document,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

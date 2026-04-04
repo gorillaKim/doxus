@@ -105,15 +105,15 @@
       "type": "file"
     },
     {
-      "path": "crates/core/src/plugin/manifest.rs",
-      "accessCount": 7,
-      "lastAccessed": 1775264255898,
+      "path": "crates/core/Cargo.toml",
+      "accessCount": 8,
+      "lastAccessed": 1775288287982,
       "type": "file"
     },
     {
-      "path": "crates/core/Cargo.toml",
+      "path": "crates/core/src/plugin/manifest.rs",
       "accessCount": 7,
-      "lastAccessed": 1775270930433,
+      "lastAccessed": 1775264255898,
       "type": "file"
     },
     {
@@ -129,21 +129,39 @@
       "type": "file"
     },
     {
+      "path": "crates/core/src/lib.rs",
+      "accessCount": 7,
+      "lastAccessed": 1775288288370,
+      "type": "file"
+    },
+    {
+      "path": "crates/plugin-sdk/src/lib.rs",
+      "accessCount": 7,
+      "lastAccessed": 1775288296617,
+      "type": "file"
+    },
+    {
       "path": "crates/core/src/plugin/wasm_adapter.rs",
       "accessCount": 6,
       "lastAccessed": 1775264193720,
       "type": "file"
     },
     {
-      "path": "crates/core/src/lib.rs",
-      "accessCount": 6,
-      "lastAccessed": 1775270904517,
-      "type": "file"
-    },
-    {
       "path": "crates/core/src/marketplace/installer.rs",
       "accessCount": 6,
       "lastAccessed": 1775275432464,
+      "type": "file"
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/state.rs",
+      "accessCount": 6,
+      "lastAccessed": 1775288259093,
+      "type": "file"
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/commands/search.rs",
+      "accessCount": 6,
+      "lastAccessed": 1775288281720,
       "type": "file"
     },
     {
@@ -171,9 +189,15 @@
       "type": "file"
     },
     {
-      "path": "crates/plugin-sdk/src/lib.rs",
+      "path": "crates/plugins/obsidian/src/lib.rs",
       "accessCount": 5,
-      "lastAccessed": 1775283856947,
+      "lastAccessed": 1775288309293,
+      "type": "file"
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/main.rs",
+      "accessCount": 5,
+      "lastAccessed": 1775288311681,
       "type": "file"
     },
     {
@@ -207,12 +231,6 @@
       "type": "file"
     },
     {
-      "path": "apps/desktop/src-tauri/src/state.rs",
-      "accessCount": 4,
-      "lastAccessed": 1775284061904,
-      "type": "file"
-    },
-    {
       "path": "apps/desktop/src-tauri/Cargo.toml",
       "accessCount": 4,
       "lastAccessed": 1775284070359,
@@ -222,6 +240,12 @@
       "path": "apps/desktop/src/pages/WorkspacePage.tsx",
       "accessCount": 4,
       "lastAccessed": 1775287038407,
+      "type": "file"
+    },
+    {
+      "path": "Cargo.toml",
+      "accessCount": 4,
+      "lastAccessed": 1775288271572,
       "type": "file"
     },
     {
@@ -237,27 +261,15 @@
       "type": "directory"
     },
     {
-      "path": "Cargo.toml",
-      "accessCount": 3,
-      "lastAccessed": 1775281362714,
-      "type": "file"
-    },
-    {
-      "path": "crates/plugins/obsidian/src/lib.rs",
-      "accessCount": 3,
-      "lastAccessed": 1775283856625,
-      "type": "file"
-    },
-    {
-      "path": "apps/desktop/src-tauri/src/main.rs",
-      "accessCount": 3,
-      "lastAccessed": 1775284052041,
-      "type": "file"
-    },
-    {
       "path": "apps/desktop/src-tauri/src/commands/market.rs",
       "accessCount": 3,
       "lastAccessed": 1775285969846,
+      "type": "file"
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/commands/mod.rs",
+      "accessCount": 3,
+      "lastAccessed": 1775288309262,
       "type": "file"
     },
     {
@@ -279,12 +291,6 @@
       "type": "file"
     },
     {
-      "path": "apps/desktop/src-tauri/src/commands/search.rs",
-      "accessCount": 2,
-      "lastAccessed": 1775284061378,
-      "type": "file"
-    },
-    {
       "path": "apps/desktop/src-tauri/tauri.conf.json",
       "accessCount": 2,
       "lastAccessed": 1775285107196,
@@ -294,12 +300,6 @@
       "path": "apps/desktop/package.json",
       "accessCount": 2,
       "lastAccessed": 1775287037489,
-      "type": "file"
-    },
-    {
-      "path": "apps/desktop/src-tauri/src/commands/mod.rs",
-      "accessCount": 1,
-      "lastAccessed": 1775270894870,
       "type": "file"
     },
     {

@@ -1,7 +1,7 @@
 {
-  "tool_name": "Read",
-  "tool_input_preview": "{\"file_path\":\"/Users/madup/gorillaProject/doxus/apps/desktop/src/components/layout/Sidebar.tsx\"}",
-  "error": "File does not exist. Note: your current working directory is /Users/madup/gorillaProject/doxus.",
-  "timestamp": "2026-04-04T07:16:39.598Z",
-  "retry_count": 1
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"cargo test -p doxus-desktop 2>&1\",\"timeout\":120000}",
+  "error": "Exit code 101\n    Blocking waiting for file lock on artifact directory\nwarning: method `install_from_bytes` is never used\n  --> crates/core/src/plugin/manager.rs:54:19\n   |\n26 | impl PluginManager {\n   | ------------------ method in this implementation\n...\n54 |     pub(crate) fn install_from_bytes(\n   |                   ^^^^^^^^^^^^^^^^^^\n   |\n   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: `doxus-core` (lib) generated 1 warning\n   Compiling doxus-desktop v0....",
+  "timestamp": "2026-04-04T07:38:42.808Z",
+  "retry_count": 2
 }

@@ -169,6 +169,79 @@ mod tests {
     use super::*;
 
     #[test]
+    fn raw_document_hash_is_stable() {
+        // Same content produces the same content_hash value when computed consistently.
+        // RawDocument itself doesn't auto-compute hash; callers set content_hash.
+        // We verify that two docs built with identical content strings share the hash.
+        let content = "# Hello\nworld".to_string();
+        let hash = format!("{:x}", {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut h = DefaultHasher::new();
+            content.hash(&mut h);
+            h.finish()
+        });
+        let doc1 = RawDocument {
+            id: SourceDocId("a".into()),
+            title: None,
+            content: content.clone(),
+            content_type: ContentType::Markdown,
+            url: None,
+            metadata: HashMap::new(),
+            tags: vec![],
+            updated_at: None,
+        };
+        let doc2 = RawDocument {
+            id: SourceDocId("b".into()),
+            title: None,
+            content: content.clone(),
+            content_type: ContentType::Markdown,
+            url: None,
+            metadata: HashMap::new(),
+            tags: vec![],
+            updated_at: None,
+        };
+        // Same content → same hash when computed the same way
+        let hash2 = format!("{:x}", {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut h = DefaultHasher::new();
+            doc2.content.hash(&mut h);
+            h.finish()
+        });
+        assert_eq!(hash, hash2);
+        assert_eq!(doc1.content, doc2.content);
+    }
+
+    #[test]
+    fn document_stream_empty() {
+        let stream = DocumentStream {
+            documents: vec![],
+            next_cursor: None,
+            estimated_total: None,
+        };
+        assert!(stream.documents.is_empty());
+        assert!(stream.next_cursor.is_none());
+    }
+
+    #[test]
+    fn plugin_error_display() {
+        assert_eq!(
+            PluginError::ConfigInvalid("bad field".into()).to_string(),
+            "config invalid: bad field"
+        );
+        assert_eq!(PluginError::AuthRequired.to_string(), "auth required");
+        assert_eq!(
+            PluginError::NetworkError("timeout".into()).to_string(),
+            "network error: timeout"
+        );
+        assert_eq!(
+            PluginError::RateLimited { retry_after_secs: 30 }.to_string(),
+            "rate limited, retry after 30s"
+        );
+    }
+
+    #[test]
     fn plugin_error_is_serializable() {
         let e = PluginError::RateLimited { retry_after_secs: 60 };
         let json = serde_json::to_string(&e).unwrap();

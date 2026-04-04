@@ -12,6 +12,8 @@ pub enum EmbeddingError {
     Tokenizer(String),
     #[error("inference failed: {0}")]
     Inference(String),
+    #[error("HTTP error: {0}")]
+    Http(String),
     #[error("empty input")]
     EmptyInput,
 }
@@ -220,24 +222,29 @@ impl EmbeddingProvider for OnnxEmbedder {
 /// Ollama-backed embedding provider (optional fallback)
 pub struct OllamaEmbedder {
     info: ModelInfo,
-    #[allow(dead_code)]
     base_url: String,
-    #[allow(dead_code)]
     model: String,
+    client: reqwest::Client,
 }
 
 impl OllamaEmbedder {
-    pub fn new(base_url: impl Into<String>, model: impl Into<String>) -> Self {
+    pub fn new(base_url: impl Into<String>, model: impl Into<String>, dimension: usize) -> Self {
         let model = model.into();
         Self {
             info: ModelInfo {
                 name: model.clone(),
-                dimension: 384,
+                dimension,
                 max_tokens: 512,
             },
             base_url: base_url.into(),
             model,
+            client: reqwest::Client::new(),
         }
+    }
+
+    /// Convenience constructor for nomic-embed-text (768 dimensions)
+    pub fn default_nomic() -> Self {
+        Self::new("http://localhost:11434", "nomic-embed-text", 768)
     }
 }
 
@@ -247,14 +254,88 @@ impl EmbeddingProvider for OllamaEmbedder {
         if texts.is_empty() {
             return Err(EmbeddingError::EmptyInput);
         }
-        // TODO: implement HTTP call to Ollama in Phase 1
-        Err(EmbeddingError::Inference(
-            "Ollama embedding not yet implemented".to_string(),
-        ))
+
+        let url = format!("{}/api/embeddings", self.base_url);
+        let mut results = Vec::with_capacity(texts.len());
+
+        for text in texts {
+            let body = serde_json::json!({
+                "model": self.model,
+                "prompt": text,
+            });
+
+            let resp = self
+                .client
+                .post(&url)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| EmbeddingError::Http(e.to_string()))?;
+
+            if !resp.status().is_success() {
+                return Err(EmbeddingError::Http(format!(
+                    "Ollama returned status {}",
+                    resp.status()
+                )));
+            }
+
+            let json: serde_json::Value = resp
+                .json()
+                .await
+                .map_err(|e| EmbeddingError::Http(e.to_string()))?;
+
+            let embedding: Vec<f32> = json["embedding"]
+                .as_array()
+                .ok_or_else(|| EmbeddingError::Http("missing 'embedding' field".to_string()))?
+                .iter()
+                .map(|v| v.as_f64().unwrap_or(0.0) as f32)
+                .collect();
+
+            results.push(embedding);
+        }
+
+        Ok(results)
     }
 
     fn dimension(&self) -> usize {
         self.info.dimension
+    }
+
+    fn model_info(&self) -> &ModelInfo {
+        &self.info
+    }
+}
+
+/// Mock embedding provider for tests — returns deterministic vectors
+pub struct MockEmbedder {
+    dimension: usize,
+    info: ModelInfo,
+}
+
+impl MockEmbedder {
+    pub fn new(dimension: usize) -> Self {
+        Self {
+            dimension,
+            info: ModelInfo {
+                name: "mock".to_string(),
+                dimension,
+                max_tokens: 512,
+            },
+        }
+    }
+}
+
+#[async_trait]
+impl EmbeddingProvider for MockEmbedder {
+    async fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        if texts.is_empty() {
+            return Err(EmbeddingError::EmptyInput);
+        }
+        Ok(texts.iter().map(|_| vec![0.1f32; self.dimension]).collect())
+    }
+
+    fn dimension(&self) -> usize {
+        self.dimension
     }
 
     fn model_info(&self) -> &ModelInfo {
@@ -334,15 +415,65 @@ mod tests {
 
     #[test]
     fn ollama_embedder_dimension_is_384() {
-        let e = OllamaEmbedder::new("http://localhost:11434", "all-minilm");
+        let e = OllamaEmbedder::new("http://localhost:11434", "all-minilm", 384);
         assert_eq!(e.dimension(), 384);
     }
 
     #[tokio::test]
     async fn ollama_embedder_empty_input_errors() {
-        let e = OllamaEmbedder::new("http://localhost:11434", "all-minilm");
+        let e = OllamaEmbedder::new("http://localhost:11434", "all-minilm", 384);
         let result = e.embed(&[]).await;
         assert!(matches!(result, Err(EmbeddingError::EmptyInput)));
+    }
+
+    // ── TDD: 5 required tests ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn mock_embedder_returns_correct_dimension() {
+        let embedder = MockEmbedder::new(64);
+        let result = embedder.embed(&["a", "b", "c"]).await.unwrap();
+        assert_eq!(result.len(), 3);
+        for vec in &result {
+            assert_eq!(vec.len(), 64);
+        }
+    }
+
+    #[tokio::test]
+    async fn mock_embedder_is_deterministic() {
+        let embedder = MockEmbedder::new(32);
+        let r1 = embedder.embed(&["hello"]).await.unwrap();
+        let r2 = embedder.embed(&["hello"]).await.unwrap();
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn embedding_error_display() {
+        assert_eq!(
+            EmbeddingError::ModelLoad("bad path".to_string()).to_string(),
+            "model load failed: bad path"
+        );
+        assert_eq!(
+            EmbeddingError::Inference("segfault".to_string()).to_string(),
+            "inference failed: segfault"
+        );
+        assert_eq!(
+            EmbeddingError::Http("timeout".to_string()).to_string(),
+            "HTTP error: timeout"
+        );
+    }
+
+    #[test]
+    fn ollama_embedder_default_nomic_dimension() {
+        let e = OllamaEmbedder::default_nomic();
+        assert_eq!(e.dimension(), 768);
+    }
+
+    #[tokio::test]
+    async fn batch_embed_returns_one_per_input() {
+        let embedder = MockEmbedder::new(16);
+        let texts = ["a", "b", "c", "d", "e"];
+        let result = embedder.embed(&texts).await.unwrap();
+        assert_eq!(result.len(), 5);
     }
 
     // ── trait object usage test ───────────────────────────────────────────────

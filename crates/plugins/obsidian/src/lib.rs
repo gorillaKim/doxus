@@ -220,6 +220,59 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn health_check_missing_vault_is_unhealthy() {
+        let mut plugin = ObsidianPlugin::new();
+        let mut config = PluginConfig::default();
+        config.fields.insert("path".into(), serde_json::json!("/nonexistent/vault/path_xyz"));
+        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+        let status = plugin.health_check().await;
+        assert!(!status.healthy);
+    }
+
+    #[tokio::test]
+    async fn health_check_existing_vault_is_healthy() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut plugin = ObsidianPlugin::new();
+        let mut config = PluginConfig::default();
+        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
+        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+        let status = plugin.health_check().await;
+        assert!(status.healthy);
+    }
+
+    #[tokio::test]
+    async fn fetch_all_returns_markdown_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.md"), "# Alpha\ncontent").unwrap();
+        std::fs::write(dir.path().join("b.md"), "# Beta\ncontent").unwrap();
+
+        let mut plugin = ObsidianPlugin::new();
+        let mut config = PluginConfig::default();
+        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
+        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+
+        let stream = plugin.fetch_all(FetchAllOpts { cursor: None, page_size: 100 }).await.unwrap();
+        assert_eq!(stream.documents.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn fetch_all_skips_non_markdown() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("note.md"), "# Note\ncontent").unwrap();
+        std::fs::write(dir.path().join("readme.txt"), "plain text").unwrap();
+        std::fs::write(dir.path().join("data.json"), r#"{"key":"val"}"#).unwrap();
+
+        let mut plugin = ObsidianPlugin::new();
+        let mut config = PluginConfig::default();
+        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
+        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+
+        let stream = plugin.fetch_all(FetchAllOpts { cursor: None, page_size: 100 }).await.unwrap();
+        assert_eq!(stream.documents.len(), 1);
+        assert_eq!(stream.documents[0].id.0, "note.md");
+    }
+
+    #[tokio::test]
     async fn health_check_before_init_is_unhealthy() {
         let plugin = ObsidianPlugin::new();
         let status = plugin.health_check().await;

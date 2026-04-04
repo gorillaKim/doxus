@@ -1,5 +1,117 @@
 use doxus_core::search::{SearchEngine, SearchQuery};
 
+#[cfg(test)]
+mod tests {
+    fn make_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        doxus_core::db::migrate(&conn).unwrap();
+        conn
+    }
+
+    fn insert_project(conn: &rusqlite::Connection, name: &str, path: &str) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        conn.execute(
+            "INSERT INTO projects (name, display_name, path, status, created_at, updated_at) VALUES (?1, ?2, ?3, 'active', ?4, ?4)",
+            rusqlite::params![name, name, path, now],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn add_project_inserts_and_returns_project() {
+        let conn = make_conn();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        conn.execute(
+            "INSERT INTO projects (name, display_name, path, status, created_at, updated_at) VALUES ('my-project', 'my-project', '/tmp/proj', 'active', ?1, ?1)",
+            rusqlite::params![now],
+        )
+        .unwrap();
+        let (name, status): (String, String) = conn
+            .query_row(
+                "SELECT name, status FROM projects WHERE name = 'my-project'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(name, "my-project");
+        assert_eq!(status, "active");
+    }
+
+    #[test]
+    fn toggle_project_status_updates_status() {
+        let conn = make_conn();
+        insert_project(&conn, "proj", "/tmp/p");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        conn.execute(
+            "UPDATE projects SET status = 'disabled', updated_at = ?1 WHERE name = 'proj'",
+            rusqlite::params![now],
+        )
+        .unwrap();
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM projects WHERE name = 'proj'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "disabled");
+    }
+}
+
+#[tauri::command]
+pub async fn add_project(
+    state: tauri::State<'_, crate::AppState>,
+    name: String,
+    path: String,
+) -> Result<serde_json::Value, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs() as i64;
+    conn.execute(
+        "INSERT INTO projects (name, display_name, path, status, created_at, updated_at) VALUES (?1, ?2, ?3, 'active', ?4, ?4)",
+        rusqlite::params![name, name, path, now],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "project": {
+            "name": name,
+            "display_name": name,
+            "path": path,
+            "status": "active"
+        }
+    }))
+}
+
+#[tauri::command]
+pub async fn toggle_project_status(
+    state: tauri::State<'_, crate::AppState>,
+    name: String,
+    status: String,
+) -> Result<serde_json::Value, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs() as i64;
+    conn.execute(
+        "UPDATE projects SET status = ?1, updated_at = ?2 WHERE name = ?3",
+        rusqlite::params![status, now, name],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "ok": true }))
+}
+
 #[tauri::command]
 pub async fn search_documents(
     state: tauri::State<'_, crate::AppState>,
