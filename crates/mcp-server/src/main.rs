@@ -1266,7 +1266,7 @@ async fn main() -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
-    let conn = doxus_core::db::open(&db_path).expect("failed to open db");
+    let conn = doxus_core::db::open(&db_path)?;
     let server = McpServer::new(conn);
 
     let stdin = std::io::stdin();

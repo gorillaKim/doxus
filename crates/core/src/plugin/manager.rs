@@ -42,7 +42,8 @@ impl PluginManager {
 
     /// Install without signature verification (for testing / unsigned plugins).
     /// WARNING: Only use when signature is not available (e.g. local dev).
-    pub fn install_from_bytes(
+    /// Restricted to crate-internal use to prevent bypassing signature checks in production.
+    pub(crate) fn install_from_bytes(
         &self,
         entry: &RegistryEntry,
         wasm_bytes: &[u8],

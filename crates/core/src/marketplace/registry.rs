@@ -24,14 +24,15 @@ pub struct RegistryClient {
 }
 
 impl RegistryClient {
-    pub fn new(base_url: impl Into<String>) -> Self {
-        Self {
+    pub fn new(base_url: impl Into<String>) -> Result<Self, RegistryError> {
+        let client = reqwest::ClientBuilder::new()
+            .user_agent("doxus-registry-client/0.1.0")
+            .build()
+            .map_err(|e| RegistryError::Network(format!("failed to build HTTP client: {e}")))?;
+        Ok(Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
-            client: reqwest::ClientBuilder::new()
-                .user_agent("doxus-registry-client/0.1.0")
-                .build()
-                .expect("failed to build reqwest client"),
-        }
+            client,
+        })
     }
 
     /// Fetch plugin registry entries from the registry server.
@@ -113,7 +114,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = RegistryClient::new(server.uri());
+        let client = RegistryClient::new(server.uri()).unwrap();
         let entries = client.fetch_entries().await.unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].plugin_id, "com.test.plugin");
@@ -126,7 +127,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(500))
             .mount(&server)
             .await;
-        let client = RegistryClient::new(server.uri());
+        let client = RegistryClient::new(server.uri()).unwrap();
         let result = client.fetch_entries().await;
         assert!(result.is_err());
     }
@@ -141,7 +142,7 @@ mod tests {
             .await;
 
         let url_with_slash = format!("{}/", server.uri());
-        let client = RegistryClient::new(url_with_slash);
+        let client = RegistryClient::new(url_with_slash).unwrap();
         let entries = client.fetch_entries().await.unwrap();
         assert!(entries.is_empty());
     }
