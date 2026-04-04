@@ -38,7 +38,9 @@ pub async fn market_list_installed(
             "config_schema": config_schema(&[
                 ("path", "볼트 폴더", "folder", true, "/Users/you/MyVault"),
                 ("name", "프로젝트 이름", "text", true, "my-vault"),
-            ])
+            ]),
+            "auth_type": "none",
+            "auth_schema": serde_json::json!([])
         }),
         serde_json::json!({
             "id": "com.doxus.confluence",
@@ -52,8 +54,11 @@ pub async fn market_list_installed(
                 ("name", "프로젝트 이름", "text", true, "confluence-docs"),
                 ("base_url", "Base URL", "url", true, "https://yourcompany.atlassian.net"),
                 ("space_key", "스페이스 키", "text", false, "ENG"),
-                ("api_token", "API 토큰", "password", true, "••••••••"),
-                ("email", "이메일 (Confluence Cloud)", "email", false, "you@company.com"),
+            ]),
+            "auth_type": "oauth",
+            "auth_schema": config_schema(&[
+                ("client_id", "Client ID", "text", true, "your-atlassian-app-client-id"),
+                ("client_secret", "Client Secret", "password", true, "your-atlassian-app-client-secret"),
             ])
         }),
         serde_json::json!({
@@ -67,6 +72,9 @@ pub async fn market_list_installed(
             "config_schema": config_schema(&[
                 ("name", "프로젝트 이름", "text", true, "github-docs"),
                 ("repo", "저장소 (owner/repo)", "text", true, "myorg/myrepo"),
+            ]),
+            "auth_type": "api_token",
+            "auth_schema": config_schema(&[
                 ("token", "Personal Access Token", "password", false, "ghp_••••••••"),
             ])
         }),
@@ -88,7 +96,9 @@ pub async fn market_list_installed(
             "config_schema": config_schema(&[
                 ("name", "프로젝트 이름", "text", true, "my-project"),
                 ("endpoint", "엔드포인트 / URL", "url", false, "https://..."),
-            ])
+            ]),
+            "auth_type": "none",
+            "auth_schema": serde_json::json!([])
         }))
         .collect();
 
@@ -189,6 +199,287 @@ pub async fn market_uninstall_plugin(
         std::fs::remove_file(&wasm_path).map_err(|e| e.to_string())?;
     }
     Ok(serde_json::json!({ "status": "ok", "installed": false, "plugin_id": plugin_id }))
+}
+
+#[tauri::command]
+pub async fn plugin_save_auth(
+    plugin_id: String,
+    auth_fields: std::collections::HashMap<String, String>,
+) -> Result<serde_json::Value, String> {
+    for (key, value) in &auth_fields {
+        let service = "doxus";
+        let username = format!("doxus:{}:{}", plugin_id, key);
+        match keyring::Entry::new(service, &username) {
+            Ok(entry) => {
+                if let Err(e) = entry.set_password(value) {
+                    eprintln!("keyring set_password failed for {}: {}", username, e);
+                }
+            }
+            Err(e) => {
+                eprintln!("keyring entry creation failed for {}: {}", username, e);
+            }
+        }
+    }
+    Ok(serde_json::json!({ "status": "ok" }))
+}
+
+#[tauri::command]
+pub async fn plugin_get_auth_status(
+    plugin_id: String,
+) -> Result<serde_json::Value, String> {
+    let keys_to_check: &[&str] = match plugin_id.as_str() {
+        "com.doxus.confluence" => &["access_token", "api_token"],
+        "com.doxus.github" => &["access_token", "token"],
+        _ => &[],
+    };
+
+    let configured = keys_to_check.iter().any(|key| {
+        keyring::Entry::new("doxus", &format!("doxus:{}:{}", plugin_id, key))
+            .ok()
+            .and_then(|e| e.get_password().ok())
+            .map(|p| !p.is_empty())
+            .unwrap_or(false)
+    });
+
+    Ok(serde_json::json!({ "configured": configured, "plugin_id": plugin_id }))
+}
+
+// ── PKCE helpers ────────────────────────────────────────────────────────────
+
+fn generate_code_verifier() -> String {
+    use rand::Rng;
+    let bytes: Vec<u8> = (0..32).map(|_| rand::thread_rng().gen::<u8>()).collect();
+    base64_url_encode(&bytes)
+}
+
+fn base64_url_encode(input: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(input)
+}
+
+fn generate_code_challenge(verifier: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(verifier.as_bytes());
+    let result = hasher.finalize();
+    base64_url_encode(&result)
+}
+
+fn urlencoding_encode(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
+            _ => format!("%{:02X}", c as u32),
+        })
+        .collect()
+}
+
+// ── New commands ─────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn plugin_start_oauth(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::AppState>,
+    plugin_id: String,
+    client_id: String,
+    client_secret: String,
+) -> Result<serde_json::Value, String> {
+    let code_verifier = generate_code_verifier();
+    let code_challenge = generate_code_challenge(&code_verifier);
+
+    // Start local OAuth server on fixed port 14920
+    use tauri::Emitter as _;
+    let app_clone = app.clone();
+    let plugin_id_clone = plugin_id.clone();
+    let port = tauri_plugin_oauth::start_with_config(
+        tauri_plugin_oauth::OauthConfig {
+            ports: Some(vec![14920]),
+            response: Some(std::borrow::Cow::Borrowed(
+                "<html><body style='font-family:sans-serif;text-align:center;padding:40px'>\
+                 <h2>인증 완료!</h2><p>doxus 앱으로 돌아가세요.</p></body></html>",
+            )),
+        },
+        move |url| {
+            let event_name = format!("oauth-callback-{}", plugin_id_clone.replace('.', "_"));
+            let _ = app_clone.emit(&event_name, url);
+        },
+    )
+    .map_err(|e| format!("Failed to start OAuth server: {}", e))?;
+
+    let redirect_uri = format!("http://localhost:{}", port);
+
+    let auth_url = format!(
+        "https://auth.atlassian.com/authorize?\
+         audience=api.atlassian.com&\
+         client_id={client_id}&\
+         scope=read%3Aconfluence-content.all%20read%3Aconfluence-space.summary%20offline_access&\
+         redirect_uri={redirect_uri_encoded}&\
+         response_type=code&\
+         prompt=consent&\
+         code_challenge={code_challenge}&\
+         code_challenge_method=S256",
+        client_id = client_id,
+        redirect_uri_encoded = urlencoding_encode(&redirect_uri),
+        code_challenge = code_challenge,
+    );
+
+    let mut pending = state.oauth_pending.lock().map_err(|e| e.to_string())?;
+    pending.insert(
+        plugin_id.clone(),
+        crate::state::OAuthPending {
+            code_verifier,
+            client_id,
+            client_secret,
+            redirect_uri,
+        },
+    );
+
+    Ok(serde_json::json!({
+        "auth_url": auth_url,
+        "plugin_id": plugin_id,
+        "port": port,
+    }))
+}
+
+#[tauri::command]
+pub async fn plugin_oauth_exchange(
+    state: tauri::State<'_, crate::AppState>,
+    plugin_id: String,
+    code: String,
+) -> Result<serde_json::Value, String> {
+    let (code_verifier, client_id, client_secret, redirect_uri) = {
+        let mut pending = state.oauth_pending.lock().map_err(|e| e.to_string())?;
+        let p = pending
+            .remove(&plugin_id)
+            .ok_or_else(|| "No pending OAuth state for this plugin".to_string())?;
+        (p.code_verifier, p.client_id, p.client_secret, p.redirect_uri)
+    };
+
+    let client = reqwest::Client::new();
+    let res = client
+        .post("https://auth.atlassian.com/oauth/token")
+        .json(&serde_json::json!({
+            "grant_type": "authorization_code",
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "code": code,
+            "redirect_uri": redirect_uri,
+            "code_verifier": code_verifier,
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Token exchange request failed: {}", e))?;
+
+    if !res.status().is_success() {
+        let status = res.status();
+        let body = res.text().await.unwrap_or_default();
+        return Err(format!("Token exchange failed ({}): {}", status, body));
+    }
+
+    let token_data: serde_json::Value = res
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse token response: {}", e))?;
+
+    let access_token = token_data["access_token"]
+        .as_str()
+        .ok_or_else(|| "No access_token in response".to_string())?
+        .to_string();
+
+    let refresh_token = token_data["refresh_token"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+
+    let kr_access =
+        keyring::Entry::new("doxus", &format!("doxus:{}:access_token", plugin_id))
+            .map_err(|e| e.to_string())?;
+    kr_access.set_password(&access_token).map_err(|e| e.to_string())?;
+
+    if !refresh_token.is_empty() {
+        if let Ok(kr_refresh) =
+            keyring::Entry::new("doxus", &format!("doxus:{}:refresh_token", plugin_id))
+        {
+            let _ = kr_refresh.set_password(&refresh_token);
+        }
+    }
+
+    Ok(serde_json::json!({
+        "status": "ok",
+        "plugin_id": plugin_id,
+        "configured": true,
+    }))
+}
+
+#[tauri::command]
+pub async fn plugin_validate_config(
+    plugin_id: String,
+    config_fields: std::collections::HashMap<String, String>,
+) -> Result<serde_json::Value, String> {
+    match plugin_id.as_str() {
+        "confluence" | "com.doxus.confluence" => {
+            let base_url = config_fields.get("base_url").cloned().unwrap_or_default();
+            let api_token = config_fields.get("api_token").cloned().unwrap_or_default();
+            let email = config_fields.get("email").cloned().unwrap_or_default();
+
+            if base_url.is_empty() || api_token.is_empty() {
+                return Err("base_url and api_token are required".to_string());
+            }
+
+            let client = reqwest::Client::new();
+            let url = format!(
+                "{}/wiki/rest/api/space?limit=1",
+                base_url.trim_end_matches('/')
+            );
+            let mut req = client.get(&url);
+            if !email.is_empty() {
+                req = req.basic_auth(&email, Some(&api_token));
+            } else {
+                req = req.bearer_auth(&api_token);
+            }
+
+            match req.send().await {
+                Ok(res) if res.status().is_success() => {
+                    Ok(serde_json::json!({ "valid": true, "message": "연결 성공" }))
+                }
+                Ok(res) => Err(format!("연결 실패 (HTTP {})", res.status())),
+                Err(e) => Err(format!("연결 오류: {}", e)),
+            }
+        }
+        "github" | "com.doxus.github" => {
+            let token = config_fields.get("token").cloned().unwrap_or_default();
+            if token.is_empty() {
+                return Ok(serde_json::json!({ "valid": true, "message": "토큰 없이 공개 저장소만 접근 가능" }));
+            }
+            let client = reqwest::Client::new();
+            match client
+                .get("https://api.github.com/user")
+                .header("Authorization", format!("Bearer {}", token))
+                .header("User-Agent", "doxus/0.1.0")
+                .send()
+                .await
+            {
+                Ok(res) if res.status().is_success() => {
+                    Ok(serde_json::json!({ "valid": true, "message": "GitHub 연결 성공" }))
+                }
+                Ok(res) => Err(format!("GitHub 연결 실패 (HTTP {})", res.status())),
+                Err(e) => Err(format!("연결 오류: {}", e)),
+            }
+        }
+        _ => Ok(serde_json::json!({ "valid": true, "message": "검증 불필요" })),
+    }
+}
+
+#[tauri::command]
+pub async fn plugin_open_url(url: String) -> Result<(), String> {
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return Err("only http/https URLs are allowed".into());
+    }
+    std::process::Command::new("open")
+        .arg(&url)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[cfg(test)]

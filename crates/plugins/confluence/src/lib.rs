@@ -124,7 +124,7 @@ impl DocSource for ConfluencePlugin {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
-            incremental_sync: true,
+            incremental_sync: false, // fetch_changes not yet implemented
             oauth: false,
             native_search: false,
         }
@@ -137,6 +137,9 @@ impl DocSource for ConfluencePlugin {
                     "missing required field: {field}"
                 )));
             }
+        }
+        if let Some(base_url) = config.fields.get("base_url").and_then(|v| v.as_str()) {
+            validate_base_url(base_url)?;
         }
         Ok(())
     }
@@ -203,6 +206,9 @@ impl DocSource for ConfluencePlugin {
             .await
             .map_err(|e| PluginError::NetworkError(e.to_string()))?;
 
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(PluginError::AuthRequired);
+        }
         if !resp.status().is_success() {
             return Err(PluginError::NetworkError(format!(
                 "HTTP {}",
@@ -316,6 +322,29 @@ impl DocSource for ConfluencePlugin {
             },
         }
     }
+}
+
+fn validate_base_url(url: &str) -> Result<(), PluginError> {
+    if !url.starts_with("https://") {
+        return Err(PluginError::ConfigInvalid(
+            "base_url must use HTTPS".into(),
+        ));
+    }
+    let host = url
+        .trim_start_matches("https://")
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .split(':')
+        .next()
+        .unwrap_or("");
+    let blocked = ["localhost", "127.0.0.1", "::1", "0.0.0.0", "169.254.169.254"];
+    if blocked.contains(&host) || host.ends_with(".local") || host.is_empty() {
+        return Err(PluginError::ConfigInvalid(format!(
+            "base_url host is not allowed: {host}"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

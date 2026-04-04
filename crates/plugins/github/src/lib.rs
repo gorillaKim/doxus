@@ -51,7 +51,7 @@ impl GitHubPlugin {
             client: reqwest::ClientBuilder::new()
                 .user_agent("doxus-github-plugin/0.1.0")
                 .build()
-                .expect("failed to build reqwest client"),
+                .unwrap_or_else(|_| reqwest::Client::new()),
         }
     }
 
@@ -67,7 +67,7 @@ impl GitHubPlugin {
             client: reqwest::ClientBuilder::new()
                 .user_agent("doxus-github-plugin/0.1.0")
                 .build()
-                .expect("failed to build reqwest client"),
+                .unwrap_or_else(|_| reqwest::Client::new()),
         }
     }
 
@@ -224,11 +224,13 @@ impl DocSource for GitHubPlugin {
             .send()
             .await
             .map_err(|e| PluginError::NetworkError(e.to_string()))?;
-        if !resp.status().is_success() {
-            return Err(PluginError::NetworkError(format!(
-                "HTTP {}",
-                resp.status()
-            )));
+        match resp.status() {
+            s if s.is_success() => {}
+            reqwest::StatusCode::UNAUTHORIZED => return Err(PluginError::AuthRequired),
+            reqwest::StatusCode::FORBIDDEN => {
+                return Err(PluginError::PermissionDenied("GitHub API".into()))
+            }
+            s => return Err(PluginError::NetworkError(format!("HTTP {s}"))),
         }
         let issues: Vec<GitHubIssue> = resp
             .json()

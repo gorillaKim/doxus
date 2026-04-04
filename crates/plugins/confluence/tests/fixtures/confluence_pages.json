@@ -1,0 +1,11 @@
+{
+  "results": [
+    {"id": "123", "title": "Page 1", "_links": {"webui": "/wiki/page1"}, "body": {"storage": {"value": "<p>Content 1</p>"}}, "version": {"when": "2024-01-01T00:00:00Z"}, "space": {"key": "TEAM"}},
+    {"id": "124", "title": "Page 2", "_links": {"webui": "/wiki/page2"}, "body": {"storage": {"value": "<p>Content 2</p>"}}, "version": {"when": "2024-01-02T00:00:00Z"}, "space": {"key": "TEAM"}},
+    {"id": "125", "title": "Page 3", "_links": {"webui": "/wiki/page3"}, "body": {"storage": {"value": "<p>Content 3</p>"}}, "version": {"when": "2024-01-03T00:00:00Z"}, "space": {"key": "TEAM"}}
+  ],
+  "start": 0,
+  "limit": 25,
+  "size": 3,
+  "_links": {}
+}
