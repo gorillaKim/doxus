@@ -105,3 +105,11 @@
 {"t":0,"agent":"af11f12","agent_type":"executor","event":"agent_stop","success":true,"duration_ms":15351}
 {"t":0,"agent":"a44fb36","agent_type":"executor","event":"agent_stop","success":true,"duration_ms":32245}
 {"t":0,"agent":"a115a99","agent_type":"executor","event":"agent_stop","success":true,"duration_ms":77746}
+{"t":0,"agent":"system","event":"skill_invoked","skill_name":"oh-my-claudecode:cancel"}
+{"t":0,"agent":"system","event":"keyword_detected","keyword":"autopilot"}
+{"t":0,"agent":"system","event":"keyword_detected","keyword":"tdd"}
+{"t":0,"agent":"system","event":"mode_change","mode_from":"none","mode_to":"autopilot"}
+{"t":0,"agent":"a7bd9e3","agent_type":"executor","event":"agent_start","parent_mode":"none"}
+{"t":0,"agent":"ae9d9ec","agent_type":"executor","event":"agent_start","parent_mode":"none"}
+{"t":0,"agent":"a7bd9e3","agent_type":"executor","event":"agent_stop","success":true,"duration_ms":72655}
+{"t":0,"agent":"ae9d9ec","agent_type":"executor","event":"agent_stop","success":true,"duration_ms":87682}

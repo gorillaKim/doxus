@@ -99,6 +99,18 @@
       "type": "file"
     },
     {
+      "path": "apps/desktop/src-tauri/src/commands/market.rs",
+      "accessCount": 11,
+      "lastAccessed": 1775290204039,
+      "type": "file"
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/main.rs",
+      "accessCount": 11,
+      "lastAccessed": 1775290213643,
+      "type": "file"
+    },
+    {
       "path": "crates/plugins/confluence/src/lib.rs",
       "accessCount": 10,
       "lastAccessed": 1775264292927,
@@ -121,6 +133,12 @@
       "accessCount": 10,
       "lastAccessed": 1775289776303,
       "type": "directory"
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/commands/search.rs",
+      "accessCount": 9,
+      "lastAccessed": 1775290186993,
+      "type": "file"
     },
     {
       "path": "apps/desktop/src/pages/MarketPage.tsx",
@@ -159,12 +177,6 @@
       "type": "file"
     },
     {
-      "path": "apps/desktop/src-tauri/src/commands/search.rs",
-      "accessCount": 6,
-      "lastAccessed": 1775288281720,
-      "type": "file"
-    },
-    {
       "path": "Cargo.toml",
       "accessCount": 6,
       "lastAccessed": 1775288630094,
@@ -198,12 +210,6 @@
       "path": "crates/plugins/obsidian/src/lib.rs",
       "accessCount": 5,
       "lastAccessed": 1775288309293,
-      "type": "file"
-    },
-    {
-      "path": "apps/desktop/src-tauri/src/main.rs",
-      "accessCount": 5,
-      "lastAccessed": 1775288311681,
       "type": "file"
     },
     {
@@ -259,12 +265,6 @@
       "accessCount": 3,
       "lastAccessed": 1775271131722,
       "type": "directory"
-    },
-    {
-      "path": "apps/desktop/src-tauri/src/commands/market.rs",
-      "accessCount": 3,
-      "lastAccessed": 1775285969846,
-      "type": "file"
     },
     {
       "path": "apps/desktop/src-tauri/src/commands/mod.rs",

@@ -93,6 +93,12 @@ export default function SettingsPage() {
   const [dbTestLoading, setDbTestLoading] = useState(false);
   const [mcpTestResult, setMcpTestResult] = useState<string | null>(null);
   const [mcpTestLoading, setMcpTestLoading] = useState(false);
+  const [claudeStatus, setClaudeStatus] = useState<'ok' | 'warn' | 'unknown'>('unknown');
+  const [claudeTestResult, setClaudeTestResult] = useState<string | null>(null);
+  const [claudeTestLoading, setClaudeTestLoading] = useState(false);
+  const [geminiStatus, setGeminiStatus] = useState<'ok' | 'warn' | 'unknown'>('unknown');
+  const [geminiTestResult, setGeminiTestResult] = useState<string | null>(null);
+  const [geminiTestLoading, setGeminiTestLoading] = useState(false);
 
   useEffect(() => {
     invoke<SystemStatus>('get_system_status')
@@ -143,6 +149,34 @@ export default function SettingsPage() {
       setMcpTestResult('✗ MCP 서버가 실행되지 않음 (Phase 1에서 구현 예정)');
       setMcpTestLoading(false);
     }, 800);
+  };
+
+  const handleClaudeTest = async () => {
+    setClaudeTestLoading(true);
+    setClaudeTestResult(null);
+    try {
+      const res = await invoke<{ status: string; message: string }>('check_claude_status');
+      setClaudeStatus(res.status as 'ok' | 'warn' | 'unknown');
+      setClaudeTestResult(res.message);
+    } catch (e) {
+      setClaudeTestResult(`✗ ${String(e)}`);
+    } finally {
+      setClaudeTestLoading(false);
+    }
+  };
+
+  const handleGeminiTest = async () => {
+    setGeminiTestLoading(true);
+    setGeminiTestResult(null);
+    try {
+      const res = await invoke<{ status: string; message: string }>('check_gemini_status');
+      setGeminiStatus(res.status as 'ok' | 'warn' | 'unknown');
+      setGeminiTestResult(res.message);
+    } catch (e) {
+      setGeminiTestResult(`✗ ${String(e)}`);
+    } finally {
+      setGeminiTestLoading(false);
+    }
   };
 
   return (
@@ -206,6 +240,24 @@ export default function SettingsPage() {
               title="에이전트 사이드카"
               status={sysStatus.agent.status}
               note={sysStatus.agent.note}
+            />
+            <StatusCard
+              title="Claude (AI 에이전트)"
+              status={claudeStatus}
+              note="Claude Code CLI 또는 ANTHROPIC_API_KEY 필요"
+              onTest={handleClaudeTest}
+              testLabel="연결 테스트"
+              testLoading={claudeTestLoading}
+              testResult={claudeTestResult}
+            />
+            <StatusCard
+              title="Gemini (AI 에이전트)"
+              status={geminiStatus}
+              note="Gemini CLI 또는 GEMINI_API_KEY 필요"
+              onTest={handleGeminiTest}
+              testLabel="연결 테스트"
+              testLoading={geminiTestLoading}
+              testResult={geminiTestResult}
             />
           </div>
         ) : null}
