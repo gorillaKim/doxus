@@ -50,6 +50,7 @@ impl GitHubPlugin {
             config: None,
             client: reqwest::ClientBuilder::new()
                 .user_agent("doxus-github-plugin/0.1.0")
+                .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
         }
@@ -66,6 +67,7 @@ impl GitHubPlugin {
             config: Some(config),
             client: reqwest::ClientBuilder::new()
                 .user_agent("doxus-github-plugin/0.1.0")
+                .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
         }
