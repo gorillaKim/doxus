@@ -426,6 +426,61 @@ doxus는 obsidian-nexus의 차세대 진화판으로, WASM 플러그인 기반 �
 - **invoke 반환 shape 방어**: Tauri `invoke` 결과는 Rust 타입에 따라 배열 또는 래핑 객체로 직렬화될 수 있다. 프론트엔드에서 `Array.isArray()` 분기로 양쪽을 처리하거나, Rust 커맨드가 항상 배열을 직접 반환하도록 통일하는 것이 안전하다.
 - **내장 플러그인 표시 일관성**: 마켓 페이지에서 빌트인 플러그인을 숨기면 사용자가 설치 상태를 파악하기 어렵다. "Built-in" 뱃지와 "Included" 레이블로 존재를 명시하되 Uninstall을 비활성화하는 패턴이 UX상 더 명확하다.
 
+---
+
+## 세션 6 — 2026-04-04
+
+### 작업 요약
+
+**요구사항 4가지 구현 (UI 개선)**
+
+1. **전체 UI 한글화**
+   - AppShell 사이드바, SearchPage, DashboardPage, ChatDrawer, WorkspacePage, MarketPage, ProjectsPage 모두 한글로 전환
+   - 날짜 포맷 `ko-KR` 로케일로 변경
+
+2. **검색 화면 문서 프리뷰**
+   - 좌우 분할 패널 구조: 좌측 결과 목록 (`w-80`) + 우측 마크다운 프리뷰
+   - 결과 선택 시 프리뷰 패널 표시, X 버튼으로 닫기
+
+3. **react-markdown 도입**
+   - 검색 프리뷰: snippet / content 마크다운 렌더링
+   - ChatDrawer 어시스턴트 메시지: 마크다운 렌더링
+   - `prose-invert` 다크 테마 스타일 적용
+
+4. **설정 페이지 신규 (`/settings`)**
+   - 앱 / DB / MCP / CLI / 에이전트 상태 배지 (ok / warn / error / unknown)
+   - DB 연결 테스트, MCP 포트(7700) 연결 테스트 버튼
+   - `get_system_status` Tauri 커맨드 추가 (DB 경로, CLI 존재 여부, MCP 포트 확인)
+   - 개발 도구 버튼 (DB 재인덱싱, 검색 엔진 상태, 플러그인 로그)
+
+**Autopilot + Team Agent 5트랙 병렬 구현 (TDD)**
+
+| 트랙 | 내용 | 테스트 수 |
+|------|------|----------|
+| Track A | Desktop IPC 커맨드 (add_project, toggle_project_status, list_workspace_documents, create_workspace_document) | 5 |
+| Track B | doxus-plugin-sdk (DocSource trait, RawDocument, PluginError) + doxus-plugin-obsidian 실구현 | 15 |
+| Track C | EmbeddingProvider trait + OllamaEmbedder (Ollama HTTP API) + MockEmbedder | 16 |
+| Track D | GitHub 플러그인 workspace 등록 + CLI clap 파싱 테스트 | 15 + 11 |
+| Track E | Keychain 추상화 (SecretStore trait, SystemKeychain, MemorySecretStore) | 6 |
+
+### 문제 및 해결
+
+- **keyring feature 이름 오류**: `linux-native-sync-secret-service` → `sync-secret-service` (Track E 에이전트가 잘못된 feature 명 사용, 수동 수정)
+- **WorkspacePage/MarketPage default import**: 이전 세션 이슈와 동일한 패턴, 한글화 과정에서 유지
+- **SearchPage Hit 타입**: `useSearchStore`의 `SearchHit`과 `SearchPage` 내부 `Hit` 인터페이스를 분리하여 타입 안전성 확보
+
+### 설계 결정
+
+- **Keychain**: `keyring` v3 크레이트 선택 — macOS apple-native + Linux sync-secret-service 동시 지원
+- **검색 프리뷰**: 별도 문서 fetch 없이 snippet으로 기본 프리뷰 제공. `content` 필드가 있을 경우 전체 마크다운 렌더링으로 전환
+- **설정 페이지 DevButton**: 미구현 커맨드는 "미구현" 메시지를 2초 후 초기화하는 UX 적용
+
+### 결과
+
+- 전체 테스트: **235개 통과, 0 실패**
+- 커밋: `f85253f` (UI 개선), `672ce00` (Track A/B/C), `0263e92` (Track D/E)
+- workspace 멤버: `crates/plugins/github` 추가됨
+
 ## 관련 문서
 
 - [[doxus 아키텍처 설계]]
