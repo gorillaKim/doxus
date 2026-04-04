@@ -53,6 +53,21 @@ impl AgentManager {
     }
 }
 
+/// Returns the default path to the Node.js sidecar script.
+///
+/// Resolution order:
+/// 1. `~/.doxus/agents/sidecar.js` — production install
+/// 2. `$CARGO_MANIFEST_DIR/sidecar/sidecar.js` — dev / cargo test
+pub fn default_sidecar_path() -> std::path::PathBuf {
+    if let Ok(home) = std::env::var("HOME") {
+        let prod = std::path::PathBuf::from(home).join(".doxus/agents/sidecar.js");
+        if prod.exists() {
+            return prod;
+        }
+    }
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sidecar/sidecar.js")
+}
+
 impl Drop for AgentManager {
     fn drop(&mut self) {
         self.stop();

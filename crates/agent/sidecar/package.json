@@ -1,0 +1,11 @@
+{
+  "name": "doxus-sidecar",
+  "version": "0.1.0",
+  "description": "doxus agent sidecar — JSONL stdio bridge",
+  "main": "sidecar.js",
+  "scripts": {
+    "start": "node sidecar.js",
+    "test": "node --test sidecar.test.js"
+  },
+  "engines": { "node": ">=18" }
+}

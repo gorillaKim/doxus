@@ -1,3 +1,6 @@
+pub mod db;
+pub use db::{DueInstance, SyncDb};
+
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone)]
