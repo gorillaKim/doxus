@@ -4,6 +4,7 @@ import { ChatDrawer } from "./ChatDrawer";
 import { useChatStore } from "../../stores/useChatStore";
 
 const NAV_ITEMS = [
+  { to: "/", label: "Dashboard" },
   { to: "/search", label: "Search" },
   { to: "/projects", label: "Projects" },
   { to: "/workspace", label: "Workspace" },

@@ -16,6 +16,7 @@ interface SearchState {
   hits: SearchHit[];
   isLoading: boolean;
   error: string | null;
+  queryHistory: string[];
   setQuery: (q: string) => void;
   search: () => Promise<void>;
   clear: () => void;
@@ -26,13 +27,16 @@ export const useSearchStore = create<SearchState>((set, get) => ({
   hits: [],
   isLoading: false,
   error: null,
+  queryHistory: [],
 
   setQuery: (q) => set({ query: q }),
 
   search: async () => {
-    const { query } = get();
+    const { query, queryHistory } = get();
     if (!query.trim()) return;
-    set({ isLoading: true, error: null });
+    const trimmed = query.trim();
+    const updated = [trimmed, ...queryHistory.filter((q) => q !== trimmed)].slice(0, 5);
+    set({ isLoading: true, error: null, queryHistory: updated });
     try {
       const result = await invoke<{ hits: SearchHit[] }>('search_documents', {
         query,
