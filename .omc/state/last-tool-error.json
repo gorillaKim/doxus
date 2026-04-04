@@ -1,7 +1,7 @@
 {
-  "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"cargo test -p doxus-core -- secrets 2>&1\",\"timeout\":120000}",
-  "error": "Exit code 101\n    Updating crates.io index\nerror: failed to select a version for `keyring`.\n    ... required by package `doxus-core v0.1.0 (/Users/madup/gorillaProject/doxus/crates/core)`\n    ... which satisfies path dependency `doxus-core` (locked to 0.1.0) of package `doxus-cli v0.1.0 (/Users/madup/gorillaProject/doxus/crates/cli)`\nversions that meet the requirements `^3` are: 3.6.3, 3.6.2, 3.6.1, 3.6.0, 3.5.0, 3.4.0, 3.3.0, 3.2.1, 3.2.0, 3.1.0, 3.0.5, 3.0.4, 3.0.3, 3.0.2, 3.0.1, 3.0.0\n\npackag...",
-  "timestamp": "2026-04-04T07:44:29.077Z",
-  "retry_count": 3
+  "tool_name": "Read",
+  "tool_input_preview": "{\"file_path\":\"/Users/madup/gorillaProject/doxus/crates/mcp-server/src/main.rs\"}",
+  "error": "File content (29666 tokens) exceeds maximum allowed tokens (10000). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file.",
+  "timestamp": "2026-04-04T08:01:58.462Z",
+  "retry_count": 1
 }

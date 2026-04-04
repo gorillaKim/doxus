@@ -13,9 +13,11 @@ interface ProjectState {
   isLoading: boolean;
   error: string | null;
   fetch: () => Promise<void>;
+  addProject: (name: string, path: string) => Promise<void>;
+  toggleStatus: (name: string, currentStatus: 'active' | 'disabled') => Promise<void>;
 }
 
-export const useProjectStore = create<ProjectState>((set) => ({
+export const useProjectStore = create<ProjectState>((set, get) => ({
   projects: [],
   isLoading: false,
   error: null,
@@ -28,5 +30,16 @@ export const useProjectStore = create<ProjectState>((set) => ({
     } catch (e) {
       set({ error: String(e), isLoading: false });
     }
+  },
+
+  addProject: async (name: string, path: string) => {
+    await invoke('add_project', { name, path });
+    await get().fetch();
+  },
+
+  toggleStatus: async (name: string, currentStatus: 'active' | 'disabled') => {
+    const newStatus = currentStatus === 'active' ? 'disabled' : 'active';
+    await invoke('toggle_project_status', { name, status: newStatus });
+    await get().fetch();
   },
 }));

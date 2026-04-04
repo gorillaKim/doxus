@@ -93,6 +93,12 @@
       "type": "file"
     },
     {
+      "path": "docs/devlog/2026-04-04-doxus-phase0-3-implementation.md",
+      "accessCount": 11,
+      "lastAccessed": 1775289427151,
+      "type": "file"
+    },
+    {
       "path": "crates/plugins/confluence/src/lib.rs",
       "accessCount": 10,
       "lastAccessed": 1775264292927,
@@ -106,9 +112,15 @@
     },
     {
       "path": "crates/core/src/lib.rs",
-      "accessCount": 9,
-      "lastAccessed": 1775288665799,
+      "accessCount": 10,
+      "lastAccessed": 1775289773331,
       "type": "file"
+    },
+    {
+      "path": "",
+      "accessCount": 10,
+      "lastAccessed": 1775289776303,
+      "type": "directory"
     },
     {
       "path": "apps/desktop/src/pages/MarketPage.tsx",
@@ -120,18 +132,6 @@
       "path": "crates/core/src/plugin/manifest.rs",
       "accessCount": 7,
       "lastAccessed": 1775264255898,
-      "type": "file"
-    },
-    {
-      "path": "",
-      "accessCount": 7,
-      "lastAccessed": 1775284076351,
-      "type": "directory"
-    },
-    {
-      "path": "docs/devlog/2026-04-04-doxus-phase0-3-implementation.md",
-      "accessCount": 7,
-      "lastAccessed": 1775286808675,
       "type": "file"
     },
     {
@@ -171,6 +171,12 @@
       "type": "file"
     },
     {
+      "path": "crates/core/src/workspace/mod.rs",
+      "accessCount": 6,
+      "lastAccessed": 1775289787665,
+      "type": "file"
+    },
+    {
       "path": "crates/core/src/auth.rs",
       "accessCount": 5,
       "lastAccessed": 1775264303744,
@@ -180,12 +186,6 @@
       "path": "crates/core/src/plugin/mod.rs",
       "accessCount": 5,
       "lastAccessed": 1775266000708,
-      "type": "file"
-    },
-    {
-      "path": "crates/core/src/workspace/mod.rs",
-      "accessCount": 5,
-      "lastAccessed": 1775271116007,
       "type": "file"
     },
     {
@@ -303,6 +303,12 @@
       "type": "file"
     },
     {
+      "path": "crates/mcp-server/src/lib.rs",
+      "accessCount": 2,
+      "lastAccessed": 1775289731908,
+      "type": "file"
+    },
+    {
       "path": "apps/desktop/src/stores/useMarketStore.ts",
       "accessCount": 1,
       "lastAccessed": 1775270914556,
@@ -336,12 +342,6 @@
       "path": "CHANGELOG.md",
       "accessCount": 1,
       "lastAccessed": 1775271439818,
-      "type": "file"
-    },
-    {
-      "path": "crates/mcp-server/src/lib.rs",
-      "accessCount": 1,
-      "lastAccessed": 1775271651818,
       "type": "file"
     },
     {

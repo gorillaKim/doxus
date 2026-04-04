@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useProjectStore } from '../stores/useProjectStore';
 
@@ -13,8 +12,8 @@ interface PluginOption {
 }
 
 const PLUGIN_OPTIONS: PluginOption[] = [
-  { id: 'obsidian', label: 'Obsidian', description: 'Local Obsidian vault folder', icon: '🪨' },
-  { id: 'confluence', label: 'Confluence', description: 'Confluence Cloud or Server', icon: '📄' },
+  { id: 'obsidian', label: 'Obsidian', description: '로컬 Obsidian 볼트 폴더', icon: '🪨' },
+  { id: 'confluence', label: 'Confluence', description: 'Confluence Cloud 또는 Server', icon: '📄' },
   { id: 'github', label: 'GitHub', description: 'GitHub Issues / Wiki / Discussions', icon: '🐙' },
 ];
 
@@ -35,7 +34,7 @@ function ObsidianForm({ name, setName, path, setPath }: {
   return (
     <>
       <div className="flex flex-col gap-1">
-        <label className="text-xs text-gray-500">Vault Folder</label>
+        <label className="text-xs text-gray-500">볼트 폴더</label>
         <div className="flex gap-2">
           <input
             type="text"
@@ -49,12 +48,12 @@ function ObsidianForm({ name, setName, path, setPath }: {
             onClick={handlePickFolder}
             className="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-gray-200 text-sm rounded-lg transition-colors"
           >
-            Browse…
+            찾기…
           </button>
         </div>
       </div>
       <div className="flex flex-col gap-1">
-        <label className="text-xs text-gray-500">Project Name</label>
+        <label className="text-xs text-gray-500">프로젝트 이름</label>
         <input
           type="text"
           value={name}
@@ -76,30 +75,30 @@ function ConfluenceForm({ name, setName, extraFields, setExtraFields }: {
   return (
     <>
       <div className="flex flex-col gap-1">
-        <label className="text-xs text-gray-500">Project Name</label>
+        <label className="text-xs text-gray-500">프로젝트 이름</label>
         <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="confluence-docs"
           className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
       </div>
       <div className="flex flex-col gap-1">
-        <label className="text-xs text-gray-500">Base URL</label>
+        <label className="text-xs text-gray-500">기본 URL</label>
         <input type="text" value={extraFields.base_url ?? ''} onChange={(e) => set('base_url', e.target.value)}
           placeholder="https://yourcompany.atlassian.net"
           className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
       </div>
       <div className="flex flex-col gap-1">
-        <label className="text-xs text-gray-500">Space Key</label>
+        <label className="text-xs text-gray-500">스페이스 키</label>
         <input type="text" value={extraFields.space_key ?? ''} onChange={(e) => set('space_key', e.target.value)}
           placeholder="ENG"
           className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
       </div>
       <div className="flex flex-col gap-1">
-        <label className="text-xs text-gray-500">API Token</label>
+        <label className="text-xs text-gray-500">API 토큰</label>
         <input type="password" value={extraFields.api_token ?? ''} onChange={(e) => set('api_token', e.target.value)}
           placeholder="••••••••"
           className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
       </div>
       <div className="flex flex-col gap-1">
-        <label className="text-xs text-gray-500">Email (Confluence Cloud)</label>
+        <label className="text-xs text-gray-500">이메일 (Confluence Cloud)</label>
         <input type="email" value={extraFields.email ?? ''} onChange={(e) => set('email', e.target.value)}
           placeholder="you@company.com"
           className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
@@ -117,24 +116,24 @@ function GitHubForm({ name, setName, extraFields, setExtraFields }: {
   return (
     <>
       <div className="flex flex-col gap-1">
-        <label className="text-xs text-gray-500">Project Name</label>
+        <label className="text-xs text-gray-500">프로젝트 이름</label>
         <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="github-docs"
           className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
       </div>
       <div className="flex flex-col gap-1">
-        <label className="text-xs text-gray-500">Repository (owner/repo)</label>
+        <label className="text-xs text-gray-500">저장소 (owner/repo)</label>
         <input type="text" value={extraFields.repo ?? ''} onChange={(e) => set('repo', e.target.value)}
           placeholder="myorg/myrepo"
           className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
       </div>
       <div className="flex flex-col gap-1">
-        <label className="text-xs text-gray-500">Personal Access Token</label>
+        <label className="text-xs text-gray-500">개인 액세스 토큰</label>
         <input type="password" value={extraFields.token ?? ''} onChange={(e) => set('token', e.target.value)}
           placeholder="ghp_••••••••"
           className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
       </div>
       <div className="flex flex-col gap-1">
-        <label className="text-xs text-gray-500">Sources</label>
+        <label className="text-xs text-gray-500">소스</label>
         <div className="flex gap-3">
           {['issues', 'wiki', 'discussions'].map((src) => (
             <label key={src} className="flex items-center gap-1.5 text-sm text-gray-400 cursor-pointer">
@@ -151,7 +150,8 @@ function GitHubForm({ name, setName, extraFields, setExtraFields }: {
   );
 }
 
-function AddProjectModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
+function AddProjectModal({ onClose }: { onClose: () => void }) {
+  const { addProject } = useProjectStore();
   const [pluginType, setPluginType] = useState<PluginType>('obsidian');
   const [name, setName] = useState('');
   const [path, setPath] = useState('');
@@ -166,8 +166,7 @@ function AddProjectModal({ onClose, onSuccess }: { onClose: () => void; onSucces
     setError(null);
     try {
       const projectPath = pluginType === 'obsidian' ? path.trim() : (extraFields.base_url ?? extraFields.repo ?? pluginType);
-      await invoke('add_project', { name: name.trim(), path: projectPath });
-      onSuccess();
+      await addProject(name.trim(), projectPath);
       onClose();
     } catch (e) {
       setError(String(e));
@@ -189,13 +188,13 @@ function AddProjectModal({ onClose, onSuccess }: { onClose: () => void; onSucces
         className="bg-gray-900 border border-gray-800 rounded-2xl p-6 w-full max-w-md flex flex-col gap-5 shadow-2xl"
       >
         <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold text-gray-100">Add Project</h2>
+          <h2 className="text-base font-semibold text-gray-100">프로젝트 추가</h2>
           <button type="button" onClick={onClose} className="text-gray-500 hover:text-gray-300 text-lg">✕</button>
         </div>
 
         {/* Plugin type selector */}
         <div className="flex flex-col gap-2">
-          <label className="text-xs text-gray-500 uppercase tracking-wider">Source Type</label>
+          <label className="text-xs text-gray-500 uppercase tracking-wider">소스 유형</label>
           <div className="grid grid-cols-3 gap-2">
             {PLUGIN_OPTIONS.map((opt) => (
               <button
@@ -234,11 +233,11 @@ function AddProjectModal({ onClose, onSuccess }: { onClose: () => void; onSucces
         <div className="flex gap-2 justify-end">
           <button type="button" onClick={onClose}
             className="px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200 transition-colors">
-            Cancel
+            취소
           </button>
           <button type="submit" disabled={isSubmitting || !canSubmit}
             className="px-4 py-1.5 text-sm bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg disabled:opacity-50 transition-colors">
-            {isSubmitting ? 'Adding...' : 'Add Project'}
+            {isSubmitting ? '추가 중...' : '프로젝트 추가'}
           </button>
         </div>
       </form>
@@ -247,7 +246,7 @@ function AddProjectModal({ onClose, onSuccess }: { onClose: () => void; onSucces
 }
 
 export function ProjectsPage() {
-  const { projects, isLoading, error, fetch } = useProjectStore();
+  const { projects, isLoading, error, fetch, toggleStatus } = useProjectStore();
   const [showModal, setShowModal] = useState(false);
   const [togglingId, setTogglingId] = useState<string | null>(null);
 
@@ -256,10 +255,9 @@ export function ProjectsPage() {
   const handleToggleStatus = async (name: string, currentStatus: 'active' | 'disabled') => {
     setTogglingId(name);
     try {
-      await invoke('toggle_project_status', { name, status: currentStatus === 'active' ? 'disabled' : 'active' });
-      await fetch();
+      await toggleStatus(name, currentStatus);
     } catch {
-      console.log('toggle_project_status not yet implemented');
+      // toggle_project_status not yet implemented
     } finally {
       setTogglingId(null);
     }
@@ -267,18 +265,18 @@ export function ProjectsPage() {
 
   return (
     <div className="flex flex-col h-full gap-5 max-w-3xl">
-      {showModal && <AddProjectModal onClose={() => setShowModal(false)} onSuccess={() => fetch()} />}
+      {showModal && <AddProjectModal onClose={() => setShowModal(false)} />}
 
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-gray-100">Projects</h1>
+        <h1 className="text-xl font-semibold text-gray-100">프로젝트</h1>
         <div className="flex gap-2">
           <button onClick={fetch} disabled={isLoading}
             className="text-sm px-3 py-1.5 border border-gray-700 text-gray-400 rounded-lg hover:bg-gray-800 hover:text-gray-200 disabled:opacity-50 transition-colors">
-            {isLoading ? 'Loading...' : 'Refresh'}
+            {isLoading ? '로딩 중...' : '새로고침'}
           </button>
           <button onClick={() => setShowModal(true)}
             className="text-sm px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors">
-            + Add Project
+            + 프로젝트 추가
           </button>
         </div>
       </div>
@@ -290,8 +288,8 @@ export function ProjectsPage() {
       {projects.length === 0 && !isLoading && (
         <div className="text-center py-16 text-gray-600">
           <p className="text-4xl mb-3">📁</p>
-          <p className="text-gray-400 font-medium">No projects yet</p>
-          <p className="text-sm mt-1 text-gray-600">Click "+ Add Project" to get started</p>
+          <p className="text-gray-400 font-medium">아직 프로젝트가 없습니다</p>
+          <p className="text-sm mt-1 text-gray-600">+ 프로젝트 추가를 눌러 시작하세요</p>
         </div>
       )}
 
@@ -313,7 +311,7 @@ export function ProjectsPage() {
               </span>
               <button onClick={() => handleToggleStatus(p.name, p.status)} disabled={togglingId === p.name}
                 className="text-xs px-2.5 py-1 border border-gray-700 text-gray-400 rounded-lg hover:bg-gray-800 hover:text-gray-200 disabled:opacity-50 transition-colors">
-                {togglingId === p.name ? '...' : p.status === 'active' ? 'Disable' : 'Enable'}
+                {togglingId === p.name ? '...' : p.status === 'active' ? '비활성화' : '활성화'}
               </button>
             </div>
           </div>

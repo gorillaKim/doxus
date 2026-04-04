@@ -305,10 +305,46 @@
       "status": "completed",
       "completed_at": "2026-04-04T07:44:52.713Z",
       "duration_ms": 60070
+    },
+    {
+      "agent_id": "a108a9488157f00ae",
+      "agent_type": "obsidian-nexus:docsmith-writer",
+      "started_at": "2026-04-04T07:48:51.768Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-04-04T07:57:14.758Z",
+      "duration_ms": 502990
+    },
+    {
+      "agent_id": "a115a99cd3e86b67c",
+      "agent_type": "oh-my-claudecode:executor",
+      "started_at": "2026-04-04T08:02:38.688Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-04-04T08:03:56.434Z",
+      "duration_ms": 77746
+    },
+    {
+      "agent_id": "a44fb36b20259fe01",
+      "agent_type": "oh-my-claudecode:executor",
+      "started_at": "2026-04-04T08:02:51.136Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-04-04T08:03:23.381Z",
+      "duration_ms": 32245
+    },
+    {
+      "agent_id": "af11f12043b200011",
+      "agent_type": "oh-my-claudecode:executor",
+      "started_at": "2026-04-04T08:03:03.522Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-04-04T08:03:18.873Z",
+      "duration_ms": 15351
     }
   ],
-  "total_spawned": 35,
-  "total_completed": 35,
+  "total_spawned": 39,
+  "total_completed": 39,
   "total_failed": 0,
-  "last_updated": "2026-04-04T07:45:04.520Z"
+  "last_updated": "2026-04-04T08:03:56.537Z"
 }
