@@ -1,7 +1,7 @@
 {
   "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"cargo test -p doxus-desktop 2>&1\",\"timeout\":120000}",
-  "error": "Exit code 101\n    Blocking waiting for file lock on artifact directory\nwarning: method `install_from_bytes` is never used\n  --> crates/core/src/plugin/manager.rs:54:19\n   |\n26 | impl PluginManager {\n   | ------------------ method in this implementation\n...\n54 |     pub(crate) fn install_from_bytes(\n   |                   ^^^^^^^^^^^^^^^^^^\n   |\n   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default\n\nwarning: `doxus-core` (lib) generated 1 warning\n   Compiling doxus-desktop v0....",
-  "timestamp": "2026-04-04T07:38:42.808Z",
-  "retry_count": 2
+  "tool_input_preview": "{\"command\":\"cargo test -p doxus-core -- secrets 2>&1\",\"timeout\":120000}",
+  "error": "Exit code 101\n    Updating crates.io index\nerror: failed to select a version for `keyring`.\n    ... required by package `doxus-core v0.1.0 (/Users/madup/gorillaProject/doxus/crates/core)`\n    ... which satisfies path dependency `doxus-core` (locked to 0.1.0) of package `doxus-cli v0.1.0 (/Users/madup/gorillaProject/doxus/crates/cli)`\nversions that meet the requirements `^3` are: 3.6.3, 3.6.2, 3.6.1, 3.6.0, 3.5.0, 3.4.0, 3.3.0, 3.2.1, 3.2.0, 3.1.0, 3.0.5, 3.0.4, 3.0.3, 3.0.2, 3.0.1, 3.0.0\n\npackag...",
+  "timestamp": "2026-04-04T07:44:29.077Z",
+  "retry_count": 3
 }

@@ -511,4 +511,77 @@ mod tests {
     fn validate_base_url_rejects_link_local() {
         assert!(validate_base_url("https://169.254.169.254/latest/meta-data").is_err());
     }
+
+    // ── TDD tests ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn github_plugin_metadata_is_correct() {
+        let plugin = GitHubPlugin::new();
+        let meta = plugin.metadata();
+        assert_eq!(meta.id, "com.doxus.github");
+        assert_eq!(meta.name, "GitHub");
+    }
+
+    #[tokio::test]
+    async fn validate_config_requires_repo() {
+        let plugin = GitHubPlugin::new();
+        // Missing both owner and repo
+        let config = PluginConfig::default();
+        let result = plugin.validate_config(&config).await;
+        assert!(matches!(result, Err(PluginError::ConfigInvalid(_))));
+    }
+
+    #[tokio::test]
+    async fn validate_config_accepts_valid_config() {
+        let plugin = GitHubPlugin::new();
+        let mut config = PluginConfig::default();
+        config.fields.insert("owner".into(), serde_json::json!("myorg"));
+        config.fields.insert("repo".into(), serde_json::json!("myrepo"));
+        let result = plugin.validate_config(&config).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn health_check_before_init_is_unhealthy() {
+        let plugin = GitHubPlugin::new();
+        let status = plugin.health_check().await;
+        assert!(!status.healthy);
+    }
+
+    #[tokio::test]
+    async fn fetch_all_before_init_returns_error() {
+        let plugin = GitHubPlugin::new();
+        let result = plugin.fetch_all(FetchAllOpts { cursor: None, page_size: 50 }).await;
+        assert!(matches!(result, Err(PluginError::Internal(_))));
+    }
+
+    #[tokio::test]
+    async fn fetch_all_with_mock_server() {
+        let server = MockServer::start().await;
+        let body = serde_json::json!([make_issue(1, "Issue One"), make_issue(2, "Issue Two")]);
+        Mock::given(method("GET"))
+            .and(path("/repos/owner/repo/issues"))
+            .and(query_param("state", "open"))
+            .and(query_param("page", "1"))
+            .and(query_param("per_page", "50"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+            .mount(&server)
+            .await;
+
+        let mut plugin = GitHubPlugin::new();
+        let mut config = PluginConfig::default();
+        config.fields.insert("owner".into(), serde_json::json!("owner"));
+        config.fields.insert("repo".into(), serde_json::json!("repo"));
+        config.fields.insert("base_url".into(), serde_json::json!(server.uri()));
+        plugin
+            .initialize(config, PluginSecrets::default())
+            .await
+            .unwrap();
+
+        let stream = plugin
+            .fetch_all(FetchAllOpts { cursor: None, page_size: 50 })
+            .await
+            .unwrap();
+        assert_eq!(stream.documents.len(), 2);
+    }
 }

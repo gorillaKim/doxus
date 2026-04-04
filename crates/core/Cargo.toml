@@ -25,6 +25,7 @@ hex = "0.4"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand = "0.8"
 handlebars = "6"
+keyring = { version = "3", features = ["apple-native", "sync-secret-service"] }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

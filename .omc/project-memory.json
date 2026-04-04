@@ -57,6 +57,12 @@
   },
   "hotPaths": [
     {
+      "path": "crates/plugins/github/src/lib.rs",
+      "accessCount": 20,
+      "lastAccessed": 1775288647156,
+      "type": "file"
+    },
+    {
       "path": "crates/mcp-server/src/main.rs",
       "accessCount": 19,
       "lastAccessed": 1775284107017,
@@ -69,15 +75,15 @@
       "type": "file"
     },
     {
-      "path": "crates/plugins/github/src/lib.rs",
-      "accessCount": 18,
-      "lastAccessed": 1775281417196,
-      "type": "file"
-    },
-    {
       "path": "crates/core/src/plugin/manager.rs",
       "accessCount": 14,
       "lastAccessed": 1775281455657,
+      "type": "file"
+    },
+    {
+      "path": "crates/core/Cargo.toml",
+      "accessCount": 13,
+      "lastAccessed": 1775288697239,
       "type": "file"
     },
     {
@@ -94,20 +100,20 @@
     },
     {
       "path": "crates/cli/src/main.rs",
-      "accessCount": 8,
-      "lastAccessed": 1775281354182,
+      "accessCount": 10,
+      "lastAccessed": 1775288655951,
+      "type": "file"
+    },
+    {
+      "path": "crates/core/src/lib.rs",
+      "accessCount": 9,
+      "lastAccessed": 1775288665799,
       "type": "file"
     },
     {
       "path": "apps/desktop/src/pages/MarketPage.tsx",
       "accessCount": 8,
       "lastAccessed": 1775285999307,
-      "type": "file"
-    },
-    {
-      "path": "crates/core/Cargo.toml",
-      "accessCount": 8,
-      "lastAccessed": 1775288287982,
       "type": "file"
     },
     {
@@ -126,12 +132,6 @@
       "path": "docs/devlog/2026-04-04-doxus-phase0-3-implementation.md",
       "accessCount": 7,
       "lastAccessed": 1775286808675,
-      "type": "file"
-    },
-    {
-      "path": "crates/core/src/lib.rs",
-      "accessCount": 7,
-      "lastAccessed": 1775288288370,
       "type": "file"
     },
     {
@@ -162,6 +162,12 @@
       "path": "apps/desktop/src-tauri/src/commands/search.rs",
       "accessCount": 6,
       "lastAccessed": 1775288281720,
+      "type": "file"
+    },
+    {
+      "path": "Cargo.toml",
+      "accessCount": 6,
+      "lastAccessed": 1775288630094,
       "type": "file"
     },
     {
@@ -240,12 +246,6 @@
       "path": "apps/desktop/src/pages/WorkspacePage.tsx",
       "accessCount": 4,
       "lastAccessed": 1775287038407,
-      "type": "file"
-    },
-    {
-      "path": "Cargo.toml",
-      "accessCount": 4,
-      "lastAccessed": 1775288271572,
       "type": "file"
     },
     {

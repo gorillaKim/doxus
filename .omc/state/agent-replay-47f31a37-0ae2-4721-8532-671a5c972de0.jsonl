@@ -88,3 +88,8 @@
 {"t":0,"agent":"a26f2d4","agent_type":"executor","event":"agent_stop","success":true,"duration_ms":53597}
 {"t":0,"agent":"a1827f7","agent_type":"executor","event":"agent_stop","success":true,"duration_ms":62096}
 {"t":0,"agent":"acf23b8","agent_type":"executor","event":"agent_stop","success":true,"duration_ms":113724}
+{"t":0,"agent":"system","event":"skill_invoked","skill_name":"oh-my-claudecode:cancel"}
+{"t":0,"agent":"a486cf7","agent_type":"executor","event":"agent_start","parent_mode":"none"}
+{"t":0,"agent":"a952d2d","agent_type":"executor","event":"agent_start","parent_mode":"none"}
+{"t":0,"agent":"a952d2d","agent_type":"executor","event":"agent_stop","success":true,"duration_ms":60070}
+{"t":0,"agent":"a486cf7","agent_type":"executor","event":"agent_stop","success":true,"duration_ms":90948}

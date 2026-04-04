@@ -553,6 +553,41 @@ mod tests {
         assert_eq!(count, 1);
     }
 
+    // ── Clap parsing tests ────────────────────────────────────────────────
+
+    #[test]
+    fn cli_parses_search_command() {
+        let cli = Cli::try_parse_from(["doxus", "search", "hello"]).unwrap();
+        match cli.command {
+            Commands::Search { query, .. } => assert_eq!(query, "hello"),
+            _ => panic!("expected Search command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_project_add() {
+        let cli = Cli::try_parse_from([
+            "doxus", "project", "add", "my-proj", "/tmp/vault",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Project(args) => match args.action {
+                ProjectAction::Add { name, path, .. } => {
+                    assert_eq!(name, "my-proj");
+                    assert_eq!(path, std::path::PathBuf::from("/tmp/vault"));
+                }
+                _ => panic!("expected Add action"),
+            },
+            _ => panic!("expected Project command"),
+        }
+    }
+
+    #[test]
+    fn cli_parses_status() {
+        let cli = Cli::try_parse_from(["doxus", "status"]).unwrap();
+        assert!(matches!(cli.command, Commands::Status));
+    }
+
     #[test]
     fn test_workspace_create_duplicate_fails() {
         let (conn, _dir) = setup_test_db();

@@ -1,9 +1,0 @@
-{
-  "active": true,
-  "started_at": "2026-04-04T07:36:37.917Z",
-  "original_prompt": "/autopilot 남은 작업 시작. TDD 방식으로 구현. team agent 로 시작",
-  "session_id": "47f31a37-0ae2-4721-8532-671a5c972de0",
-  "project_path": "/Users/madup/gorillaProject/doxus",
-  "reinforcement_count": 1,
-  "last_checked_at": "2026-04-04T07:38:10.895Z"
-}

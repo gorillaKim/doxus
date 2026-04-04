@@ -9,6 +9,7 @@ members = [
     "crates/agent",
     "crates/extism-poc",
     "crates/plugins/confluence",
+    "crates/plugins/github",
     "apps/desktop/src-tauri",
 ]
 
