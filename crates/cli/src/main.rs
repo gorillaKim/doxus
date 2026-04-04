@@ -198,7 +198,7 @@ async fn handle_index(conn: &rusqlite::Connection) -> Result<()> {
                 .map_err(|e| anyhow::anyhow!("fetch error: {e}"))?;
 
             for doc in &stream.documents {
-                let content_hash = format!("{:x}", md5_simple(&doc.content));
+                let content_hash = content_hash(&doc.content);
                 conn.execute(
                     "INSERT INTO documents(project_id, source_doc_id, title, content, content_hash, file_path, last_indexed)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, unixepoch())
@@ -394,12 +394,12 @@ fn handle_workspace(conn: &rusqlite::Connection, action: WorkspaceAction) -> Res
     Ok(())
 }
 
-/// Simple MD5-like hash for content deduplication (not cryptographic).
-fn md5_simple(input: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    input.hash(&mut hasher);
-    hasher.finish()
+/// SHA-256 hash of content for deduplication.
+fn content_hash(input: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(input.as_bytes());
+    hex::encode(h.finalize())
 }
 
 #[cfg(test)]

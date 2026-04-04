@@ -141,6 +141,10 @@ impl DocSource for GitHubPlugin {
                 }
             }
         }
+        // SSRF protection: validate base_url if provided
+        if let Some(base_url) = config.fields.get("base_url").and_then(|v| v.as_str()) {
+            validate_base_url(base_url)?;
+        }
         Ok(())
     }
 
@@ -314,6 +318,32 @@ impl DocSource for GitHubPlugin {
     }
 }
 
+/// Validates that base_url is HTTPS and not a private/loopback address.
+/// Rejects http://, file://, and private hostnames to prevent SSRF.
+fn validate_base_url(url: &str) -> Result<(), PluginError> {
+    if !url.starts_with("https://") {
+        return Err(PluginError::ConfigInvalid(
+            "base_url must use HTTPS".into(),
+        ));
+    }
+    // Extract host from https://host/...
+    let host = url
+        .trim_start_matches("https://")
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .split(':')
+        .next()
+        .unwrap_or("");
+    let blocked = ["localhost", "127.0.0.1", "::1", "0.0.0.0", "169.254.169.254"];
+    if blocked.contains(&host) || host.ends_with(".local") || host.is_empty() {
+        return Err(PluginError::ConfigInvalid(format!(
+            "base_url host is not allowed: {host}"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,5 +487,28 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(stream.documents.len(), 1);
+    }
+
+    #[test]
+    fn validate_base_url_accepts_https_public_host() {
+        assert!(validate_base_url("https://api.github.com").is_ok());
+        assert!(validate_base_url("https://github.mycompany.com").is_ok());
+    }
+
+    #[test]
+    fn validate_base_url_rejects_http() {
+        let err = validate_base_url("http://api.github.com").unwrap_err();
+        assert!(matches!(err, PluginError::ConfigInvalid(_)));
+    }
+
+    #[test]
+    fn validate_base_url_rejects_localhost() {
+        assert!(validate_base_url("https://localhost/api").is_err());
+        assert!(validate_base_url("https://127.0.0.1/api").is_err());
+    }
+
+    #[test]
+    fn validate_base_url_rejects_link_local() {
+        assert!(validate_base_url("https://169.254.169.254/latest/meta-data").is_err());
     }
 }

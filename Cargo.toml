@@ -35,6 +35,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 # http
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+# crypto / hashing
+sha2 = "0.10"
+hex = "0.4"
 # testing
 tokio-test = "0.4"
 tempfile = "3"

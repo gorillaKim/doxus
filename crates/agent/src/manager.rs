@@ -41,8 +41,20 @@ impl AgentManager {
     }
 
     /// Returns true if the sidecar process is currently running.
-    pub fn is_running(&self) -> bool {
-        self.process.is_some()
+    /// Uses `try_wait` to detect processes that have already exited.
+    pub fn is_running(&mut self) -> bool {
+        if let Some(ref mut child) = self.process {
+            match child.try_wait() {
+                Ok(Some(_)) => {
+                    self.process = None;
+                    false
+                }
+                Ok(None) => true,
+                Err(_) => false,
+            }
+        } else {
+            false
+        }
     }
 
     /// Stop the sidecar process. No-op if not running.
@@ -80,7 +92,7 @@ mod tests {
 
     #[test]
     fn manager_is_not_running_initially() {
-        let mgr = AgentManager::new(std::path::PathBuf::from("/tmp/fake-sidecar.js"));
+        let mut mgr = AgentManager::new(std::path::PathBuf::from("/tmp/fake-sidecar.js"));
         assert!(!mgr.is_running());
     }
 

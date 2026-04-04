@@ -30,12 +30,20 @@ impl PluginManager {
     }
 
     /// Verifies the ED25519 signature before installing.
+    /// Also pins the public key against the registry entry to prevent
+    /// a plugin from supplying its own untrusted key.
     /// This is the preferred install path — do not bypass.
     pub fn install_signed(
         &self,
         plugin: &SignedPlugin,
         entry: &RegistryEntry,
     ) -> Result<PathBuf, ManagerError> {
+        // Pin: registry entry's public_key_hex must match the plugin's public key.
+        let entry_key_bytes = hex::decode(&entry.public_key_hex)
+            .map_err(|e| SigningError::HexDecode(e.to_string()))?;
+        if entry_key_bytes != plugin.public_key {
+            return Err(ManagerError::SignatureInvalid(SigningError::InvalidSignature));
+        }
         verify_plugin(plugin)?;
         Ok(self.installer.install(entry, &plugin.wasm_bytes)?)
     }
@@ -104,6 +112,18 @@ mod tests {
         }
     }
 
+    /// Build an entry whose public_key_hex matches the given SignedPlugin's public key.
+    fn make_pinned_entry(plugin_id: &str, wasm: &[u8], signed: &SignedPlugin) -> RegistryEntry {
+        RegistryEntry {
+            plugin_id: plugin_id.to_string(),
+            version: "1.0.0".into(),
+            display_name: "Test Plugin".into(),
+            download_url: "https://example.com/plugin.wasm".into(),
+            checksum_sha256: sha256_hex(wasm),
+            public_key_hex: hex::encode(signed.public_key),
+        }
+    }
+
     fn make_signed_plugin(plugin_id: &str, wasm: &[u8]) -> (SignedPlugin, SigningKey) {
         let signing_key = SigningKey::generate(&mut OsRng);
         let sig = signing_key.sign(wasm);
@@ -127,8 +147,7 @@ mod tests {
         let mgr = PluginManager::new(tmp.path().to_path_buf());
         let wasm = b"valid wasm bytes";
         let (signed, _key) = make_signed_plugin("com.test.plugin", wasm);
-        let mut entry = make_entry("com.test.plugin", wasm);
-        entry.checksum_sha256 = sha256_hex(wasm);
+        let entry = make_pinned_entry("com.test.plugin", wasm, &signed);
 
         mgr.install_signed(&signed, &entry).unwrap();
         assert!(mgr.is_installed("com.test.plugin"));
@@ -140,8 +159,22 @@ mod tests {
         let mgr = PluginManager::new(tmp.path().to_path_buf());
         let wasm = b"original wasm";
         let (mut signed, _key) = make_signed_plugin("com.test.plugin", wasm);
+        // Build entry with the correct key before tampering
+        let entry = make_pinned_entry("com.test.plugin", b"tampered", &signed);
         signed.wasm_bytes = b"tampered".to_vec();
-        let entry = make_entry("com.test.plugin", b"tampered");
+
+        let err = mgr.install_signed(&signed, &entry).unwrap_err();
+        assert!(matches!(err, ManagerError::SignatureInvalid(_)));
+    }
+
+    #[test]
+    fn install_signed_rejects_key_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = PluginManager::new(tmp.path().to_path_buf());
+        let wasm = b"valid wasm bytes";
+        let (signed, _key) = make_signed_plugin("com.test.plugin", wasm);
+        // Entry has a different (wrong) public key
+        let entry = make_entry("com.test.plugin", wasm); // public_key_hex = "deadbeef"
 
         let err = mgr.install_signed(&signed, &entry).unwrap_err();
         assert!(matches!(err, ManagerError::SignatureInvalid(_)));
