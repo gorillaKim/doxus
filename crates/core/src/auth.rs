@@ -35,7 +35,7 @@ impl SecretStore for MemorySecretStore {
             .map_err(|_| AuthError::Keychain("lock poisoned".into()))?
             .get(&key)
             .cloned()
-            .ok_or_else(|| AuthError::NotFound(key))
+            .ok_or(AuthError::NotFound(key))
     }
 
     fn set(&self, service: &str, account: &str, secret: &str) -> Result<(), AuthError> {
