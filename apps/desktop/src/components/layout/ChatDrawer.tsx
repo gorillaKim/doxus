@@ -132,23 +132,21 @@ function MarkdownMessage({ content }: { content: string }) {
 // ── 채팅 드로어 ──────────────────────────────────────────────────────────
 
 export function ChatDrawer() {
-  const { isOpen, sessions, activeSessionId, close, addMessage } = useChatStore();
+  const { isOpen, sessions, activeSessionId, close, sendMessage, isLoading } = useChatStore();
   const [showNewForm, setShowNewForm] = useState(false);
   const [showSessions, setShowSessions] = useState(false);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null;
   const messages = activeSession?.messages ?? [];
 
-  const handleSend = (e: React.FormEvent<HTMLFormElement>) => {
+  const handleSend = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!activeSession) return;
+    if (!activeSession || isLoading) return;
     const fd = new FormData(e.currentTarget);
     const content = (fd.get('message') as string).trim();
     if (!content) return;
-    addMessage('user', content);
     e.currentTarget.reset();
-    // Agent sidecar 연결 전 임시 에코 응답
-    setTimeout(() => addMessage('assistant', `**에코:** ${content}\n\n_에이전트 사이드카가 연결되면 실제 문서 검색 응답을 제공합니다._`), 300);
+    await sendMessage(content);
   };
 
   if (!isOpen) return null;
@@ -254,7 +252,7 @@ export function ChatDrawer() {
         />
         <button
           type="submit"
-          disabled={!activeSession}
+          disabled={!activeSession || isLoading}
           className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
         >
           전송

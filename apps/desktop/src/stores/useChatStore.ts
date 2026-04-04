@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/core';
 import { create } from 'zustand';
 
 export interface ChatMessage {
@@ -49,6 +50,7 @@ interface ChatState {
   deleteSession: (id: string) => void;
 
   addMessage: (role: ChatMessage['role'], content: string) => void;
+  sendMessage: (content: string) => Promise<void>;
   clear: () => void;
 }
 
@@ -106,6 +108,33 @@ export const useChatStore = create<ChatState>((set, get) => ({
           : sess,
       ),
     }));
+  },
+
+  sendMessage: async (content) => {
+    const { activeSessionId, sessions } = get();
+    if (!activeSessionId) return;
+    const session = sessions.find((s) => s.id === activeSessionId);
+    if (!session) return;
+
+    get().addMessage('user', content);
+    set({ isLoading: true });
+
+    try {
+      const result = await invoke<{ text: string; session_id: string; done: boolean }>(
+        'agent_send_message',
+        {
+          sessionId: activeSessionId,
+          message: content,
+          provider: session.provider,
+          model: session.model,
+        }
+      );
+      get().addMessage('assistant', result.text);
+    } catch (e) {
+      get().addMessage('assistant', `오류: ${String(e)}`);
+    } finally {
+      set({ isLoading: false });
+    }
   },
 
   clear: () => {
