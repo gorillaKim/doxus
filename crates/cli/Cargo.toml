@@ -1,0 +1,21 @@
+[package]
+name = "doxus-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "doxus"
+path = "src/main.rs"
+
+[dependencies]
+doxus-core = { path = "../core" }
+doxus-plugin-sdk = { path = "../plugin-sdk" }
+doxus-plugin-obsidian = { path = "../plugins/obsidian" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+rusqlite = { workspace = true }

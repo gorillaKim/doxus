@@ -1,0 +1,18 @@
+[package]
+name = "doxus-mcp"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "doxus-mcp"
+path = "src/main.rs"
+
+[dependencies]
+doxus-core = { path = "../core" }
+doxus-plugin-sdk = { path = "../plugin-sdk" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

@@ -14,6 +14,7 @@ struct HttpRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[allow(dead_code)]
 struct HttpResponse {
     status: u16,
     body: String,

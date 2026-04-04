@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"cargo run -p extism-poc 2>&1\"}",
+  "error": "Exit code 101\nerror: failed to load manifest for workspace member `/Users/madup/gorillaProject/doxus/crates/plugins/obsidian`\nreferenced by workspace at `/Users/madup/gorillaProject/doxus/Cargo.toml`\n\nCaused by:\n  failed to parse manifest at `/Users/madup/gorillaProject/doxus/crates/plugins/obsidian/Cargo.toml`\n\nCaused by:\n  no targets specified in the manifest\n  either src/lib.rs, src/main.rs, a [lib] section, or [[bin]] section must be present",
+  "timestamp": "2026-04-04T00:33:45.151Z",
+  "retry_count": 2
+}
