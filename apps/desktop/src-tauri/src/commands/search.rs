@@ -1,5 +1,73 @@
 use doxus_core::search::{SearchEngine, SearchQuery};
 
+/// Index all active projects using their registered plugin. Returns count of indexed documents.
+pub(crate) fn run_reindex(conn: &rusqlite::Connection) -> Result<usize, String> {
+    use doxus_plugin_obsidian::ObsidianPlugin;
+    use doxus_plugin_sdk::{DocSource, FetchAllOpts, PluginConfig, PluginSecrets};
+
+    let mut stmt = conn
+        .prepare("SELECT id, name, path FROM projects WHERE status = 'active'")
+        .map_err(|e| e.to_string())?;
+
+    let projects: Vec<(i64, String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let engine = SearchEngine::new(conn);
+    let mut total = 0usize;
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e: std::io::Error| e.to_string())?;
+
+    for (project_id, name, path) in projects {
+        let mut plugin = ObsidianPlugin::new();
+        let mut config = PluginConfig::default();
+        config.fields.insert("path".to_string(), serde_json::json!(path));
+
+        if let Err(e) = rt.block_on(plugin.initialize(config, PluginSecrets::default())) {
+            eprintln!("Failed to initialize plugin for {name}: {e}");
+            continue;
+        }
+
+        let mut cursor = None;
+        loop {
+            let stream = match rt.block_on(plugin.fetch_all(FetchAllOpts {
+                cursor: cursor.clone(),
+                page_size: 100,
+            })) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("fetch_all error for {name}: {e}");
+                    break;
+                }
+            };
+
+            for doc in &stream.documents {
+                let source_doc_id = doc.id.0.as_str();
+                let title = doc.title.as_deref().unwrap_or("Untitled");
+                if let Err(e) =
+                    engine.index_document(project_id, source_doc_id, title, &doc.content)
+                {
+                    eprintln!("index_document error: {e}");
+                } else {
+                    total += 1;
+                }
+            }
+
+            cursor = stream.next_cursor.clone();
+            if cursor.is_none() {
+                break;
+            }
+        }
+    }
+
+    Ok(total)
+}
+
 #[cfg(test)]
 mod tests {
     fn make_conn() -> rusqlite::Connection {
@@ -57,10 +125,40 @@ mod tests {
     }
 
     #[test]
-    fn trigger_reindex_returns_ok() {
-        // stub — just verify the response shape matches expectations
-        let status = "ok";
-        assert_eq!(status, "ok");
+    fn trigger_reindex_indexes_obsidian_vault() {
+        use std::fs;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let vault = dir.path().join("vault");
+        fs::create_dir(&vault).unwrap();
+        fs::write(vault.join("note.md"), "# Hello\nThis is a test note.").unwrap();
+
+        let conn = make_conn();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        conn.execute(
+            "INSERT INTO projects (name, display_name, path, status, created_at, updated_at)
+             VALUES ('test-vault', 'Test Vault', ?1, 'active', ?2, ?2)",
+            rusqlite::params![vault.to_str().unwrap(), now],
+        )
+        .unwrap();
+        let project_id: i64 = conn
+            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            .unwrap();
+
+        let indexed = super::run_reindex(&conn).unwrap();
+        assert!(indexed >= 1, "at least 1 document should be indexed");
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM documents WHERE project_id = ?1",
+                rusqlite::params![project_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[test]
@@ -179,11 +277,14 @@ pub async fn search_engine_status(
 
 #[tauri::command]
 pub async fn trigger_reindex(
-    _state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, crate::AppState>,
 ) -> Result<serde_json::Value, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    let indexed = run_reindex(&conn)?;
     Ok(serde_json::json!({
         "status": "ok",
-        "message": "재인덱싱이 요청됐습니다. 백그라운드에서 처리됩니다."
+        "indexed": indexed,
+        "message": format!("{indexed}개 문서 재인덱싱 완료")
     }))
 }
 
