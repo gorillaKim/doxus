@@ -1,0 +1,19 @@
+[package]
+name = "doxus-plugin-confluence"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+doxus-plugin-sdk = { path = "../../plugin-sdk" }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio-test = { workspace = true }
+wiremock = "0.6"

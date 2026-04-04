@@ -8,6 +8,7 @@ members = [
     "crates/mcp-server",
     "crates/agent",
     "crates/extism-poc",
+    "crates/plugins/confluence",
 ]
 
 [workspace.package]

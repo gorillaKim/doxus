@@ -86,6 +86,7 @@ pub enum ContentType {
     #[default]
     Markdown,
     PlainText,
+    Html,
 }
 
 #[derive(Debug, Clone)]

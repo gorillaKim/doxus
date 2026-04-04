@@ -1,0 +1,139 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1775263565204,
+  "projectRoot": "/Users/madup/gorillaProject/doxus",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Rust",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "Cargo.toml"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": "cargo",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": "cargo build",
+    "testCommand": "cargo test",
+    "lintCommand": "cargo clippy",
+    "devCommand": "cargo run",
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "crates": {
+      "path": "crates",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1775263565199,
+      "keyFiles": []
+    },
+    "target": {
+      "path": "target",
+      "purpose": null,
+      "fileCount": 2,
+      "lastAccessed": 1775263565199,
+      "keyFiles": [
+        "CACHEDIR.TAG"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "crates/agent/src/lib.rs",
+      "accessCount": 16,
+      "lastAccessed": 1775264112609,
+      "type": "file"
+    },
+    {
+      "path": "crates/core/src/plugin/wasm_adapter.rs",
+      "accessCount": 4,
+      "lastAccessed": 1775263792090,
+      "type": "file"
+    },
+    {
+      "path": "crates/plugin-sdk/src/lib.rs",
+      "accessCount": 4,
+      "lastAccessed": 1775264020307,
+      "type": "file"
+    },
+    {
+      "path": "crates/agent/Cargo.toml",
+      "accessCount": 4,
+      "lastAccessed": 1775264065840,
+      "type": "file"
+    },
+    {
+      "path": "crates/core/src/plugin/mod.rs",
+      "accessCount": 3,
+      "lastAccessed": 1775263782843,
+      "type": "file"
+    },
+    {
+      "path": "crates/core/src/lib.rs",
+      "accessCount": 3,
+      "lastAccessed": 1775263898441,
+      "type": "file"
+    },
+    {
+      "path": "crates/plugins/confluence/src/lib.rs",
+      "accessCount": 3,
+      "lastAccessed": 1775264033649,
+      "type": "file"
+    },
+    {
+      "path": "crates/core/Cargo.toml",
+      "accessCount": 2,
+      "lastAccessed": 1775263616548,
+      "type": "file"
+    },
+    {
+      "path": "crates/core/src/plugin/manifest.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775263737676,
+      "type": "file"
+    },
+    {
+      "path": "crates/core/src/plugin/kv_store.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775263742060,
+      "type": "file"
+    },
+    {
+      "path": "crates/core/src/auth.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775263895168,
+      "type": "file"
+    },
+    {
+      "path": "crates/plugins/confluence/Cargo.toml",
+      "accessCount": 1,
+      "lastAccessed": 1775263905288,
+      "type": "file"
+    },
+    {
+      "path": "Cargo.toml",
+      "accessCount": 1,
+      "lastAccessed": 1775263989144,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}
