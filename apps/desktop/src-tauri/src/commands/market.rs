@@ -1,3 +1,21 @@
+fn config_schema(fields: &[(&str, &str, &str, bool, &str)]) -> serde_json::Value {
+    // fields: (key, label, type, required, placeholder)
+    serde_json::Value::Array(
+        fields
+            .iter()
+            .map(|(key, label, field_type, required, placeholder)| {
+                serde_json::json!({
+                    "key": key,
+                    "label": label,
+                    "type": field_type,
+                    "required": required,
+                    "placeholder": placeholder
+                })
+            })
+            .collect(),
+    )
+}
+
 #[tauri::command]
 pub async fn market_list_installed(
     state: tauri::State<'_, crate::AppState>,
@@ -16,7 +34,11 @@ pub async fn market_list_installed(
             "trust": "official",
             "description": "Obsidian vault integration (built-in, local folder)",
             "installed": true,
-            "builtin": true
+            "builtin": true,
+            "config_schema": config_schema(&[
+                ("path", "볼트 폴더", "folder", true, "/Users/you/MyVault"),
+                ("name", "프로젝트 이름", "text", true, "my-vault"),
+            ])
         }),
         serde_json::json!({
             "id": "com.doxus.confluence",
@@ -25,7 +47,14 @@ pub async fn market_list_installed(
             "trust": "official",
             "description": "Confluence Cloud/Server REST API integration",
             "installed": installed_ids.contains(&"com.doxus.confluence".to_string()),
-            "builtin": false
+            "builtin": false,
+            "config_schema": config_schema(&[
+                ("name", "프로젝트 이름", "text", true, "confluence-docs"),
+                ("base_url", "Base URL", "url", true, "https://yourcompany.atlassian.net"),
+                ("space_key", "스페이스 키", "text", false, "ENG"),
+                ("api_token", "API 토큰", "password", true, "••••••••"),
+                ("email", "이메일 (Confluence Cloud)", "email", false, "you@company.com"),
+            ])
         }),
         serde_json::json!({
             "id": "com.doxus.github",
@@ -34,7 +63,12 @@ pub async fn market_list_installed(
             "trust": "official",
             "description": "GitHub Issues, Wiki, Discussions",
             "installed": installed_ids.contains(&"com.doxus.github".to_string()),
-            "builtin": false
+            "builtin": false,
+            "config_schema": config_schema(&[
+                ("name", "프로젝트 이름", "text", true, "github-docs"),
+                ("repo", "저장소 (owner/repo)", "text", true, "myorg/myrepo"),
+                ("token", "Personal Access Token", "password", false, "ghp_••••••••"),
+            ])
         }),
     ];
 
@@ -50,7 +84,11 @@ pub async fn market_list_installed(
             "trust": "unverified",
             "description": "User-installed plugin",
             "installed": true,
-            "builtin": false
+            "builtin": false,
+            "config_schema": config_schema(&[
+                ("name", "프로젝트 이름", "text", true, "my-project"),
+                ("endpoint", "엔드포인트 / URL", "url", false, "https://..."),
+            ])
         }))
         .collect();
 

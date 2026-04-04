@@ -6,175 +6,73 @@ import { useProjectStore } from '../stores/useProjectStore';
 // PluginType is now an open string — supports any installed plugin id
 type PluginType = string;
 
+interface ConfigField {
+  key: string;
+  label: string;
+  type: 'text' | 'password' | 'url' | 'email' | 'folder' | 'checkbox';
+  required: boolean;
+  placeholder: string;
+}
+type ConfigSchema = ConfigField[];
+
 interface PluginOption {
   id: PluginType;
   label: string;
   description: string;
   icon: string;
+  config_schema: ConfigSchema;
 }
 
 // Known built-in plugin metadata (used as display hints)
-const KNOWN_PLUGINS: Record<string, Omit<PluginOption, 'id'>> = {
+const KNOWN_PLUGINS: Record<string, Omit<PluginOption, 'id' | 'config_schema'>> = {
   'obsidian':   { label: 'Obsidian',   description: '로컬 Obsidian 볼트 폴더',               icon: '🪨' },
   'confluence': { label: 'Confluence', description: 'Confluence Cloud 또는 Server',           icon: '📄' },
   'github':     { label: 'GitHub',     description: 'GitHub Issues / Wiki / Discussions',     icon: '🐙' },
 };
 
-function ObsidianForm({ name, setName, path, setPath }: {
-  name: string; setName: (v: string) => void;
-  path: string; setPath: (v: string) => void;
+function ConfigSchemaForm({
+  schema,
+  values,
+  onChange,
+  onPickFolder,
+}: {
+  schema: ConfigSchema;
+  values: Record<string, string>;
+  onChange: (key: string, val: string) => void;
+  onPickFolder?: (key: string) => void;
 }) {
-  const handlePickFolder = async () => {
-    const selected = await open({ directory: true, multiple: false, title: 'Select Obsidian Vault' });
-    if (selected && typeof selected === 'string') {
-      setPath(selected);
-      if (!name) {
-        setName(selected.split('/').pop() ?? '');
-      }
-    }
-  };
-
   return (
     <>
-      <div className="flex flex-col gap-1">
-        <label className="text-xs text-gray-500">볼트 폴더</label>
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={path}
-            onChange={(e) => setPath(e.target.value)}
-            placeholder="/Users/you/MyVault"
-            className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500"
-          />
-          <button
-            type="button"
-            onClick={handlePickFolder}
-            className="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-gray-200 text-sm rounded-lg transition-colors"
-          >
-            찾기…
-          </button>
+      {schema.map((field) => (
+        <div key={field.key} className="flex flex-col gap-1">
+          <label className="text-xs text-gray-500">
+            {field.label}{field.required && <span className="text-red-400 ml-0.5">*</span>}
+          </label>
+          {field.type === 'folder' ? (
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={values[field.key] ?? ''}
+                onChange={(e) => onChange(field.key, e.target.value)}
+                placeholder={field.placeholder}
+                className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+              />
+              <button type="button" onClick={() => onPickFolder?.(field.key)}
+                className="px-3 py-2 bg-gray-700 hover:bg-gray-600 text-gray-200 text-sm rounded-lg transition-colors">
+                찾기…
+              </button>
+            </div>
+          ) : (
+            <input
+              type={field.type === 'password' ? 'password' : field.type === 'email' ? 'email' : 'text'}
+              value={values[field.key] ?? ''}
+              onChange={(e) => onChange(field.key, e.target.value)}
+              placeholder={field.placeholder}
+              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+            />
+          )}
         </div>
-      </div>
-      <div className="flex flex-col gap-1">
-        <label className="text-xs text-gray-500">프로젝트 이름</label>
-        <input
-          type="text"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="my-vault"
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500"
-        />
-      </div>
-    </>
-  );
-}
-
-function ConfluenceForm({ name, setName, extraFields, setExtraFields }: {
-  name: string; setName: (v: string) => void;
-  extraFields: Record<string, string>;
-  setExtraFields: (v: Record<string, string>) => void;
-}) {
-  const set = (key: string, val: string) => setExtraFields({ ...extraFields, [key]: val });
-  return (
-    <>
-      <div className="flex flex-col gap-1">
-        <label className="text-xs text-gray-500">프로젝트 이름</label>
-        <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="confluence-docs"
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
-      </div>
-      <div className="flex flex-col gap-1">
-        <label className="text-xs text-gray-500">기본 URL</label>
-        <input type="text" value={extraFields.base_url ?? ''} onChange={(e) => set('base_url', e.target.value)}
-          placeholder="https://yourcompany.atlassian.net"
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
-      </div>
-      <div className="flex flex-col gap-1">
-        <label className="text-xs text-gray-500">스페이스 키</label>
-        <input type="text" value={extraFields.space_key ?? ''} onChange={(e) => set('space_key', e.target.value)}
-          placeholder="ENG"
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
-      </div>
-      <div className="flex flex-col gap-1">
-        <label className="text-xs text-gray-500">API 토큰</label>
-        <input type="password" value={extraFields.api_token ?? ''} onChange={(e) => set('api_token', e.target.value)}
-          placeholder="••••••••"
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
-      </div>
-      <div className="flex flex-col gap-1">
-        <label className="text-xs text-gray-500">이메일 (Confluence Cloud)</label>
-        <input type="email" value={extraFields.email ?? ''} onChange={(e) => set('email', e.target.value)}
-          placeholder="you@company.com"
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
-      </div>
-    </>
-  );
-}
-
-function GitHubForm({ name, setName, extraFields, setExtraFields }: {
-  name: string; setName: (v: string) => void;
-  extraFields: Record<string, string>;
-  setExtraFields: (v: Record<string, string>) => void;
-}) {
-  const set = (key: string, val: string) => setExtraFields({ ...extraFields, [key]: val });
-  return (
-    <>
-      <div className="flex flex-col gap-1">
-        <label className="text-xs text-gray-500">프로젝트 이름</label>
-        <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder="github-docs"
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
-      </div>
-      <div className="flex flex-col gap-1">
-        <label className="text-xs text-gray-500">저장소 (owner/repo)</label>
-        <input type="text" value={extraFields.repo ?? ''} onChange={(e) => set('repo', e.target.value)}
-          placeholder="myorg/myrepo"
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
-      </div>
-      <div className="flex flex-col gap-1">
-        <label className="text-xs text-gray-500">개인 액세스 토큰</label>
-        <input type="password" value={extraFields.token ?? ''} onChange={(e) => set('token', e.target.value)}
-          placeholder="ghp_••••••••"
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
-      </div>
-      <div className="flex flex-col gap-1">
-        <label className="text-xs text-gray-500">소스</label>
-        <div className="flex gap-3">
-          {['issues', 'wiki', 'discussions'].map((src) => (
-            <label key={src} className="flex items-center gap-1.5 text-sm text-gray-400 cursor-pointer">
-              <input type="checkbox"
-                checked={!!(extraFields[src])}
-                onChange={(e) => set(src, e.target.checked ? '1' : '')}
-                className="accent-indigo-500" />
-              {src.charAt(0).toUpperCase() + src.slice(1)}
-            </label>
-          ))}
-        </div>
-      </div>
-    </>
-  );
-}
-
-function GenericPluginForm({ name, setName, extraFields, setExtraFields, pluginId }: {
-  name: string; setName: (v: string) => void;
-  extraFields: Record<string, string>;
-  setExtraFields: (v: Record<string, string>) => void;
-  pluginId: string;
-}) {
-  const set = (key: string, val: string) => setExtraFields({ ...extraFields, [key]: val });
-  return (
-    <>
-      <div className="flex flex-col gap-1">
-        <label className="text-xs text-gray-500">프로젝트 이름</label>
-        <input type="text" value={name} onChange={(e) => setName(e.target.value)}
-          placeholder={`${pluginId}-project`}
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
-      </div>
-      <div className="flex flex-col gap-1">
-        <label className="text-xs text-gray-500">엔드포인트 / URL</label>
-        <input type="text" value={extraFields.endpoint ?? ''} onChange={(e) => set('endpoint', e.target.value)}
-          placeholder="https://..."
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
-      </div>
-      <p className="text-xs text-gray-600">이 플러그인의 설정 스키마는 아직 등록되지 않았습니다. 추가 설정은 플러그인 설치 후 설정 페이지에서 구성하세요.</p>
+      ))}
     </>
   );
 }
@@ -182,17 +80,22 @@ function GenericPluginForm({ name, setName, extraFields, setExtraFields, pluginI
 function AddProjectModal({ onClose }: { onClose: () => void }) {
   const { addProject } = useProjectStore();
   const [pluginType, setPluginType] = useState<PluginType>('obsidian');
-  const [name, setName] = useState('');
-  const [path, setPath] = useState('');
-  const [extraFields, setExtraFields] = useState<Record<string, string>>({});
+  const [fields, setFields] = useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [availableOptions, setAvailableOptions] = useState<PluginOption[]>(
-    [{ id: 'obsidian', ...KNOWN_PLUGINS['obsidian'] }]
-  );
+  const [availableOptions, setAvailableOptions] = useState<PluginOption[]>([
+    {
+      id: 'obsidian',
+      ...KNOWN_PLUGINS['obsidian'],
+      config_schema: [
+        { key: 'path', label: '볼트 폴더', type: 'folder', required: true, placeholder: '/Users/you/MyVault' },
+        { key: 'name', label: '프로젝트 이름', type: 'text', required: true, placeholder: 'my-vault' },
+      ],
+    },
+  ]);
 
   useEffect(() => {
-    invoke<{ plugins: { id: string; name: string; description: string; installed: boolean; builtin?: boolean }[] }>('market_list_installed')
+    invoke<{ plugins: { id: string; name: string; description: string; installed: boolean; builtin?: boolean; config_schema?: ConfigSchema }[] }>('market_list_installed')
       .then(({ plugins }) => {
         const available: PluginOption[] = plugins
           .filter((p) => p.installed)
@@ -205,6 +108,7 @@ function AddProjectModal({ onClose }: { onClose: () => void }) {
               label: known?.label ?? p.name,
               description: known?.description ?? p.description,
               icon: known?.icon ?? '🔌',
+              config_schema: p.config_schema ?? [],
             };
           });
         // Always ensure obsidian is first
@@ -212,25 +116,32 @@ function AddProjectModal({ onClose }: { onClose: () => void }) {
           ...available.filter((o) => o.id === 'obsidian'),
           ...available.filter((o) => o.id !== 'obsidian'),
         ];
-        setAvailableOptions(sorted.length > 0 ? sorted : [{ id: 'obsidian', ...KNOWN_PLUGINS['obsidian'] }]);
+        setAvailableOptions(sorted.length > 0 ? sorted : availableOptions);
         if (!sorted.find((o) => o.id === pluginType)) {
           setPluginType(sorted[0]?.id ?? 'obsidian');
         }
       })
       .catch(() => {
-        setAvailableOptions([{ id: 'obsidian', ...KNOWN_PLUGINS['obsidian'] }]);
+        // keep default availableOptions
       });
   }, []);
 
+  const currentOption = availableOptions.find((o) => o.id === pluginType) ?? availableOptions[0];
+
+  const handlePickFolder = async (key: string) => {
+    const selected = await open({ directory: true, multiple: false, title: 'Select Folder' });
+    if (selected && typeof selected === 'string') {
+      setFields((prev) => ({ ...prev, [key]: selected }));
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) return;
     setIsSubmitting(true);
     setError(null);
     try {
-      const projectPath =
-        pluginType === 'obsidian' ? path.trim() :
-        extraFields.base_url ?? extraFields.repo ?? extraFields.endpoint ?? pluginType;
+      const projectPath = fields.path ?? fields.base_url ?? fields.repo ?? fields.endpoint ?? pluginType;
+      const name = fields.name ?? '';
       await addProject(name.trim(), projectPath);
       onClose();
     } catch (e) {
@@ -239,12 +150,9 @@ function AddProjectModal({ onClose }: { onClose: () => void }) {
     }
   };
 
-  const canSubmit = name.trim() && (
-    pluginType === 'obsidian' ? path.trim() :
-    pluginType === 'confluence' ? (extraFields.base_url && extraFields.api_token) :
-    pluginType === 'github' ? extraFields.repo :
-    true  // generic plugins: name is sufficient
-  );
+  const canSubmit = currentOption?.config_schema.every(
+    (f) => !f.required || (fields[f.key] ?? '').trim() !== ''
+  ) ?? false;
 
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
@@ -265,7 +173,7 @@ function AddProjectModal({ onClose }: { onClose: () => void }) {
               <button
                 key={opt.id}
                 type="button"
-                onClick={() => { setPluginType(opt.id); setExtraFields({}); setName(''); setPath(''); }}
+                onClick={() => { setPluginType(opt.id); setFields({}); }}
                 className={`flex flex-col items-center gap-1 p-3 rounded-xl border text-sm transition-colors ${
                   pluginType === opt.id
                     ? 'border-indigo-500 bg-indigo-950 text-indigo-300'
@@ -280,18 +188,14 @@ function AddProjectModal({ onClose }: { onClose: () => void }) {
           </div>
         </div>
 
-        {/* Plugin-specific fields */}
-        {pluginType === 'obsidian' && (
-          <ObsidianForm name={name} setName={setName} path={path} setPath={setPath} />
-        )}
-        {pluginType === 'confluence' && (
-          <ConfluenceForm name={name} setName={setName} extraFields={extraFields} setExtraFields={setExtraFields} />
-        )}
-        {pluginType === 'github' && (
-          <GitHubForm name={name} setName={setName} extraFields={extraFields} setExtraFields={setExtraFields} />
-        )}
-        {pluginType !== 'obsidian' && pluginType !== 'confluence' && pluginType !== 'github' && (
-          <GenericPluginForm name={name} setName={setName} extraFields={extraFields} setExtraFields={setExtraFields} pluginId={pluginType} />
+        {/* Schema-driven fields */}
+        {currentOption && (
+          <ConfigSchemaForm
+            schema={currentOption.config_schema}
+            values={fields}
+            onChange={(k, v) => setFields((prev) => ({ ...prev, [k]: v }))}
+            onPickFolder={handlePickFolder}
+          />
         )}
 
         {error && (
