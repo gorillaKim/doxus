@@ -308,6 +308,124 @@ doxus는 obsidian-nexus의 차세대 진화판으로, WASM 플러그인 기반 �
 - **RGBA vs RGB 아이콘**: Tauri는 icon.png가 반드시 RGBA(4채널)여야 한다. PIL/Pillow로 생성 시 `mode='RGBA'`를 명시하거나 `convert('RGBA')` 후 저장해야 한다.
 - **워크트리 에이전트 격리**: 멀티 에이전트 워크트리 환경에서 하위 에이전트가 uncommitted 상태로 종료될 수 있다. 오케스트레이터는 완료 후 반드시 각 워크트리의 git status를 확인하고 커밋을 통합해야 한다.
 
+---
+
+## 세션 5 — 2026-04-04
+
+### 배경
+
+세션 3에서 남긴 항목(SearchEngine 실제 구현, MCP 테스트 보강, Desktop 빌드 환경, Tailwind 스타일, MarketPage 연동)을 완료하고, Desktop UI를 전면 재설계하여 프로덕션 수준의 완성도로 끌어올렸다.
+
+### 구현 내용
+
+#### 1. 미구현 항목 TDD 구현
+
+**SearchEngine** (`crates/core/src/search.rs`)
+- `index_document()`: documents + FTS5 가상 테이블 upsert
+- `search_simple()`: FTS5 쿼리 + RRF 스코어링 + project filter
+- 신규 테스트 4개 (empty result, finds doc, ranks by RRF, project filter) → **7 tests total**
+
+**MCP 핸들러** (`crates/mcp-server/src/main.rs`)
+- +8 tests: get_document, add_project, remove_project, status, index_project
+- **46 tests total**
+
+**Desktop IPC 정렬**
+- `SearchHit` TypeScript 타입을 Rust 백엔드 JSON shape와 정렬
+- `App.tsx` default import 방식 수정 (named export 충돌 해결)
+
+**전체: 195 Rust tests 통과**
+
+#### 2. Desktop 앱 개발 모드 실행 환경 구성
+
+| 문제 | 원인 | 해결 |
+|------|------|------|
+| `npm run tauri dev` → 404 | index.html 없음 | `apps/desktop/index.html` 생성 (Vite entry point) |
+| Tailwind 스타일 미적용 | CSS 파일 없음, plugin 미설치 | `@tailwindcss/vite` 플러그인 + `src/index.css` 생성 |
+| `tauri dev` 시 Vite 미시작 | `beforeDevCommand` 없음 | `tauri.conf.json`에 `devUrl` + `beforeDevCommand` 추가 |
+| WorkspacePage/MarketPage import 에러 | named export인데 default import | `App.tsx` import 방식 수정 |
+| MarketPage `filter is not a function` | `invoke` 반환이 `{plugins:[...]}` 객체 | 응답 shape 자동 감지 + MOCK_PLUGINS fallback 추가 |
+
+변경 파일:
+- `apps/desktop/index.html` (신규)
+- `apps/desktop/src/index.css` (신규, `@import "tailwindcss"`)
+- `apps/desktop/vite.config.ts`: `@tailwindcss/vite` 플러그인 추가
+- `apps/desktop/src-tauri/tauri.conf.json`: `devUrl: "http://localhost:1420"`, `beforeDevCommand: "npm run dev"`
+
+#### 3. Desktop UI 전체 구현
+
+**DashboardPage** (`src/pages/DashboardPage.tsx`, 신규)
+- 통계 카드 3개: 프로젝트 수 / 문서 수 / 마지막 동기화
+- 최근 검색 히스토리 목록
+- 빠른 액션 버튼 (Add Project, Sync All, Open Chat)
+
+**ProjectsPage 재설계**
+- 기존 인라인 `AddProjectForm` → 소스 타입별 모달 방식으로 전면 재설계
+- 소스 타입 선택: Obsidian / Confluence / GitHub
+
+**WorkspacePage** (`src/pages/WorkspacePage.tsx`, 신규)
+- Documents / Templates 탭 구조
+- `NewDocModal`: 제목 + 템플릿 선택
+- 내장 템플릿 5개 (note, meeting, decision, journal, retrospective)
+
+**MarketPage** (`src/pages/MarketPage.tsx`, 신규)
+- 플러그인 카드 + trust 뱃지 + 검색/필터
+- Install 토글 버튼
+- 내장 플러그인(obsidian/confluence/github) "Built-in" 뱃지 + "Included" 레이블 (Uninstall 버튼 없음)
+
+**ChatDrawer 멀티 세션 아키텍처**
+- 세션 목록 사이드바 + 세션별 대화 히스토리
+- 프로바이더 선택: Claude / Gemini
+- 모델 드롭다운: Sonnet / Opus / Haiku (Claude), Gemini Pro / Flash (Gemini)
+
+**AppShell 네비게이션**
+- Dashboard 항목 추가
+
+#### 4. 플러그인별 프로젝트 추가 폼
+
+**Obsidian**
+- `@tauri-apps/plugin-dialog`로 폴더 직접 선택 (Browse 버튼)
+- `path`에서 `name` 자동 추출
+
+**Confluence**
+- 필드: Base URL, Space Key, API Token, Email
+
+**GitHub**
+- 필드: owner/repo, PAT
+- 소스 체크박스: Issues / Wiki / Discussions
+
+인프라:
+- `tauri-plugin-dialog` Cargo.toml 추가
+- `src-tauri/capabilities/default.json` 신규 생성
+
+#### 5. Rust `market_list_installed` 커맨드 수정
+
+내장 플러그인 3개(obsidian / confluence / github)를 항상 반환하도록 수정:
+- `builtin: true`, `installed: true` 필드 추가
+- UI에서 Built-in 뱃지 표시, Uninstall 버튼 숨김 처리
+
+### 커밋 이력
+
+| 커밋 | 내용 |
+|------|------|
+| `94a70e6` | feat(core/desktop/mcp): SearchEngine FTS5+RRF, MCP +8 tests, Desktop IPC wiring |
+| `0017b80` | feat(desktop): Tailwind CSS v4, index.html, devUrl + beforeDevCommand |
+| `ceb831b` | feat(desktop): Dashboard, Projects form, Workspace, Market, Chat sessions |
+| `566efd6` | feat(desktop): plugin-aware project form, folder picker, MarketPage fix |
+| `d1bc4c4` | feat(desktop/market): show built-in plugins, Built-in badge, Included label |
+
+### 최종 테스트 현황
+
+- Rust: **195 tests passed**, 0 failures
+- MCP: 38 → **46 tests**
+- SearchEngine: 3 → **7 tests**
+
+### 교훈
+
+- **Vite + Tauri dev 환경**: `index.html`이 프로젝트 루트에 없으면 Vite가 404를 반환한다. `tauri.conf.json`의 `beforeDevCommand`와 `devUrl`을 명시적으로 설정해야 `npm run tauri dev` 한 번으로 Vite와 Tauri가 함께 기동된다.
+- **Tailwind CSS v4 플러그인 방식**: v4부터 `tailwind.config.ts` 없이 `@tailwindcss/vite` 플러그인으로 설정한다. `src/index.css`에 `@import "tailwindcss"` 한 줄이면 충분하다.
+- **invoke 반환 shape 방어**: Tauri `invoke` 결과는 Rust 타입에 따라 배열 또는 래핑 객체로 직렬화될 수 있다. 프론트엔드에서 `Array.isArray()` 분기로 양쪽을 처리하거나, Rust 커맨드가 항상 배열을 직접 반환하도록 통일하는 것이 안전하다.
+- **내장 플러그인 표시 일관성**: 마켓 페이지에서 빌트인 플러그인을 숨기면 사용자가 설치 상태를 파악하기 어렵다. "Built-in" 뱃지와 "Included" 레이블로 존재를 명시하되 Uninstall을 비활성화하는 패턴이 UX상 더 명확하다.
+
 ## 관련 문서
 
 - [[doxus 아키텍처 설계]]
