@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useProjectStore } from '../stores/useProjectStore';
 
@@ -158,6 +159,28 @@ function AddProjectModal({ onClose }: { onClose: () => void }) {
   const [extraFields, setExtraFields] = useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [availableOptions, setAvailableOptions] = useState<PluginOption[]>(
+    PLUGIN_OPTIONS.filter((o) => o.id === 'obsidian') // Obsidian is always available
+  );
+
+  useEffect(() => {
+    invoke<{ plugins: { id: string; installed: boolean }[] }>('market_list_installed')
+      .then(({ plugins }) => {
+        const installedIds = new Set(plugins.filter((p) => p.installed).map((p) => p.id));
+        const available = PLUGIN_OPTIONS.filter(
+          (o) => o.id === 'obsidian' || installedIds.has(`com.doxus.${o.id}`)
+        );
+        setAvailableOptions(available);
+        // Reset pluginType if current selection is no longer available
+        if (!available.find((o) => o.id === pluginType)) {
+          setPluginType(available[0]?.id ?? 'obsidian');
+        }
+      })
+      .catch(() => {
+        // Fallback: show all options
+        setAvailableOptions(PLUGIN_OPTIONS);
+      });
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -196,7 +219,7 @@ function AddProjectModal({ onClose }: { onClose: () => void }) {
         <div className="flex flex-col gap-2">
           <label className="text-xs text-gray-500 uppercase tracking-wider">소스 유형</label>
           <div className="grid grid-cols-3 gap-2">
-            {PLUGIN_OPTIONS.map((opt) => (
+            {availableOptions.map((opt) => (
               <button
                 key={opt.id}
                 type="button"
