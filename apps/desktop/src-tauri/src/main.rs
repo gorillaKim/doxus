@@ -22,6 +22,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             doxus_desktop_lib::commands::market::market_list_installed,
             doxus_desktop_lib::commands::market::get_workspaces,
+            doxus_desktop_lib::commands::market::get_system_status,
             doxus_desktop_lib::commands::search::search_documents,
             doxus_desktop_lib::commands::search::list_projects,
         ])

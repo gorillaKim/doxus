@@ -16,7 +16,7 @@ export default function DashboardPage() {
   const { projects } = useProjectStore();
   const { queryHistory } = useSearchStore();
 
-  const today = new Date().toLocaleDateString('en-US', {
+  const today = new Date().toLocaleDateString('ko-KR', {
     weekday: 'long',
     year: 'numeric',
     month: 'long',
@@ -25,24 +25,24 @@ export default function DashboardPage() {
 
   return (
     <div className="flex flex-col gap-8 max-w-3xl">
-      {/* Header */}
+      {/* 헤더 */}
       <div className="flex flex-col gap-1">
-        <h1 className="text-3xl font-bold text-white tracking-tight">Welcome to doxus</h1>
+        <h1 className="text-3xl font-bold text-white tracking-tight">doxus에 오신 걸 환영합니다</h1>
         <p className="text-sm text-gray-500">{today}</p>
       </div>
 
-      {/* Stats */}
+      {/* 통계 */}
       <div className="grid grid-cols-3 gap-4">
-        <StatCard label="Projects" value={projects.length} />
-        <StatCard label="Indexed Documents" value="—" />
-        <StatCard label="Last Sync" value="—" />
+        <StatCard label="프로젝트" value={projects.length} />
+        <StatCard label="인덱싱된 문서" value="—" />
+        <StatCard label="마지막 동기화" value="—" />
       </div>
 
-      {/* Recent searches */}
+      {/* 최근 검색 */}
       <div className="flex flex-col gap-3">
-        <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Recent Searches</h2>
+        <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">최근 검색</h2>
         {queryHistory.length === 0 ? (
-          <p className="text-gray-600 text-sm">No recent searches</p>
+          <p className="text-gray-600 text-sm">최근 검색 기록이 없습니다</p>
         ) : (
           <ul className="flex flex-col gap-1">
             {queryHistory.map((q, i) => (
@@ -58,19 +58,19 @@ export default function DashboardPage() {
         )}
       </div>
 
-      {/* Quick actions */}
+      {/* 빠른 실행 */}
       <div className="flex gap-3">
         <button
           onClick={() => navigate('/projects')}
           className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-lg transition-colors"
         >
-          Add Project
+          프로젝트 추가
         </button>
         <button
           onClick={() => navigate('/search')}
           className="px-4 py-2 bg-gray-800 hover:bg-gray-700 text-gray-200 text-sm font-medium rounded-lg border border-gray-700 transition-colors"
         >
-          Search
+          문서 검색
         </button>
       </div>
     </div>

@@ -89,10 +89,181 @@
       "status": "completed",
       "completed_at": "2026-04-04T00:57:01.249Z",
       "duration_ms": 40158
+    },
+    {
+      "agent_id": "abb2cafed0943dedf",
+      "agent_type": "oh-my-claudecode:executor",
+      "started_at": "2026-04-04T01:25:54.697Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-04-04T02:50:57.429Z",
+      "duration_ms": 5102732
+    },
+    {
+      "agent_id": "a7ead4b8a6d2c19cf",
+      "agent_type": "oh-my-claudecode:security-reviewer",
+      "started_at": "2026-04-04T02:51:37.918Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-04-04T02:52:47.125Z",
+      "duration_ms": 69207
+    },
+    {
+      "agent_id": "addbc8d82116551f7",
+      "agent_type": "oh-my-claudecode:code-reviewer",
+      "started_at": "2026-04-04T02:51:42.622Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-04-04T02:52:49.774Z",
+      "duration_ms": 67152
+    },
+    {
+      "agent_id": "a43fc2216c5ebd4c2",
+      "agent_type": "oh-my-claudecode:security-reviewer",
+      "started_at": "2026-04-04T04:03:47.804Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-04-04T04:04:38.023Z",
+      "duration_ms": 50219
+    },
+    {
+      "agent_id": "a6644e5f36ddd8b4e",
+      "agent_type": "oh-my-claudecode:code-reviewer",
+      "started_at": "2026-04-04T04:03:52.114Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-04-04T04:04:30.608Z",
+      "duration_ms": 38494
+    },
+    {
+      "agent_id": "a0cfd3a47de81b91c",
+      "agent_type": "oh-my-claudecode:explore",
+      "started_at": "2026-04-04T04:14:59.089Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-04-04T05:17:30.148Z",
+      "duration_ms": 3751059
+    },
+    {
+      "agent_id": "ad72ad8616db693d6",
+      "agent_type": "obsidian-nexus:docsmith-writer",
+      "started_at": "2026-04-04T05:36:19.074Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-04-04T05:37:53.291Z",
+      "duration_ms": 94217
+    },
+    {
+      "agent_id": "ac753eeca6fdca8f6",
+      "agent_type": "obsidian-nexus:docsmith-writer",
+      "started_at": "2026-04-04T06:05:57.326Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-04-04T06:08:27.779Z",
+      "duration_ms": 150453
+    },
+    {
+      "agent_id": "aef8aa8e0e5b3e768",
+      "agent_type": "oh-my-claudecode:explore",
+      "started_at": "2026-04-04T06:16:06.364Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-04-04T06:18:15.396Z",
+      "duration_ms": 129032
+    },
+    {
+      "agent_id": "ad2f6934f9df236e1",
+      "agent_type": "oh-my-claudecode:executor",
+      "started_at": "2026-04-04T06:23:49.177Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-04-04T06:25:33.193Z",
+      "duration_ms": 104016
+    },
+    {
+      "agent_id": "a357753dcd71b2445",
+      "agent_type": "oh-my-claudecode:executor",
+      "started_at": "2026-04-04T06:24:13.728Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-04-04T06:24:25.238Z",
+      "duration_ms": 11510
+    },
+    {
+      "agent_id": "ac46d9b314dd0209c",
+      "agent_type": "oh-my-claudecode:executor",
+      "started_at": "2026-04-04T06:24:34.540Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-04-04T06:24:58.914Z",
+      "duration_ms": 24374
+    },
+    {
+      "agent_id": "a7d9fcb79bc70434c",
+      "agent_type": "oh-my-claudecode:executor",
+      "started_at": "2026-04-04T06:27:14.615Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-04-04T06:28:41.484Z",
+      "duration_ms": 86869
+    },
+    {
+      "agent_id": "a44e87a9676ff1399",
+      "agent_type": "oh-my-claudecode:executor",
+      "started_at": "2026-04-04T06:27:29.142Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-04-04T06:29:29.533Z",
+      "duration_ms": 120391
+    },
+    {
+      "agent_id": "a6fe52ff77660c2b3",
+      "agent_type": "oh-my-claudecode:designer",
+      "started_at": "2026-04-04T06:49:43.209Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-04-04T06:51:05.801Z",
+      "duration_ms": 82592
+    },
+    {
+      "agent_id": "afa079902342e1814",
+      "agent_type": "oh-my-claudecode:designer",
+      "started_at": "2026-04-04T06:49:58.633Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-04-04T06:52:40.780Z",
+      "duration_ms": 162147
+    },
+    {
+      "agent_id": "a8ab463eedd4c1fa6",
+      "agent_type": "oh-my-claudecode:designer",
+      "started_at": "2026-04-04T06:50:15.624Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-04-04T06:51:29.632Z",
+      "duration_ms": 74008
+    },
+    {
+      "agent_id": "a0705d6a1b7fe6c24",
+      "agent_type": "obsidian-nexus:docsmith-writer",
+      "started_at": "2026-04-04T07:07:53.777Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-04-04T07:13:37.018Z",
+      "duration_ms": 343241
+    },
+    {
+      "agent_id": "add54119b0fd11638",
+      "agent_type": "oh-my-claudecode:explore",
+      "started_at": "2026-04-04T07:16:34.782Z",
+      "parent_mode": "none",
+      "status": "completed",
+      "completed_at": "2026-04-04T07:16:52.700Z",
+      "duration_ms": 17918
     }
   ],
-  "total_spawned": 11,
-  "total_completed": 11,
+  "total_spawned": 30,
+  "total_completed": 30,
   "total_failed": 0,
-  "last_updated": "2026-04-04T00:57:01.352Z"
+  "last_updated": "2026-04-04T07:16:52.804Z"
 }

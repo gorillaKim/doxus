@@ -15,11 +15,11 @@ interface Template {
 }
 
 const BUILTIN_TEMPLATES: Template[] = [
-  { id: 'note', name: 'Note', description: 'Quick notes and ideas' },
-  { id: 'meeting', name: 'Meeting', description: 'Meeting agenda and notes' },
-  { id: 'decision', name: 'Decision', description: 'Architecture decision record' },
-  { id: 'journal', name: 'Journal', description: 'Daily journal entry' },
-  { id: 'retrospective', name: 'Retrospective', description: 'Sprint retrospective' },
+  { id: 'note', name: '메모', description: '간단한 메모와 아이디어' },
+  { id: 'meeting', name: '회의록', description: '회의 안건 및 결과 정리' },
+  { id: 'decision', name: '의사결정', description: '아키텍처 의사결정 기록 (ADR)' },
+  { id: 'journal', name: '일지', description: '일별 작업 일지' },
+  { id: 'retrospective', name: '회고', description: '스프린트 회고록' },
 ];
 
 const TEMPLATE_ICONS: Record<string, string> = {
@@ -31,7 +31,7 @@ const TEMPLATE_ICONS: Record<string, string> = {
 };
 
 function formatDate(ts: number): string {
-  return new Date(ts * 1000).toLocaleDateString('en-US', {
+  return new Date(ts * 1000).toLocaleDateString('ko-KR', {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
@@ -61,12 +61,11 @@ function NewDocModal({ initialTemplateId, onClose, onCreated }: NewDocModalProps
       });
       onCreated(doc);
     } catch {
-      // Tauri command not yet wired — create a local stub
       const stub: WorkspaceDocument = {
         id: Date.now(),
         title: title.trim(),
         created_at: Math.floor(Date.now() / 1000),
-        content_preview: selectedTemplate ? `Template: ${selectedTemplate}` : undefined,
+        content_preview: selectedTemplate ? `템플릿: ${selectedTemplate}` : undefined,
       };
       onCreated(stub);
     } finally {
@@ -77,20 +76,20 @@ function NewDocModal({ initialTemplateId, onClose, onCreated }: NewDocModalProps
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 w-full max-w-md shadow-2xl">
-        <h2 className="text-white font-semibold text-lg mb-4">New Document</h2>
+        <h2 className="text-white font-semibold text-lg mb-4">새 문서</h2>
 
-        <label className="block text-gray-400 text-sm mb-1">Title</label>
+        <label className="block text-gray-400 text-sm mb-1">제목</label>
         <input
           autoFocus
           type="text"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
-          placeholder="Untitled"
+          placeholder="제목 없음"
           className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm mb-4"
         />
 
-        <label className="block text-gray-400 text-sm mb-2">Template (optional)</label>
+        <label className="block text-gray-400 text-sm mb-2">템플릿 (선택)</label>
         <div className="grid grid-cols-2 gap-2 mb-5">
           <button
             onClick={() => setSelectedTemplate(null)}
@@ -100,7 +99,7 @@ function NewDocModal({ initialTemplateId, onClose, onCreated }: NewDocModalProps
                 : 'bg-gray-800 border-gray-700 text-gray-400 hover:border-gray-600'
             }`}
           >
-            Blank
+            빈 문서
           </button>
           {BUILTIN_TEMPLATES.map((t) => (
             <button
@@ -122,14 +121,14 @@ function NewDocModal({ initialTemplateId, onClose, onCreated }: NewDocModalProps
             onClick={onClose}
             className="px-4 py-1.5 rounded-lg text-sm text-gray-400 hover:text-white border border-gray-700 hover:border-gray-600 transition-colors"
           >
-            Cancel
+            취소
           </button>
           <button
             onClick={handleCreate}
             disabled={!title.trim() || isCreating}
             className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white px-4 py-1.5 rounded-lg text-sm transition-colors"
           >
-            {isCreating ? 'Creating...' : 'Create'}
+            {isCreating ? '생성 중...' : '생성'}
           </button>
         </div>
       </div>
@@ -167,17 +166,17 @@ export default function WorkspacePage() {
   };
 
   const tabs: { key: TabKey; label: string }[] = [
-    { key: 'documents', label: 'Documents' },
-    { key: 'templates', label: 'Templates' },
+    { key: 'documents', label: '문서' },
+    { key: 'templates', label: '템플릿' },
   ];
 
   return (
     <div className="flex flex-col h-full bg-gray-950 p-6 gap-5">
-      {/* Header */}
+      {/* 헤더 */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-white text-xl font-semibold tracking-tight">Workspace</h1>
-          <p className="text-gray-400 text-sm mt-0.5">Personal documents and templates</p>
+          <h1 className="text-white text-xl font-semibold tracking-tight">워크스페이스</h1>
+          <p className="text-gray-400 text-sm mt-0.5">개인 문서 및 템플릿 관리</p>
         </div>
         {activeTab === 'documents' && (
           <button
@@ -187,12 +186,12 @@ export default function WorkspacePage() {
             }}
             className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded-lg text-sm transition-colors"
           >
-            + New Document
+            + 새 문서
           </button>
         )}
       </div>
 
-      {/* Tabs */}
+      {/* 탭 */}
       <div className="flex gap-1 p-1 bg-gray-900 border border-gray-800 rounded-xl w-fit">
         {tabs.map((tab) => (
           <button
@@ -209,16 +208,16 @@ export default function WorkspacePage() {
         ))}
       </div>
 
-      {/* Documents Tab */}
+      {/* 문서 탭 */}
       {activeTab === 'documents' && (
         <div className="flex-1 overflow-auto">
           {isLoading ? (
             <div className="flex items-center justify-center h-32">
-              <p className="text-gray-500 text-sm">Loading...</p>
+              <p className="text-gray-500 text-sm">불러오는 중...</p>
             </div>
           ) : documents.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-48 gap-3">
-              <p className="text-gray-500 text-sm">No documents yet.</p>
+              <p className="text-gray-500 text-sm">문서가 없습니다.</p>
               <button
                 onClick={() => {
                   setPreselectedTemplate(null);
@@ -226,7 +225,7 @@ export default function WorkspacePage() {
                 }}
                 className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded-lg text-sm transition-colors"
               >
-                Create your first document
+                첫 번째 문서 만들기
               </button>
             </div>
           ) : (
@@ -253,7 +252,7 @@ export default function WorkspacePage() {
                           {doc.content_preview}
                         </p>
                       ) : (
-                        <p className="text-gray-600 text-sm italic">Empty document</p>
+                        <p className="text-gray-600 text-sm italic">빈 문서입니다</p>
                       )}
                     </div>
                   )}
@@ -264,7 +263,7 @@ export default function WorkspacePage() {
         </div>
       )}
 
-      {/* Templates Tab */}
+      {/* 템플릿 탭 */}
       {activeTab === 'templates' && (
         <div className="flex-1 overflow-auto">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -282,7 +281,7 @@ export default function WorkspacePage() {
                   onClick={() => openModalWithTemplate(t.id)}
                   className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded-lg text-sm transition-colors w-fit"
                 >
-                  Use
+                  사용하기
                 </button>
               </div>
             ))}

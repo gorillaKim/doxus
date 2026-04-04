@@ -60,6 +60,47 @@ pub async fn market_list_installed(
 }
 
 #[tauri::command]
+pub async fn get_system_status() -> Result<serde_json::Value, String> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let db_path = format!("{}/.doxus/db/doxus.db", home);
+    let db_exists = std::path::Path::new(&db_path).exists();
+
+    // CLI 바이너리 존재 여부 확인
+    let cli_candidates = [
+        format!("{}/.cargo/bin/doxus-cli", home),
+        "/usr/local/bin/doxus-cli".to_string(),
+    ];
+    let cli_path = cli_candidates.iter().find(|p| std::path::Path::new(p).exists());
+
+    // MCP 서버 포트 확인 (7700번 기본 포트)
+    let mcp_running = std::net::TcpStream::connect("127.0.0.1:7700").is_ok();
+
+    Ok(serde_json::json!({
+        "app": {
+            "version": env!("CARGO_PKG_VERSION"),
+            "status": "running"
+        },
+        "database": {
+            "path": db_path,
+            "exists": db_exists,
+            "status": if db_exists { "connected" } else { "not found" }
+        },
+        "mcp": {
+            "status": if mcp_running { "running" } else { "not started" },
+            "note": "MCP 서버는 별도 프로세스로 실행됩니다 (포트 7700)"
+        },
+        "cli": {
+            "status": if cli_path.is_some() { "installed" } else { "not installed" },
+            "path": cli_path.cloned().unwrap_or_default()
+        },
+        "agent": {
+            "status": "not started",
+            "note": "Agent sidecar는 Phase 3에서 구현됩니다"
+        }
+    }))
+}
+
+#[tauri::command]
 pub async fn get_workspaces(
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<serde_json::Value, String> {
