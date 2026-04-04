@@ -3,7 +3,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useProjectStore } from '../stores/useProjectStore';
 
-type PluginType = 'obsidian' | 'confluence' | 'github';
+// PluginType is now an open string — supports any installed plugin id
+type PluginType = string;
 
 interface PluginOption {
   id: PluginType;
@@ -12,11 +13,12 @@ interface PluginOption {
   icon: string;
 }
 
-const PLUGIN_OPTIONS: PluginOption[] = [
-  { id: 'obsidian', label: 'Obsidian', description: '로컬 Obsidian 볼트 폴더', icon: '🪨' },
-  { id: 'confluence', label: 'Confluence', description: 'Confluence Cloud 또는 Server', icon: '📄' },
-  { id: 'github', label: 'GitHub', description: 'GitHub Issues / Wiki / Discussions', icon: '🐙' },
-];
+// Known built-in plugin metadata (used as display hints)
+const KNOWN_PLUGINS: Record<string, Omit<PluginOption, 'id'>> = {
+  'obsidian':   { label: 'Obsidian',   description: '로컬 Obsidian 볼트 폴더',               icon: '🪨' },
+  'confluence': { label: 'Confluence', description: 'Confluence Cloud 또는 Server',           icon: '📄' },
+  'github':     { label: 'GitHub',     description: 'GitHub Issues / Wiki / Discussions',     icon: '🐙' },
+};
 
 function ObsidianForm({ name, setName, path, setPath }: {
   name: string; setName: (v: string) => void;
@@ -151,6 +153,32 @@ function GitHubForm({ name, setName, extraFields, setExtraFields }: {
   );
 }
 
+function GenericPluginForm({ name, setName, extraFields, setExtraFields, pluginId }: {
+  name: string; setName: (v: string) => void;
+  extraFields: Record<string, string>;
+  setExtraFields: (v: Record<string, string>) => void;
+  pluginId: string;
+}) {
+  const set = (key: string, val: string) => setExtraFields({ ...extraFields, [key]: val });
+  return (
+    <>
+      <div className="flex flex-col gap-1">
+        <label className="text-xs text-gray-500">프로젝트 이름</label>
+        <input type="text" value={name} onChange={(e) => setName(e.target.value)}
+          placeholder={`${pluginId}-project`}
+          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
+      </div>
+      <div className="flex flex-col gap-1">
+        <label className="text-xs text-gray-500">엔드포인트 / URL</label>
+        <input type="text" value={extraFields.endpoint ?? ''} onChange={(e) => set('endpoint', e.target.value)}
+          placeholder="https://..."
+          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500" />
+      </div>
+      <p className="text-xs text-gray-600">이 플러그인의 설정 스키마는 아직 등록되지 않았습니다. 추가 설정은 플러그인 설치 후 설정 페이지에서 구성하세요.</p>
+    </>
+  );
+}
+
 function AddProjectModal({ onClose }: { onClose: () => void }) {
   const { addProject } = useProjectStore();
   const [pluginType, setPluginType] = useState<PluginType>('obsidian');
@@ -160,25 +188,37 @@ function AddProjectModal({ onClose }: { onClose: () => void }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [availableOptions, setAvailableOptions] = useState<PluginOption[]>(
-    PLUGIN_OPTIONS.filter((o) => o.id === 'obsidian') // Obsidian is always available
+    [{ id: 'obsidian', ...KNOWN_PLUGINS['obsidian'] }]
   );
 
   useEffect(() => {
-    invoke<{ plugins: { id: string; installed: boolean }[] }>('market_list_installed')
+    invoke<{ plugins: { id: string; name: string; description: string; installed: boolean; builtin?: boolean }[] }>('market_list_installed')
       .then(({ plugins }) => {
-        const installedIds = new Set(plugins.filter((p) => p.installed).map((p) => p.id));
-        const available = PLUGIN_OPTIONS.filter(
-          (o) => o.id === 'obsidian' || installedIds.has(`com.doxus.${o.id}`)
-        );
-        setAvailableOptions(available);
-        // Reset pluginType if current selection is no longer available
-        if (!available.find((o) => o.id === pluginType)) {
-          setPluginType(available[0]?.id ?? 'obsidian');
+        const available: PluginOption[] = plugins
+          .filter((p) => p.installed)
+          .map((p) => {
+            // Strip com.doxus. prefix to get short id
+            const shortId = p.id.replace(/^com\.doxus\./, '');
+            const known = KNOWN_PLUGINS[shortId];
+            return {
+              id: shortId,
+              label: known?.label ?? p.name,
+              description: known?.description ?? p.description,
+              icon: known?.icon ?? '🔌',
+            };
+          });
+        // Always ensure obsidian is first
+        const sorted = [
+          ...available.filter((o) => o.id === 'obsidian'),
+          ...available.filter((o) => o.id !== 'obsidian'),
+        ];
+        setAvailableOptions(sorted.length > 0 ? sorted : [{ id: 'obsidian', ...KNOWN_PLUGINS['obsidian'] }]);
+        if (!sorted.find((o) => o.id === pluginType)) {
+          setPluginType(sorted[0]?.id ?? 'obsidian');
         }
       })
       .catch(() => {
-        // Fallback: show all options
-        setAvailableOptions(PLUGIN_OPTIONS);
+        setAvailableOptions([{ id: 'obsidian', ...KNOWN_PLUGINS['obsidian'] }]);
       });
   }, []);
 
@@ -188,7 +228,9 @@ function AddProjectModal({ onClose }: { onClose: () => void }) {
     setIsSubmitting(true);
     setError(null);
     try {
-      const projectPath = pluginType === 'obsidian' ? path.trim() : (extraFields.base_url ?? extraFields.repo ?? pluginType);
+      const projectPath =
+        pluginType === 'obsidian' ? path.trim() :
+        extraFields.base_url ?? extraFields.repo ?? extraFields.endpoint ?? pluginType;
       await addProject(name.trim(), projectPath);
       onClose();
     } catch (e) {
@@ -201,7 +243,7 @@ function AddProjectModal({ onClose }: { onClose: () => void }) {
     pluginType === 'obsidian' ? path.trim() :
     pluginType === 'confluence' ? (extraFields.base_url && extraFields.api_token) :
     pluginType === 'github' ? extraFields.repo :
-    true
+    true  // generic plugins: name is sufficient
   );
 
   return (
@@ -247,6 +289,9 @@ function AddProjectModal({ onClose }: { onClose: () => void }) {
         )}
         {pluginType === 'github' && (
           <GitHubForm name={name} setName={setName} extraFields={extraFields} setExtraFields={setExtraFields} />
+        )}
+        {pluginType !== 'obsidian' && pluginType !== 'confluence' && pluginType !== 'github' && (
+          <GenericPluginForm name={name} setName={setName} extraFields={extraFields} setExtraFields={setExtraFields} pluginId={pluginType} />
         )}
 
         {error && (
