@@ -2374,4 +2374,141 @@ mod tests {
         );
         assert!(resp.error.is_some());
     }
+
+    // ── Additional coverage tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_get_document_returns_content() {
+        let server = test_server();
+        let pid = insert_project(&server, "proj", "/tmp");
+        insert_document(&server, pid, "mydoc", "Full document content here");
+
+        let resp = server.dispatch_tool(
+            "docnx_get_document",
+            json!(1),
+            &json!({"project": "proj", "id": "mydoc"}),
+        );
+        assert!(resp.error.is_none());
+        let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
+        assert!(text.contains("Full document content here"));
+    }
+
+    #[test]
+    fn test_get_document_returns_error_for_missing_id() {
+        let server = test_server();
+        insert_project(&server, "proj", "/tmp");
+        let resp = server.dispatch_tool(
+            "docnx_get_document",
+            json!(1),
+            &json!({"project": "proj", "id": "nonexistent"}),
+        );
+        assert!(resp.error.is_some());
+    }
+
+    #[test]
+    fn test_add_project_inserts_and_returns_id() {
+        let server = test_server();
+        let resp = server.dispatch_tool(
+            "docnx_add_project",
+            json!(1),
+            &json!({"name": "newproj", "path": "/tmp/newproj", "display_name": "New Project"}),
+        );
+        assert!(resp.error.is_none());
+        let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
+        assert!(text.contains("newproj"));
+
+        // Verify row exists
+        let count: i64 = server.conn
+            .query_row("SELECT COUNT(*) FROM projects WHERE name='newproj'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_add_project_rejects_duplicate_name() {
+        let server = test_server();
+        server.dispatch_tool(
+            "docnx_add_project",
+            json!(1),
+            &json!({"name": "dup", "path": "/tmp/a"}),
+        );
+        let resp = server.dispatch_tool(
+            "docnx_add_project",
+            json!(2),
+            &json!({"name": "dup", "path": "/tmp/b"}),
+        );
+        assert!(resp.error.is_some());
+    }
+
+    #[test]
+    fn test_remove_project_deletes_documents_not_files() {
+        let server = test_server();
+        let pid = insert_project(&server, "rmproj", "/tmp/rmproj");
+        insert_document(&server, pid, "doc1", "content1");
+        insert_document(&server, pid, "doc2", "content2");
+
+        // Verify documents exist before removal
+        let doc_count: i64 = server.conn
+            .query_row("SELECT COUNT(*) FROM documents WHERE project_id=?1", [pid], |r| r.get(0))
+            .unwrap();
+        assert_eq!(doc_count, 2);
+
+        let resp = server.dispatch_tool(
+            "docnx_remove_project",
+            json!(1),
+            &json!({"name": "rmproj"}),
+        );
+        assert!(resp.error.is_none());
+
+        // Documents should be gone (CASCADE)
+        let doc_count: i64 = server.conn
+            .query_row("SELECT COUNT(*) FROM documents WHERE project_id=?1", [pid], |r| r.get(0))
+            .unwrap();
+        assert_eq!(doc_count, 0);
+
+        // Original path should still exist (we used /tmp/rmproj — not deleted)
+        // The tool only deletes index data, never touches original files
+        let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
+        assert!(text.contains("untouched"));
+    }
+
+    #[test]
+    fn test_status_returns_counts() {
+        let server = test_server();
+        let pid = insert_project(&server, "proj1", "/tmp/p1");
+        insert_project(&server, "proj2", "/tmp/p2");
+        insert_document(&server, pid, "d1", "c1");
+        insert_document(&server, pid, "d2", "c2");
+
+        let resp = server.dispatch_tool("docnx_status", json!(1), &json!({}));
+        assert!(resp.error.is_none());
+        let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
+        assert!(text.contains("Projects: 2"));
+        assert!(text.contains("Documents: 2"));
+    }
+
+    #[test]
+    fn test_index_project_returns_instruction() {
+        let server = test_server();
+        insert_project(&server, "idxproj", "/tmp/idx");
+        let resp = server.dispatch_tool(
+            "docnx_index_project",
+            json!(1),
+            &json!({"project": "idxproj"}),
+        );
+        assert!(resp.error.is_none());
+        let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
+        assert!(text.contains("idxproj"));
+    }
+
+    #[test]
+    fn test_index_project_not_found() {
+        let server = test_server();
+        let resp = server.dispatch_tool(
+            "docnx_index_project",
+            json!(1),
+            &json!({"project": "ghost"}),
+        );
+        assert!(resp.error.is_some());
+    }
 }

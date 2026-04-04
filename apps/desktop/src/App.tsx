@@ -2,8 +2,8 @@ import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/layout/AppShell";
 import { SearchPage } from "./pages/SearchPage";
 import { ProjectsPage } from "./pages/ProjectsPage";
-import { WorkspacePage } from "./pages/WorkspacePage";
-import { MarketPage } from "./pages/MarketPage";
+import WorkspacePage from "./pages/WorkspacePage";
+import MarketPage from "./pages/MarketPage";
 
 export default function App() {
   return (

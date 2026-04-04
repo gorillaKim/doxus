@@ -2,12 +2,13 @@ import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 
 export interface SearchHit {
-  id: string;
+  document_id: number;
+  chunk_id: number;
   title: string | null;
-  snippet: string;
+  snippet: string | null;
   score: number;
   file_path: string | null;
-  project_name: string | null;
+  heading_path: string | null;
 }
 
 interface SearchState {

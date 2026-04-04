@@ -55,13 +55,15 @@ export function SearchPage() {
               <h3 className="font-medium text-gray-900">{hit.title ?? '(untitled)'}</h3>
               <span className="text-xs text-gray-400 shrink-0">score: {hit.score.toFixed(2)}</span>
             </div>
-            {hit.project_name && (
-              <span className="text-xs text-blue-600 bg-blue-50 px-2 py-0.5 rounded">{hit.project_name}</span>
+            {hit.heading_path && (
+              <span className="text-xs text-blue-600 bg-blue-50 px-2 py-0.5 rounded">{hit.heading_path}</span>
             )}
             {hit.file_path && (
               <p className="text-xs text-gray-400 mt-1 truncate">{hit.file_path}</p>
             )}
-            <p className="text-sm text-gray-600 mt-2 line-clamp-3">{hit.snippet}</p>
+            {hit.snippet && (
+              <p className="text-sm text-gray-600 mt-2 line-clamp-3">{hit.snippet}</p>
+            )}
           </div>
         ))}
       </div>
