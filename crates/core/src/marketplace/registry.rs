@@ -9,23 +9,59 @@ pub struct RegistryEntry {
     pub public_key_hex: String,
 }
 
+/// Errors from registry operations.
+#[derive(Debug, thiserror::Error)]
+pub enum RegistryError {
+    #[error("network error: {0}")]
+    Network(String),
+    #[error("parse error: {0}")]
+    Parse(String),
+}
+
 pub struct RegistryClient {
-    pub registry_url: String,
+    base_url: String,
+    client: reqwest::Client,
 }
 
 impl RegistryClient {
-    pub fn new(registry_url: impl Into<String>) -> Self {
-        Self { registry_url: registry_url.into() }
+    pub fn new(base_url: impl Into<String>) -> Self {
+        Self {
+            base_url: base_url.into().trim_end_matches('/').to_string(),
+            client: reqwest::ClientBuilder::new()
+                .user_agent("doxus-registry-client/0.1.0")
+                .build()
+                .expect("failed to build reqwest client"),
+        }
     }
 
-    pub fn parse_entries(json: &str) -> Result<Vec<RegistryEntry>, serde_json::Error> {
-        serde_json::from_str(json)
+    /// Fetch plugin registry entries from the registry server.
+    pub async fn fetch_entries(&self) -> Result<Vec<RegistryEntry>, RegistryError> {
+        let url = format!("{}/plugins.json", self.base_url);
+        let resp = self.client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| RegistryError::Network(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(RegistryError::Network(format!("HTTP {}", resp.status())));
+        }
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| RegistryError::Network(e.to_string()))?;
+        Self::parse_entries(&text)
+    }
+
+    pub fn parse_entries(json: &str) -> Result<Vec<RegistryEntry>, RegistryError> {
+        serde_json::from_str(json).map_err(|e| RegistryError::Parse(e.to_string()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn sample_json() -> &'static str {
         r#"[
@@ -58,5 +94,55 @@ mod tests {
     fn parse_entries_invalid_json() {
         let result = RegistryClient::parse_entries("not json at all");
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_entries_parses_registry_json() {
+        let server = MockServer::start().await;
+        let body = serde_json::json!([{
+            "plugin_id": "com.test.plugin",
+            "version": "1.0.0",
+            "display_name": "Test Plugin",
+            "download_url": "https://example.com/plugin.wasm",
+            "checksum_sha256": "abc123",
+            "public_key_hex": "deadbeef"
+        }]);
+        Mock::given(method("GET"))
+            .and(path("/plugins.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+            .mount(&server)
+            .await;
+
+        let client = RegistryClient::new(server.uri());
+        let entries = client.fetch_entries().await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].plugin_id, "com.test.plugin");
+    }
+
+    #[tokio::test]
+    async fn fetch_entries_returns_error_on_http_failure() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let client = RegistryClient::new(server.uri());
+        let result = client.fetch_entries().await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn fetch_entries_trims_trailing_slash_from_base_url() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/plugins.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+
+        let url_with_slash = format!("{}/", server.uri());
+        let client = RegistryClient::new(url_with_slash);
+        let entries = client.fetch_entries().await.unwrap();
+        assert!(entries.is_empty());
     }
 }

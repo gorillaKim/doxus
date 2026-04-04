@@ -10,6 +10,7 @@ path = "src/main.rs"
 [dependencies]
 doxus-core = { path = "../core" }
 doxus-plugin-sdk = { path = "../plugin-sdk" }
+rusqlite = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }

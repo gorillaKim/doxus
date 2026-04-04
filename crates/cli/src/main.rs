@@ -30,6 +30,10 @@ enum Commands {
     },
     /// Show server status
     Status,
+    /// Manage plugins
+    Plugin(PluginArgs),
+    /// Manage workspaces
+    Workspace(WorkspaceArgs),
 }
 
 #[derive(Parser)]
@@ -91,6 +95,8 @@ async fn main() -> Result<()> {
             handle_search(&conn, query, limit, project)?
         }
         Commands::Status => handle_status(&conn)?,
+        Commands::Plugin(args) => handle_plugin(&conn, args.action)?,
+        Commands::Workspace(args) => handle_workspace(&conn, args.action)?,
     }
 
     Ok(())
@@ -288,10 +294,279 @@ fn handle_status(conn: &rusqlite::Connection) -> Result<()> {
     Ok(())
 }
 
+// ── Plugin subcommand ──────────────────────────────────────────────────────
+
+#[derive(Parser)]
+struct PluginArgs {
+    #[command(subcommand)]
+    action: PluginAction,
+}
+
+#[derive(Subcommand)]
+enum PluginAction {
+    /// List all installed plugins
+    List,
+    /// Show status for a specific plugin
+    Status {
+        /// Plugin ID (e.g. com.doxus.confluence)
+        plugin_id: String,
+    },
+}
+
+fn handle_plugin(conn: &rusqlite::Connection, action: PluginAction) -> Result<()> {
+    match action {
+        PluginAction::List => {
+            let mut stmt = conn.prepare(
+                "SELECT plugin_id, COUNT(*) as instances FROM source_instances GROUP BY plugin_id ORDER BY plugin_id",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+            })?;
+            println!("{:<40} INSTANCES", "PLUGIN_ID");
+            println!("{}", "─".repeat(50));
+            for row in rows.flatten() {
+                println!("{:<40} {}", row.0, row.1);
+            }
+        }
+        PluginAction::Status { plugin_id } => {
+            let result = conn.query_row(
+                "SELECT COUNT(*), MAX(last_synced) FROM source_instances WHERE plugin_id = ?1",
+                rusqlite::params![plugin_id],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?)),
+            )?;
+            let last_sync = result.1.map(|t| t.to_string()).unwrap_or_else(|| "never".into());
+            println!("Plugin:     {plugin_id}");
+            println!("Instances:  {}", result.0);
+            println!("Last sync:  {last_sync}");
+        }
+    }
+    Ok(())
+}
+
+// ── Workspace subcommand ───────────────────────────────────────────────────
+
+#[derive(Parser)]
+struct WorkspaceArgs {
+    #[command(subcommand)]
+    action: WorkspaceAction,
+}
+
+#[derive(Subcommand)]
+enum WorkspaceAction {
+    /// List all workspaces
+    List,
+    /// Create a new workspace
+    Create {
+        /// Workspace name (unique slug)
+        name: String,
+        /// Optional description
+        #[arg(long)]
+        description: Option<String>,
+    },
+}
+
+fn handle_workspace(conn: &rusqlite::Connection, action: WorkspaceAction) -> Result<()> {
+    match action {
+        WorkspaceAction::List => {
+            let mut stmt = conn.prepare(
+                "SELECT name, description FROM workspaces ORDER BY name",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+            })?;
+            println!("{:<30} DESCRIPTION", "NAME");
+            println!("{}", "─".repeat(60));
+            for row in rows.flatten() {
+                let desc = row.1.as_deref().unwrap_or("");
+                println!("{:<30} {}", row.0, desc);
+            }
+        }
+        WorkspaceAction::Create { name, description } => {
+            conn.execute(
+                "INSERT INTO workspaces(name, description, created_at, updated_at)
+                 VALUES (?1, ?2, unixepoch(), unixepoch())",
+                rusqlite::params![name, description],
+            )
+            .context("failed to create workspace")?;
+            println!("Created workspace '{name}'");
+        }
+    }
+    Ok(())
+}
+
 /// Simple MD5-like hash for content deduplication (not cryptographic).
 fn md5_simple(input: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     input.hash(&mut hasher);
     hasher.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn setup_test_db() -> (rusqlite::Connection, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = doxus_core::db::open(&db_path).unwrap();
+        (conn, dir)
+    }
+
+    // ── Plugin tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_plugin_list_empty() {
+        let (conn, _dir) = setup_test_db();
+        // Should succeed with no output (no rows)
+        handle_plugin(&conn, PluginAction::List).unwrap();
+    }
+
+    #[test]
+    fn test_plugin_status_no_instances() {
+        let (conn, _dir) = setup_test_db();
+        // plugin_id not in source_instances → COUNT=0, MAX=NULL
+        handle_plugin(
+            &conn,
+            PluginAction::Status { plugin_id: "com.doxus.confluence".into() },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_plugin_list_with_data() {
+        let (conn, _dir) = setup_test_db();
+
+        // Insert a plugin row first (source_instances FK references plugins)
+        conn.execute(
+            "INSERT INTO plugins(id, name, version, kind, trust_level, manifest_json, installed_at)
+             VALUES (?1, ?2, ?3, 'external', 'unverified', '{}', unixepoch())",
+            rusqlite::params!["com.doxus.test", "Test Plugin", "1.0.0"],
+        )
+        .unwrap();
+
+        // Insert a project row (source_instances FK references projects)
+        conn.execute(
+            "INSERT INTO projects(name, display_name, path, created_at, updated_at)
+             VALUES ('p1', 'P1', '/tmp/p1', unixepoch(), unixepoch())",
+            [],
+        )
+        .unwrap();
+        let project_id: i64 =
+            conn.query_row("SELECT id FROM projects WHERE name='p1'", [], |r| r.get(0)).unwrap();
+
+        conn.execute(
+            "INSERT INTO source_instances(plugin_id, project_id, name, config_json, created_at)
+             VALUES (?1, ?2, 'inst1', '{}', unixepoch())",
+            rusqlite::params!["com.doxus.test", project_id],
+        )
+        .unwrap();
+
+        handle_plugin(&conn, PluginAction::List).unwrap();
+
+        // Verify data is queryable
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM source_instances WHERE plugin_id='com.doxus.test'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_plugin_status_with_data() {
+        let (conn, _dir) = setup_test_db();
+
+        conn.execute(
+            "INSERT INTO plugins(id, name, version, kind, trust_level, manifest_json, installed_at)
+             VALUES ('com.doxus.conf', 'Confluence', '1.0.0', 'external', 'unverified', '{}', unixepoch())",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO projects(name, display_name, path, created_at, updated_at)
+             VALUES ('proj', 'Proj', '/tmp', unixepoch(), unixepoch())",
+            [],
+        )
+        .unwrap();
+        let pid: i64 =
+            conn.query_row("SELECT id FROM projects WHERE name='proj'", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO source_instances(plugin_id, project_id, name, config_json, last_synced, created_at)
+             VALUES ('com.doxus.conf', ?1, 'i1', '{}', 1700000000, unixepoch())",
+            rusqlite::params![pid],
+        )
+        .unwrap();
+
+        handle_plugin(
+            &conn,
+            PluginAction::Status { plugin_id: "com.doxus.conf".into() },
+        )
+        .unwrap();
+    }
+
+    // ── Workspace tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_workspace_list_empty() {
+        let (conn, _dir) = setup_test_db();
+        handle_workspace(&conn, WorkspaceAction::List).unwrap();
+    }
+
+    #[test]
+    fn test_workspace_create_and_list() {
+        let (conn, _dir) = setup_test_db();
+
+        handle_workspace(
+            &conn,
+            WorkspaceAction::Create {
+                name: "my-ws".into(),
+                description: Some("My workspace".into()),
+            },
+        )
+        .unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM workspaces WHERE name='my-ws'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+
+        handle_workspace(&conn, WorkspaceAction::List).unwrap();
+    }
+
+    #[test]
+    fn test_workspace_create_no_description() {
+        let (conn, _dir) = setup_test_db();
+
+        handle_workspace(
+            &conn,
+            WorkspaceAction::Create { name: "bare-ws".into(), description: None },
+        )
+        .unwrap();
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM workspaces WHERE name='bare-ws'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_workspace_create_duplicate_fails() {
+        let (conn, _dir) = setup_test_db();
+
+        handle_workspace(
+            &conn,
+            WorkspaceAction::Create { name: "dup".into(), description: None },
+        )
+        .unwrap();
+
+        let result = handle_workspace(
+            &conn,
+            WorkspaceAction::Create { name: "dup".into(), description: None },
+        );
+        assert!(result.is_err());
+    }
 }

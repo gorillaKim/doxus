@@ -3,6 +3,10 @@ name = "doxus-desktop"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "doxus-desktop"
+test = false
+
 [lib]
 name = "doxus_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
@@ -12,6 +16,7 @@ tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 doxus-core = { path = "../../../crates/core" }
+rusqlite = { workspace = true }
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

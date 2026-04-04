@@ -9,6 +9,7 @@ members = [
     "crates/agent",
     "crates/extism-poc",
     "crates/plugins/confluence",
+    "apps/desktop/src-tauri",
 ]
 
 [workspace.package]
@@ -32,6 +33,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # database
 rusqlite = { version = "0.32", features = ["bundled"] }
+# http
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 # testing
 tokio-test = "0.4"
 tempfile = "3"
+wiremock = "0.6"
