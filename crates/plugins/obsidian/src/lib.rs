@@ -40,7 +40,7 @@ impl ObsidianPlugin {
                 if !e.file_type().is_file() {
                     return false;
                 }
-                if e.path().extension().map_or(true, |ext| ext != "md") {
+                if e.path().extension().is_none_or(|ext| ext != "md") {
                     return false;
                 }
                 // Only check hidden dirs relative to vault root, not absolute path

@@ -48,7 +48,10 @@ impl GitHubPlugin {
                 kind: PluginKind::External,
             },
             config: None,
-            client: reqwest::Client::new(),
+            client: reqwest::ClientBuilder::new()
+                .user_agent("doxus-github-plugin/0.1.0")
+                .build()
+                .expect("failed to build reqwest client"),
         }
     }
 
@@ -61,7 +64,10 @@ impl GitHubPlugin {
                 kind: PluginKind::External,
             },
             config: Some(config),
-            client: reqwest::Client::new(),
+            client: reqwest::ClientBuilder::new()
+                .user_agent("doxus-github-plugin/0.1.0")
+                .build()
+                .expect("failed to build reqwest client"),
         }
     }
 
@@ -125,7 +131,14 @@ impl DocSource for GitHubPlugin {
                         "missing required field: {field}"
                     )))
                 }
-                _ => {}
+                Some(val) => {
+                    // Prevent URL path injection via owner/repo containing '/' or '..'
+                    if val.contains('/') || val.contains("..") {
+                        return Err(PluginError::ConfigInvalid(format!(
+                            "invalid characters in {field}: {val}"
+                        )));
+                    }
+                }
             }
         }
         Ok(())

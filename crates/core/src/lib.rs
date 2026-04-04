@@ -1,7 +1,9 @@
 pub mod auth;
 pub mod db;
 pub mod embedding;
+pub mod marketplace;
 pub mod observability;
 pub mod plugin;
 pub mod search;
 pub mod sync;
+pub mod workspace;

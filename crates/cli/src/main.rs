@@ -121,7 +121,7 @@ fn handle_project(conn: &rusqlite::Connection, action: ProjectAction) -> Result<
                     r.get::<_, String>(3)?,
                 ))
             })?;
-            println!("{:<20} {:<25} {:<10} {}", "NAME", "DISPLAY", "STATUS", "PATH");
+            println!("{:<20} {:<25} {:<10} PATH", "NAME", "DISPLAY", "STATUS");
             println!("{}", "─".repeat(80));
             for row in rows.flatten() {
                 println!("{:<20} {:<25} {:<10} {}", row.0, row.1, row.3, row.2);
