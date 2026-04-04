@@ -8,9 +8,8 @@
  *   stderr: logs only (never protocol messages)
  */
 
-'use strict';
-
-const readline = require('readline');
+import readline from 'readline';
+import Anthropic from '@anthropic-ai/sdk';
 
 // ── Logging (stderr only) ──────────────────────────────────────────────────
 function log(msg) {
@@ -22,36 +21,133 @@ function send(msg) {
   process.stdout.write(JSON.stringify(msg) + '\n');
 }
 
+// ── API key check ──────────────────────────────────────────────────────────
+const API_KEY = process.env.ANTHROPIC_API_KEY;
+const USE_ECHO = !API_KEY;
+
+let client = null;
+if (!USE_ECHO) {
+  client = new Anthropic({ apiKey: API_KEY });
+}
+
 // ── Session state ──────────────────────────────────────────────────────────
+// sessions: Map<session_id, { messages: Array, cancelled: boolean }>
+const sessions = new Map();
 let currentSessionId = null;
+
+// ── Echo fallback ──────────────────────────────────────────────────────────
+function echoReply(text) {
+  send({ type: 'thought', content: 'Processing (echo mode)...' });
+  send({ type: 'text', content: `Echo: ${text}` });
+  send({ type: 'result', content: `Echo: ${text}` });
+}
+
+// ── Claude streaming call ──────────────────────────────────────────────────
+async function claudeReply(sessionId, userMessage, systemPrompt) {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+
+  session.messages.push({ role: 'user', content: userMessage });
+
+  send({ type: 'thought', content: 'Calling Claude API...' });
+
+  const requestMessages = session.messages.slice();
+
+  let stream;
+  try {
+    stream = client.messages.stream({
+      model: 'claude-haiku-4-5',
+      max_tokens: 2048,
+      system: systemPrompt,
+      messages: requestMessages,
+    });
+  } catch (err) {
+    send({ type: 'error', message: `API error: ${err.message}` });
+    return;
+  }
+
+  let fullText = '';
+  try {
+    for await (const chunk of stream) {
+      if (session.cancelled) {
+        stream.abort();
+        send({ type: 'cancelled' });
+        return;
+      }
+      if (
+        chunk.type === 'content_block_delta' &&
+        chunk.delta.type === 'text_delta'
+      ) {
+        send({ type: 'text', content: chunk.delta.text });
+        fullText += chunk.delta.text;
+      }
+    }
+  } catch (err) {
+    if (!session.cancelled) {
+      send({ type: 'error', message: `Stream error: ${err.message}` });
+      return;
+    }
+    send({ type: 'cancelled' });
+    return;
+  }
+
+  const finalMsg = await stream.finalMessage();
+  const finalText =
+    finalMsg.content.find((b) => b.type === 'text')?.text ?? fullText;
+
+  session.messages.push({ role: 'assistant', content: finalText });
+  send({ type: 'result', content: finalText });
+}
 
 // ── Handle a single HostMessage ────────────────────────────────────────────
 async function handleMessage(msg) {
   switch (msg.type) {
     case 'start': {
       currentSessionId = msg.session_id;
+      sessions.set(currentSessionId, { messages: [], cancelled: false });
       log(`Session started: ${currentSessionId}`);
-      // Emit text and result for the initial prompt (stub — replace with real
-      // Claude API call when @anthropic-ai/sdk is wired in).
-      send({ type: 'thought', content: `Processing prompt: ${msg.prompt}` });
-      send({ type: 'text', content: `Received prompt: ${msg.prompt}` });
-      send({
-        type: 'result',
-        content: `Session ${currentSessionId} initialized. Ready to assist.`,
-      });
+
+      if (USE_ECHO) {
+        send({
+          type: 'error',
+          message: 'ANTHROPIC_API_KEY not set, using echo mode',
+        });
+        echoReply(msg.prompt);
+      } else {
+        await claudeReply(
+          currentSessionId,
+          msg.prompt,
+          'You are a helpful document search assistant for the doxus application.',
+        );
+      }
       break;
     }
 
     case 'message': {
       log(`User message: ${msg.content}`);
-      send({ type: 'thought', content: 'Thinking...' });
-      send({ type: 'text', content: `Echo: ${msg.content}` });
-      send({ type: 'result', content: msg.content });
+
+      if (!currentSessionId || !sessions.has(currentSessionId)) {
+        send({ type: 'error', message: 'No active session' });
+        return;
+      }
+
+      if (USE_ECHO) {
+        echoReply(msg.content);
+      } else {
+        await claudeReply(
+          currentSessionId,
+          msg.content,
+          'You are a helpful document search assistant for the doxus application.',
+        );
+      }
       break;
     }
 
     case 'cancel': {
       log('Cancelled by host');
+      if (currentSessionId && sessions.has(currentSessionId)) {
+        sessions.get(currentSessionId).cancelled = true;
+      }
       send({ type: 'cancelled' });
       currentSessionId = null;
       break;
@@ -77,8 +173,8 @@ const rl = readline.createInterface({
 });
 
 // Send init immediately so the Rust host knows we are ready.
-// Matches AgentMessage::Init { model } in protocol.rs.
-send({ type: 'init', model: 'stub' });
+const modelName = USE_ECHO ? 'echo' : 'claude-haiku-4-5';
+send({ type: 'init', model: modelName });
 log('doxus sidecar ready');
 
 rl.on('line', (line) => {

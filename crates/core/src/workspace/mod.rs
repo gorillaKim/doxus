@@ -1,3 +1,6 @@
+pub mod template;
+pub use template::{TemplateEngine, TemplateError};
+
 use rusqlite::{Connection, ErrorCode};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
