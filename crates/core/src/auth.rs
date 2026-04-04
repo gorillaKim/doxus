@@ -32,7 +32,7 @@ impl SecretStore for MemorySecretStore {
         let key = format!("{service}:{account}");
         self.inner
             .read()
-            .unwrap()
+            .map_err(|_| AuthError::Keychain("lock poisoned".into()))?
             .get(&key)
             .cloned()
             .ok_or_else(|| AuthError::NotFound(key))
@@ -40,13 +40,19 @@ impl SecretStore for MemorySecretStore {
 
     fn set(&self, service: &str, account: &str, secret: &str) -> Result<(), AuthError> {
         let key = format!("{service}:{account}");
-        self.inner.write().unwrap().insert(key, secret.to_string());
+        self.inner
+            .write()
+            .map_err(|_| AuthError::Keychain("lock poisoned".into()))?
+            .insert(key, secret.to_string());
         Ok(())
     }
 
     fn delete(&self, service: &str, account: &str) -> Result<(), AuthError> {
         let key = format!("{service}:{account}");
-        self.inner.write().unwrap().remove(&key);
+        self.inner
+            .write()
+            .map_err(|_| AuthError::Keychain("lock poisoned".into()))?
+            .remove(&key);
         Ok(())
     }
 }

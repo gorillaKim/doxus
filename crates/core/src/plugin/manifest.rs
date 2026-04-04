@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PluginManifest {
@@ -15,11 +16,16 @@ impl PluginManifest {
         if self.http_domains.is_empty() {
             return false;
         }
+        let host = match Url::parse(url) {
+            Ok(u) => u.host_str().unwrap_or("").to_lowercase(),
+            Err(_) => return false,
+        };
         self.http_domains.iter().any(|pattern| {
             if let Some(suffix) = pattern.strip_prefix("*.") {
-                url.contains(suffix)
+                let suffix_lc = suffix.to_lowercase();
+                host.ends_with(&format!(".{suffix_lc}"))
             } else {
-                url.contains(pattern.as_str())
+                host == pattern.to_lowercase()
             }
         })
     }
@@ -62,5 +68,40 @@ mod tests {
     fn unlisted_domain_denied() {
         let m = manifest_with_domains(vec!["*.atlassian.net"]);
         assert!(!m.is_domain_allowed("https://evil.com/steal"));
+    }
+
+    #[test]
+    fn query_param_bypass_denied() {
+        // SSRF bypass: domain in query param should NOT be allowed
+        let m = manifest_with_domains(vec!["*.atlassian.net"]);
+        assert!(!m.is_domain_allowed("https://evil.com/?x=foo.atlassian.net"));
+    }
+
+    #[test]
+    fn path_bypass_denied() {
+        // SSRF bypass: domain in path should NOT be allowed
+        let m = manifest_with_domains(vec!["*.atlassian.net"]);
+        assert!(!m.is_domain_allowed("https://evil.com/foo.atlassian.net/"));
+    }
+
+    #[test]
+    fn subdomain_suffix_bypass_denied() {
+        // bypass: evil.com subdomain that ends with atlassian.net should NOT match
+        let m = manifest_with_domains(vec!["*.atlassian.net"]);
+        assert!(!m.is_domain_allowed("https://foo.atlassian.net.evil.com/"));
+    }
+
+    #[test]
+    fn wildcard_requires_subdomain() {
+        // bare domain itself should NOT match wildcard (host must have .suffix, not == suffix)
+        let m = manifest_with_domains(vec!["*.atlassian.net"]);
+        assert!(!m.is_domain_allowed("https://atlassian.net/"));
+    }
+
+    #[test]
+    fn exact_match_no_substring() {
+        // "notexample.com" should NOT match exact pattern "example.com"
+        let m = manifest_with_domains(vec!["example.com"]);
+        assert!(!m.is_domain_allowed("https://notexample.com/"));
     }
 }

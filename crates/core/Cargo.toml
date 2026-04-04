@@ -17,6 +17,7 @@ ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }
 tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
 extism = "1"
 doxus-plugin-sdk = { path = "../plugin-sdk" }
+url = "2"
 
 [dev-dependencies]
 tokio-test = { workspace = true }

@@ -246,6 +246,11 @@ impl DocSource for ConfluencePlugin {
         let base_url = self.base_url()?;
         let api_token = self.api_token()?;
 
+        // Validate ID to prevent path traversal: Confluence page IDs are alphanumeric
+        if !id.0.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+            return Err(PluginError::NotFound(format!("invalid document id: {}", id.0)));
+        }
+
         let url = format!("{base_url}/rest/api/content/{}", id.0);
         let resp = self
             .client
