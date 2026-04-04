@@ -76,8 +76,14 @@
     },
     {
       "path": "crates/core/src/plugin/manager.rs",
+      "accessCount": 17,
+      "lastAccessed": 1775290473070,
+      "type": "file"
+    },
+    {
+      "path": "apps/desktop/src-tauri/src/commands/market.rs",
       "accessCount": 14,
-      "lastAccessed": 1775281455657,
+      "lastAccessed": 1775290504945,
       "type": "file"
     },
     {
@@ -96,12 +102,6 @@
       "path": "docs/devlog/2026-04-04-doxus-phase0-3-implementation.md",
       "accessCount": 11,
       "lastAccessed": 1775289427151,
-      "type": "file"
-    },
-    {
-      "path": "apps/desktop/src-tauri/src/commands/market.rs",
-      "accessCount": 11,
-      "lastAccessed": 1775290204039,
       "type": "file"
     },
     {
@@ -147,6 +147,12 @@
       "type": "file"
     },
     {
+      "path": "apps/desktop/src-tauri/src/state.rs",
+      "accessCount": 8,
+      "lastAccessed": 1775290517771,
+      "type": "file"
+    },
+    {
       "path": "crates/core/src/plugin/manifest.rs",
       "accessCount": 7,
       "lastAccessed": 1775264255898,
@@ -168,12 +174,6 @@
       "path": "crates/core/src/marketplace/installer.rs",
       "accessCount": 6,
       "lastAccessed": 1775275432464,
-      "type": "file"
-    },
-    {
-      "path": "apps/desktop/src-tauri/src/state.rs",
-      "accessCount": 6,
-      "lastAccessed": 1775288259093,
       "type": "file"
     },
     {

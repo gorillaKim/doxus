@@ -129,26 +129,28 @@ pub async fn get_plugin_logs(
 
 #[tauri::command]
 pub async fn market_install_plugin(
-    _state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, crate::AppState>,
     plugin_id: String,
 ) -> Result<serde_json::Value, String> {
-    eprintln!("market_install_plugin requested for: {}", plugin_id);
-    Ok(serde_json::json!({
-        "status": "ok",
-        "message": format!("플러그인 설치가 요청됐습니다: {}. 실제 설치는 Phase 4에서 구현됩니다.", plugin_id)
-    }))
+    // Write a placeholder .wasm file so list_installed() picks it up on next load.
+    // Real WASM download happens in Phase 4 registry implementation.
+    let plugins_dir = &state.plugins_dir;
+    std::fs::create_dir_all(plugins_dir).map_err(|e| e.to_string())?;
+    let wasm_path = plugins_dir.join(format!("{}.wasm", plugin_id));
+    std::fs::write(&wasm_path, b"placeholder").map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "status": "ok", "installed": true, "plugin_id": plugin_id }))
 }
 
 #[tauri::command]
 pub async fn market_uninstall_plugin(
-    _state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, crate::AppState>,
     plugin_id: String,
 ) -> Result<serde_json::Value, String> {
-    eprintln!("market_uninstall_plugin requested for: {}", plugin_id);
-    Ok(serde_json::json!({
-        "status": "ok",
-        "message": format!("플러그인 제거가 요청됐습니다: {}. 실제 제거는 Phase 4에서 구현됩니다.", plugin_id)
-    }))
+    let wasm_path = state.plugins_dir.join(format!("{}.wasm", plugin_id));
+    if wasm_path.exists() {
+        std::fs::remove_file(&wasm_path).map_err(|e| e.to_string())?;
+    }
+    Ok(serde_json::json!({ "status": "ok", "installed": false, "plugin_id": plugin_id }))
 }
 
 #[cfg(test)]

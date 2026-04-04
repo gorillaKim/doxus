@@ -27,17 +27,13 @@ function StatusBadge({ status }: { status: string }) {
     unknown: 'bg-gray-800 text-gray-400 border-gray-700',
   }[level];
 
-  const icon = {
-    ok: '●',
-    warn: '◐',
-    error: '○',
-    unknown: '?',
-  }[level];
+  const icon = { ok: '●', warn: '◐', error: '○', unknown: '?' }[level];
+  const label = { ok: '정상', warn: '경고', error: '오류', unknown: '미확인' }[level];
 
   return (
     <span className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full font-medium border ${cls}`}>
       <span>{icon}</span>
-      {status}
+      {label}
     </span>
   );
 }
@@ -104,7 +100,6 @@ export default function SettingsPage() {
     invoke<SystemStatus>('get_system_status')
       .then(setSysStatus)
       .catch(() => {
-        // 폴백: 앱은 실행 중이므로 기본값 표시
         setSysStatus({
           app: { version: '0.1.0', status: 'running' },
           database: { path: '~/.doxus/db/doxus.db', exists: false, status: 'unknown' },
@@ -114,6 +109,15 @@ export default function SettingsPage() {
         });
       })
       .finally(() => setIsLoading(false));
+
+    // Auto-detect Claude / Gemini on mount
+    invoke<{ status: string; message: string }>('check_claude_status')
+      .then((res) => setClaudeStatus(res.status as 'ok' | 'warn' | 'unknown'))
+      .catch(() => setClaudeStatus('warn'));
+
+    invoke<{ status: string; message: string }>('check_gemini_status')
+      .then((res) => setGeminiStatus(res.status as 'ok' | 'warn' | 'unknown'))
+      .catch(() => setGeminiStatus('warn'));
   }, []);
 
   const handleRefresh = async () => {

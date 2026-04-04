@@ -6,13 +6,15 @@ use doxus_core::plugin::PluginManager;
 pub struct AppState {
     pub conn: Mutex<Connection>,
     pub plugin_manager: PluginManager,
+    pub plugins_dir: PathBuf,
 }
 
 impl AppState {
     pub fn new(conn: Connection, plugins_dir: PathBuf) -> Self {
         Self {
             conn: Mutex::new(conn),
-            plugin_manager: PluginManager::new(plugins_dir),
+            plugin_manager: PluginManager::new(plugins_dir.clone()),
+            plugins_dir,
         }
     }
 }
