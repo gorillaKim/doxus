@@ -10,6 +10,7 @@ interface Plugin {
   trust: TrustLevel;
   description: string;
   installed: boolean;
+  builtin?: boolean;
 }
 
 const MOCK_PLUGINS: Plugin[] = [
@@ -182,11 +183,14 @@ export default function MarketPage() {
                     <div className="flex items-center gap-2 flex-wrap">
                       <h3 className="text-white font-semibold">{plugin.name}</h3>
                       <span className="text-gray-600 text-xs">v{plugin.version}</span>
-                      <span
-                        className={`text-xs px-2 py-0.5 rounded-full font-medium ${badge.className}`}
-                      >
+                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${badge.className}`}>
                         {badge.label}
                       </span>
+                      {plugin.builtin && (
+                        <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-gray-800 text-gray-400 border border-gray-700">
+                          Built-in
+                        </span>
+                      )}
                     </div>
                     <p className="text-gray-400 text-sm mt-1">{plugin.description}</p>
                     <p className="text-gray-600 text-xs mt-1 font-mono">{plugin.id}</p>
@@ -194,7 +198,9 @@ export default function MarketPage() {
 
                   {/* Action */}
                   <div className="shrink-0 pt-0.5">
-                    {plugin.installed ? (
+                    {plugin.builtin ? (
+                      <span className="text-xs text-gray-600 px-3 py-1.5">Included</span>
+                    ) : plugin.installed ? (
                       <button
                         onClick={() => handleToggle(plugin)}
                         disabled={isPending}
@@ -212,6 +218,7 @@ export default function MarketPage() {
                       </button>
                     )}
                   </div>
+
                 </div>
               );
             })}
