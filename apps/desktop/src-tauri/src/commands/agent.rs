@@ -1,245 +1,321 @@
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::sync::atomic::Ordering;
+use doxus_agent::cli_detector::{detect_cli, verify_claude_version, CliKind};
 
-/// Allowed Claude model IDs.
-const CLAUDE_MODELS: &[&str] = &[
-    "claude-sonnet-4-6",
-    "claude-opus-4-6",
-    "claude-haiku-4-5-20251001",
-];
+// ── 브리지 응답 (사이드카 → Rust) ───────────────────────────────────────────
 
-/// Allowed Gemini model IDs.
-const GEMINI_MODELS: &[&str] = &[
-    "gemini-2.5-pro",
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
-];
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BridgeResponse {
+    #[serde(rename = "type")]
+    pub msg_type: String,
+    #[serde(rename = "sessionId", default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(rename = "mcpServers", default)]
+    pub mcp_servers: Option<Vec<String>>,
+    #[serde(rename = "toolName", default)]
+    pub tool_name: Option<String>,
+    #[serde(default)]
+    pub input: Option<serde_json::Value>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub done: Option<bool>,
+    #[serde(default)]
+    pub cost: Option<f64>,
+    #[serde(default)]
+    pub duration: Option<u64>,
+    #[serde(default)]
+    pub usage: Option<serde_json::Value>,
+    #[serde(default)]
+    pub code: Option<String>,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub retryable: Option<bool>,
+}
 
-fn validate_model(provider: &str, model: &str) -> Result<(), String> {
-    let allowed = match provider {
-        "claude" => CLAUDE_MODELS,
-        "gemini" => GEMINI_MODELS,
-        _ => return Err(format!("unknown provider: {provider}")),
+// ── 배경 리더 ────────────────────────────────────────────────────────────────
+
+pub fn spawn_background_reader(
+    sidecar: std::sync::Arc<doxus_agent::sync_sidecar::SyncSidecarManager>,
+    app: tauri::AppHandle,
+    pending: crate::state::PendingMessages,
+) {
+    use std::io::BufRead;
+    use tauri::Emitter;
+
+    let Some(mut reader) = sidecar.take_reader() else {
+        eprintln!("[reader] no reader available");
+        return;
     };
-    if allowed.contains(&model) {
-        Ok(())
-    } else {
-        Err(format!("model '{model}' is not allowed for provider '{provider}'"))
-    }
-}
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct AgentRequest {
-    pub session_id: String,
-    pub message: String,
-    pub provider: String,
-    pub model: String,
-}
+    std::thread::spawn(move || {
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => { eprintln!("[reader] sidecar EOF"); break; }
+                Ok(_) => {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() { continue; }
+                    let resp: BridgeResponse = match serde_json::from_str(trimmed) {
+                        Ok(r) => r,
+                        Err(e) => { eprintln!("[reader] parse error: {e}: {trimmed}"); continue; }
+                    };
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct AgentResponse {
-    pub text: String,
-    pub session_id: String,
-    pub done: bool,
-}
+                    if resp.msg_type == "init" { continue; }
 
-/// Returns "ok" if API key present, "warn" otherwise.
-pub fn compute_agent_status(provider: &str) -> String {
-    let has_key = match provider {
-        "claude" => std::env::var("ANTHROPIC_API_KEY").is_ok(),
-        "gemini" => {
-            std::env::var("GEMINI_API_KEY").is_ok()
-                || std::env::var("GOOGLE_API_KEY").is_ok()
+                    let session_id = resp.session_id.clone();
+                    let is_terminal = matches!(resp.msg_type.as_str(), "result" | "error" | "cancelled");
+
+                    let _ = app.emit(&format!("chat-stream:{session_id}"), &resp);
+
+                    if is_terminal {
+                        let success = resp.msg_type == "result";
+                        if let Ok(mut pending) = pending.lock() {
+                            if let Some(tx) = pending.remove(&session_id) {
+                                let _ = tx.send(success);
+                            }
+                        }
+                    }
+                }
+                Err(e) => { eprintln!("[reader] read error: {e}"); break; }
+            }
         }
-        _ => false,
-    };
-    if has_key { "ok" } else { "warn" }.to_string()
+
+        // 사이드카 종료 시 대기 중인 모든 세션 해제
+        if let Ok(mut pending) = pending.lock() {
+            for (sid, tx) in pending.drain() {
+                let _ = tx.send(false);
+            }
+        }
+    });
 }
 
-/// Send a message to Claude or Gemini API and return the response.
-/// Uses ANTHROPIC_API_KEY / GEMINI_API_KEY from env.
+// ── Tauri 커맨드 ─────────────────────────────────────────────────────────────
+
+/// 세션 시작: 사이드카를 구동하고 Claude/Gemini 세션을 등록한다.
 #[tauri::command]
-pub async fn agent_send_message(
+pub async fn chat_start_session(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::AppState>,
+    session_id: String,
+    cli_type: String,  // "claude" | "gemini"
+    cli_path: String,
+    model: String,
+) -> Result<(), String> {
+    // 사이드카 시작
+    state.sidecar.ensure_running(&state.sidecar_script)?;
+
+    // 배경 리더 한 번만 생성
+    if !state.reader_started.swap(true, Ordering::SeqCst) {
+        spawn_background_reader(
+            state.sidecar.clone(),
+            app,
+            state.pending_messages.clone(),
+        );
+    }
+
+    let system_prompt = state.prompt_loader.build_system_prompt();
+
+    // doxus-mcp 경로 탐색 (선택적)
+    let mcp_servers = find_doxus_mcp()
+        .map(|p| serde_json::json!({ "doxus": { "type": "stdio", "command": p.to_string_lossy(), "args": [] } }))
+        .unwrap_or(serde_json::json!({}));
+
+    let start_req = serde_json::json!({
+        "type": "start",
+        "sessionId": session_id,
+        "cliType": cli_type,
+        "cliPath": cli_path,
+        "model": model,
+        "systemPrompt": system_prompt,
+        "mcpServers": mcp_servers
+    });
+
+    state.sidecar.send_request(&start_req)
+}
+
+/// 메시지 전송: 결과가 올 때까지 블로킹.
+#[tauri::command]
+pub async fn chat_send_message(
+    state: tauri::State<'_, crate::AppState>,
     session_id: String,
     message: String,
-    provider: String,
-    model: String,
-) -> Result<AgentResponse, String> {
-    validate_model(&provider, &model)?;
-    match provider.as_str() {
-        "claude" => send_claude(session_id, message, model).await,
-        "gemini" => send_gemini(session_id, message, model).await,
-        other => Err(format!("unknown provider: {other}")),
+) -> Result<(), String> {
+    state.sidecar.ensure_running(&state.sidecar_script)?;
+
+    let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
+    {
+        let mut pending = state.pending_messages.lock().map_err(|e| e.to_string())?;
+        pending.insert(session_id.clone(), tx);
     }
+
+    let req = serde_json::json!({
+        "type": "message",
+        "sessionId": session_id,
+        "content": message
+    });
+
+    if let Err(e) = state.sidecar.send_request(&req) {
+        state.pending_messages.lock().ok().map(|mut p| p.remove(&session_id));
+        return Err(e);
+    }
+
+    let _ = rx.await;
+    Ok(())
 }
 
-/// Get agent connection status for a provider.
+/// 진행 중인 메시지 취소.
+#[tauri::command]
+pub fn chat_cancel(
+    state: tauri::State<'_, crate::AppState>,
+    session_id: String,
+) -> Result<(), String> {
+    let req = serde_json::json!({ "type": "cancel", "sessionId": session_id });
+    state.sidecar.send_request(&req)
+}
+
+/// Claude/Gemini 연결 상태 확인 (설정 화면용).
 #[tauri::command]
 pub async fn agent_status(provider: String) -> Result<serde_json::Value, String> {
-    let status = compute_agent_status(&provider);
-    let message = match status.as_str() {
-        "ok" => format!("{provider} API key detected"),
-        _ => format!("{provider} API key not found. Set ANTHROPIC_API_KEY or GEMINI_API_KEY"),
+    let cli = detect_cli();
+
+    let (status, message) = match (provider.as_str(), &cli) {
+        ("claude", CliKind::ClaudeCode { path }) => {
+            let version = verify_claude_version(path)
+                .unwrap_or_else(|| path.display().to_string());
+            ("ok", format!("Claude Code CLI 감지됨: {version}"))
+        }
+        ("gemini", CliKind::GeminiCli { path }) => (
+            "ok",
+            format!("Gemini CLI 감지됨: {}", path.display()),
+        ),
+        ("claude", CliKind::GeminiCli { path }) => (
+            "warn",
+            format!("Claude CLI를 찾을 수 없습니다. Gemini CLI: {}", path.display()),
+        ),
+        ("gemini", CliKind::ClaudeCode { path }) => (
+            "warn",
+            format!("Gemini CLI를 찾을 수 없습니다. Claude CLI: {}", path.display()),
+        ),
+        (_, CliKind::None) => (
+            "warn",
+            "AI CLI를 찾을 수 없습니다. Claude Code 또는 Gemini CLI를 설치하세요.".into(),
+        ),
+        (_, CliKind::ClaudeCode { path }) => {
+            let version = verify_claude_version(path)
+                .unwrap_or_else(|| path.display().to_string());
+            ("warn", format!("알 수 없는 provider '{provider}'. Claude Code: {version}"))
+        }
+        (_, CliKind::GeminiCli { path }) => (
+            "warn",
+            format!("알 수 없는 provider '{provider}'. Gemini CLI: {}", path.display()),
+        ),
     };
+
     Ok(serde_json::json!({ "status": status, "message": message }))
 }
 
-async fn send_claude(
-    session_id: String,
-    message: String,
-    model: String,
-) -> Result<AgentResponse, String> {
-    let api_key = std::env::var("ANTHROPIC_API_KEY")
-        .map_err(|_| "ANTHROPIC_API_KEY not set".to_string())?;
-
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let body = serde_json::json!({
-        "model": model,
-        "max_tokens": 1024,
-        "messages": [{ "role": "user", "content": message }]
-    });
-
-    let resp = client
-        .post("https://api.anthropic.com/v1/messages")
-        .header("x-api-key", &api_key)
-        .header("anthropic-version", "2023-06-01")
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("request failed: {e}"))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("Claude API error {status}: {text}"));
+/// CLI 경로 반환 (프론트엔드에서 chat_start_session에 전달).
+#[tauri::command]
+pub fn detect_cli_path(provider: String) -> Result<serde_json::Value, String> {
+    let cli = detect_cli();
+    match (provider.as_str(), cli) {
+        ("claude", CliKind::ClaudeCode { path }) | ("", CliKind::ClaudeCode { path }) => {
+            Ok(serde_json::json!({ "found": true, "cliType": "claude", "cliPath": path.to_string_lossy() }))
+        }
+        ("gemini", CliKind::GeminiCli { path }) | ("", CliKind::GeminiCli { path }) => {
+            Ok(serde_json::json!({ "found": true, "cliType": "gemini", "cliPath": path.to_string_lossy() }))
+        }
+        (_, CliKind::ClaudeCode { path }) => {
+            Ok(serde_json::json!({ "found": true, "cliType": "claude", "cliPath": path.to_string_lossy() }))
+        }
+        (_, CliKind::GeminiCli { path }) => {
+            Ok(serde_json::json!({ "found": true, "cliType": "gemini", "cliPath": path.to_string_lossy() }))
+        }
+        _ => Ok(serde_json::json!({ "found": false, "cliType": "", "cliPath": "" })),
     }
-
-    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    let text = json["content"][0]["text"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
-
-    Ok(AgentResponse { text, session_id, done: true })
 }
 
-async fn send_gemini(
-    session_id: String,
-    message: String,
-    model: String,
-) -> Result<AgentResponse, String> {
-    let api_key = std::env::var("GEMINI_API_KEY")
-        .or_else(|_| std::env::var("GOOGLE_API_KEY"))
-        .map_err(|_| "GEMINI_API_KEY not set".to_string())?;
+// ── 헬퍼 ─────────────────────────────────────────────────────────────────────
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|e| e.to_string())?;
-    // model is pre-validated against allowlist — safe to use in URL path
-    let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    );
-    let body = serde_json::json!({
-        "contents": [{ "role": "user", "parts": [{ "text": message }] }]
-    });
-
-    let resp = client
-        .post(&url)
-        .header("x-goog-api-key", &api_key)
-        .header("content-type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("request failed: {e}"))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("Gemini API error {status}: {text}"));
+fn find_doxus_mcp() -> Option<std::path::PathBuf> {
+    // 1. exe 옆 (릴리즈 번들)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join("doxus-mcp");
+            if candidate.exists() { return Some(candidate); }
+        }
     }
 
-    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-    let text = json["candidates"][0]["content"]["parts"][0]["text"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
+    // 2. PATH 탐색
+    if let Some(found) = std::env::var_os("PATH").and_then(|path_var| {
+        std::env::split_paths(&path_var).find_map(|dir| {
+            let candidate = dir.join("doxus-mcp");
+            if candidate.exists() { Some(candidate) } else { None }
+        })
+    }) {
+        return Some(found);
+    }
 
-    Ok(AgentResponse { text, session_id, done: true })
+    // 3. dev 모드 폴백: current_exe에서 workspace root(target 부모) 탐색
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.as_path();
+        while let Some(parent) = dir.parent() {
+            // target/ 디렉토리를 찾으면 그 부모가 workspace root
+            if parent.file_name().map(|n| n == "target").unwrap_or(false) {
+                // workspace_root/target/debug 또는 release
+                let debug = parent.join("debug").join("doxus-mcp");
+                if debug.exists() { return Some(debug); }
+                let release = parent.join("release").join("doxus-mcp");
+                if release.exists() { return Some(release); }
+                break;
+            }
+            // target/debug/build/... 구조 처리
+            if dir.file_name().map(|n| n == "target").unwrap_or(false) {
+                let debug = dir.join("debug").join("doxus-mcp");
+                if debug.exists() { return Some(debug); }
+                let release = dir.join("release").join("doxus-mcp");
+                if release.exists() { return Some(release); }
+                break;
+            }
+            dir = parent;
+        }
+    }
+
+    None
 }
+
+// ── 테스트 ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    // Serialize all env-mutating tests to avoid races between set_var/remove_var.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
-    fn validate_model_rejects_unknown() {
-        assert!(validate_model("claude", "gpt-4").is_err());
-        assert!(validate_model("gemini", "claude-sonnet-4-6").is_err());
-        assert!(validate_model("unknown", "anything").is_err());
+    fn bridge_response_deserializes_text() {
+        let json = r#"{"type":"text","sessionId":"s1","content":"안녕","done":false}"#;
+        let r: BridgeResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(r.msg_type, "text");
+        assert_eq!(r.content.unwrap(), "안녕");
     }
 
     #[test]
-    fn validate_model_accepts_known() {
-        assert!(validate_model("claude", "claude-sonnet-4-6").is_ok());
-        assert!(validate_model("gemini", "gemini-2.5-pro").is_ok());
+    fn bridge_response_deserializes_result() {
+        let json = r#"{"type":"result","sessionId":"s1","content":"done","cost":0.01}"#;
+        let r: BridgeResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(r.msg_type, "result");
+        assert_eq!(r.cost.unwrap(), 0.01);
     }
 
     #[test]
-    fn agent_send_message_payload_serializes() {
-        let payload = AgentRequest {
-            session_id: "sess-1".into(),
-            message: "hello".into(),
-            provider: "claude".into(),
-            model: "claude-sonnet-4-6".into(),
-        };
-        let json = serde_json::to_string(&payload).unwrap();
-        assert!(json.contains("session_id"));
-        assert!(json.contains("claude-sonnet-4-6"));
-    }
-
-    #[test]
-    fn agent_response_deserializes() {
-        let json = r#"{"text":"hi there","session_id":"sess-1","done":true}"#;
-        let resp: AgentResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.text, "hi there");
-        assert!(resp.done);
-    }
-
-    #[test]
-    fn agent_status_no_key_returns_warn() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::remove_var("ANTHROPIC_API_KEY");
-        std::env::remove_var("GEMINI_API_KEY");
-        let status = compute_agent_status("claude");
-        assert_eq!(status, "warn");
-    }
-
-    #[test]
-    fn agent_status_with_claude_key_returns_ok() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::remove_var("GEMINI_API_KEY");
-        std::env::set_var("ANTHROPIC_API_KEY", "sk-test");
-        let status = compute_agent_status("claude");
-        std::env::remove_var("ANTHROPIC_API_KEY");
-        assert_eq!(status, "ok");
-    }
-
-    #[test]
-    fn agent_status_with_gemini_key_returns_ok() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        std::env::remove_var("ANTHROPIC_API_KEY");
-        std::env::set_var("GEMINI_API_KEY", "gk-test");
-        let status = compute_agent_status("gemini");
-        std::env::remove_var("GEMINI_API_KEY");
-        assert_eq!(status, "ok");
+    fn bridge_response_deserializes_tool_use() {
+        let json = r#"{"type":"tool_use","sessionId":"s1","toolName":"doxus_search","status":"running"}"#;
+        let r: BridgeResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(r.tool_name.unwrap(), "doxus_search");
     }
 }
