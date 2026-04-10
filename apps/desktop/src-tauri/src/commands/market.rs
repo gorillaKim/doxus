@@ -1,3 +1,20 @@
+fn find_doxus_mcp_binary() -> Option<std::path::PathBuf> {
+    // 1. exe 옆 (프로덕션 번들 및 dev target/debug/)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join("doxus-mcp");
+            if candidate.exists() { return Some(candidate); }
+        }
+    }
+    // 2. PATH 탐색
+    std::env::var_os("PATH").and_then(|path_var| {
+        std::env::split_paths(&path_var).find_map(|dir| {
+            let candidate = dir.join("doxus-mcp");
+            if candidate.exists() { Some(candidate) } else { None }
+        })
+    })
+}
+
 fn config_schema(fields: &[(&str, &str, &str, bool, &str)]) -> serde_json::Value {
     // fields: (key, label, type, required, placeholder)
     serde_json::Value::Array(
@@ -120,8 +137,27 @@ pub async fn get_system_status() -> Result<serde_json::Value, String> {
     ];
     let cli_path = cli_candidates.iter().find(|p| std::path::Path::new(p).exists());
 
-    // MCP 서버 포트 확인 (7700번 기본 포트)
-    let mcp_running = std::net::TcpStream::connect("127.0.0.1:7700").is_ok();
+    // doxus-mcp 바이너리 존재 여부 확인 (stdio 기반이라 포트 체크 불가)
+    let mcp_running = find_doxus_mcp_binary().is_some();
+
+    // 에이전트 사이드카 상태: 로컬 CLI 감지로 판단
+    let agent_status = {
+        use doxus_agent::cli_detector::{detect_cli, CliKind};
+        match detect_cli() {
+            CliKind::ClaudeCode { path } => serde_json::json!({
+                "status": "connected",
+                "note": format!("Claude Code CLI 감지됨: {}", path.display())
+            }),
+            CliKind::GeminiCli { path } => serde_json::json!({
+                "status": "connected",
+                "note": format!("Gemini CLI 감지됨: {}", path.display())
+            }),
+            CliKind::None => serde_json::json!({
+                "status": "warn",
+                "note": "AI CLI를 찾을 수 없습니다. Claude Code 또는 Gemini CLI를 설치하세요."
+            }),
+        }
+    };
 
     Ok(serde_json::json!({
         "app": {
@@ -135,16 +171,13 @@ pub async fn get_system_status() -> Result<serde_json::Value, String> {
         },
         "mcp": {
             "status": if mcp_running { "running" } else { "not started" },
-            "note": "MCP 서버는 별도 프로세스로 실행됩니다 (포트 7700)"
+            "note": "doxus-mcp 바이너리 (stdio MCP 서버)"
         },
         "cli": {
             "status": if cli_path.is_some() { "installed" } else { "not installed" },
             "path": cli_path.cloned().unwrap_or_default()
         },
-        "agent": {
-            "status": "not started",
-            "note": "Agent sidecar는 Phase 3에서 구현됩니다"
-        }
+        "agent": agent_status
     }))
 }
 
@@ -553,34 +586,38 @@ mod tests {
 
 #[tauri::command]
 pub async fn check_claude_status() -> Result<serde_json::Value, String> {
-    let claude_in_path = std::process::Command::new("which")
-        .arg("claude")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    let api_key_set = std::env::var("ANTHROPIC_API_KEY").is_ok();
-    Ok(serde_json::json!({
-        "status": if claude_in_path || api_key_set { "ok" } else { "warn" },
-        "claude_cli": claude_in_path,
-        "api_key": api_key_set,
-        "message": if claude_in_path { "Claude Code CLI 감지됨" } else if api_key_set { "API 키 설정됨" } else { "Claude를 찾을 수 없습니다" }
-    }))
+    use doxus_agent::cli_detector::{detect_cli, CliKind};
+    match detect_cli() {
+        CliKind::ClaudeCode { path } => Ok(serde_json::json!({
+            "status": "ok",
+            "claude_cli": true,
+            "message": format!("Claude Code CLI 감지됨: {}", path.display())
+        })),
+        _ => Ok(serde_json::json!({
+            "status": "warn",
+            "claude_cli": false,
+            "message": "Claude를 찾을 수 없습니다"
+        })),
+    }
 }
 
 #[tauri::command]
 pub async fn check_gemini_status() -> Result<serde_json::Value, String> {
-    let gemini_in_path = std::process::Command::new("which")
-        .arg("gemini")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    let api_key_set = std::env::var("GEMINI_API_KEY").is_ok();
-    Ok(serde_json::json!({
-        "status": if gemini_in_path || api_key_set { "ok" } else { "warn" },
-        "gemini_cli": gemini_in_path,
-        "api_key": api_key_set,
-        "message": if gemini_in_path { "Gemini CLI 감지됨" } else if api_key_set { "API 키 설정됨" } else { "Gemini를 찾을 수 없습니다" }
-    }))
+    use doxus_agent::cli_detector::find_binary;
+    // Check gemini specifically even if claude was found first
+    let gemini_path = find_binary("gemini");
+    match gemini_path {
+        Some(path) => Ok(serde_json::json!({
+            "status": "ok",
+            "gemini_cli": true,
+            "message": format!("Gemini CLI 감지됨: {}", path.display())
+        })),
+        None => Ok(serde_json::json!({
+            "status": "warn",
+            "gemini_cli": false,
+            "message": "Gemini를 찾을 수 없습니다"
+        })),
+    }
 }
 
 #[tauri::command]
