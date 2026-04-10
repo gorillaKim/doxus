@@ -1,4 +1,4 @@
-/// doxus MCP server — 37 docnx_* tools via MCP protocol (JSONL over stdio)
+/// doxus MCP server — 37 doxus_* tools via MCP protocol (JSONL over stdio)
 ///
 /// Phase 1: all tools wired to real DB via McpServer struct.
 use anyhow::Result;
@@ -18,6 +18,7 @@ struct McpRequest {
 
 #[derive(Debug, Serialize)]
 struct McpResponse {
+    jsonrpc: &'static str,
     id: Value,
     result: Option<Value>,
     error: Option<McpError>,
@@ -31,11 +32,11 @@ struct McpError {
 
 impl McpResponse {
     fn ok(id: Value, result: Value) -> Self {
-        Self { id, result: Some(result), error: None }
+        Self { jsonrpc: "2.0", id, result: Some(result), error: None }
     }
 
     fn err(id: Value, code: i64, message: impl Into<String>) -> Self {
-        Self { id, result: None, error: Some(McpError { code, message: message.into() }) }
+        Self { jsonrpc: "2.0", id, result: None, error: Some(McpError { code, message: message.into() }) }
     }
 
     fn text(id: Value, text: impl Into<String>) -> Self {
@@ -85,57 +86,57 @@ impl McpServer {
     fn dispatch_tool(&self, name: &str, id: Value, args: &Value) -> McpResponse {
         match name {
             // ── Core tools ────────────────────────────────────────────────────
-            "docnx_status" => self.tool_status(id),
-            "docnx_help" => McpResponse::text(id, HELP_TEXT),
-            "docnx_onboard" => McpResponse::text(id, ONBOARD_TEXT),
+            "doxus_status" => self.tool_status(id),
+            "doxus_help" => McpResponse::text(id, HELP_TEXT),
+            "doxus_onboard" => McpResponse::text(id, ONBOARD_TEXT),
 
             // ── Project management ────────────────────────────────────────────
-            "docnx_list_projects" => self.tool_list_projects(id),
-            "docnx_add_project" => self.tool_add_project(id, args),
-            "docnx_remove_project" => self.tool_remove_project(id, args),
-            "docnx_index_project" => self.tool_index_project(id, args),
-            "docnx_sync_project" => self.tool_sync_project(id, args),
+            "doxus_list_projects" => self.tool_list_projects(id),
+            "doxus_add_project" => self.tool_add_project(id, args),
+            "doxus_remove_project" => self.tool_remove_project(id, args),
+            "doxus_index_project" => self.tool_index_project(id, args),
+            "doxus_sync_project" => self.tool_sync_project(id, args),
 
             // ── Search & documents ────────────────────────────────────────────
-            "docnx_search" => self.tool_search(id, args),
-            "docnx_get_document" => self.tool_get_document(id, args),
-            "docnx_get_section" => self.tool_get_section(id, args),
-            "docnx_get_metadata" => self.tool_get_metadata(id, args),
-            "docnx_list_documents" => self.tool_list_documents(id, args),
-            "docnx_get_documents" => self.tool_get_documents(id, args),
-            "docnx_resolve_alias" => self.tool_resolve_alias(id, args),
-            "docnx_get_toc" => self.tool_get_toc(id, args),
-            "docnx_get_ranking" => self.tool_get_ranking(id, args),
-            "docnx_inspect_document" => self.tool_inspect_document(id, args),
+            "doxus_search" => self.tool_search(id, args),
+            "doxus_get_document" => self.tool_get_document(id, args),
+            "doxus_get_section" => self.tool_get_section(id, args),
+            "doxus_get_metadata" => self.tool_get_metadata(id, args),
+            "doxus_list_documents" => self.tool_list_documents(id, args),
+            "doxus_get_documents" => self.tool_get_documents(id, args),
+            "doxus_resolve_alias" => self.tool_resolve_alias(id, args),
+            "doxus_get_toc" => self.tool_get_toc(id, args),
+            "doxus_get_ranking" => self.tool_get_ranking(id, args),
+            "doxus_inspect_document" => self.tool_inspect_document(id, args),
 
             // ── Graph ─────────────────────────────────────────────────────────
-            "docnx_get_backlinks" => self.tool_get_backlinks(id, args),
-            "docnx_get_links" => self.tool_get_links(id, args),
-            "docnx_find_related" => self.tool_find_related(id, args),
-            "docnx_find_path" => self.tool_find_path(id, args),
-            "docnx_get_cluster" => self.tool_get_cluster(id, args),
+            "doxus_get_backlinks" => self.tool_get_backlinks(id, args),
+            "doxus_get_links" => self.tool_get_links(id, args),
+            "doxus_find_related" => self.tool_find_related(id, args),
+            "doxus_find_path" => self.tool_find_path(id, args),
+            "doxus_get_cluster" => self.tool_get_cluster(id, args),
 
             // ── Plugin management ─────────────────────────────────────────────
-            "docnx_plugin_list" => self.tool_plugin_list(id),
-            "docnx_plugin_install" => self.tool_plugin_install(id, args),
-            "docnx_plugin_remove" => self.tool_plugin_remove(id, args),
-            "docnx_plugin_update" => self.tool_plugin_update(id, args),
-            "docnx_plugin_search" => self.tool_plugin_search(id, args),
-            "docnx_plugin_status" => self.tool_plugin_status(id, args),
-            "docnx_plugin_logs" => self.tool_plugin_logs(id, args),
-            "docnx_plugin_info" => self.tool_plugin_info(id, args),
+            "doxus_plugin_list" => self.tool_plugin_list(id),
+            "doxus_plugin_install" => self.tool_plugin_install(id, args),
+            "doxus_plugin_remove" => self.tool_plugin_remove(id, args),
+            "doxus_plugin_update" => self.tool_plugin_update(id, args),
+            "doxus_plugin_search" => self.tool_plugin_search(id, args),
+            "doxus_plugin_status" => self.tool_plugin_status(id, args),
+            "doxus_plugin_logs" => self.tool_plugin_logs(id, args),
+            "doxus_plugin_info" => self.tool_plugin_info(id, args),
 
             // ── Workspace ─────────────────────────────────────────────────────
-            "docnx_create_document" => self.tool_create_workspace_document(id, args),
-            "docnx_update_document" => self.tool_update_workspace_document(id, args),
-            "docnx_delete_document" => self.tool_delete_workspace_document(id, args),
-            "docnx_list_workspace_documents" => self.tool_list_workspace_documents(id, args),
-            "docnx_apply_template" => self.tool_apply_template(id, args),
+            "doxus_create_document" => self.tool_create_workspace_document(id, args),
+            "doxus_update_document" => self.tool_update_workspace_document(id, args),
+            "doxus_delete_document" => self.tool_delete_workspace_document(id, args),
+            "doxus_list_workspace_documents" => self.tool_list_workspace_documents(id, args),
+            "doxus_apply_template" => self.tool_apply_template(id, args),
 
             // ── Diagnostics ───────────────────────────────────────────────────
-            "docnx_diagnose" => self.tool_diagnose(id),
-            "docnx_system_report" => self.tool_system_report(id),
-            "docnx_explain_search" => self.tool_explain_search(id, args),
+            "doxus_diagnose" => self.tool_diagnose(id),
+            "doxus_system_report" => self.tool_system_report(id),
+            "doxus_explain_search" => self.tool_explain_search(id, args),
 
             unknown => McpResponse::err(id, -32601, format!("unknown tool: {unknown}")),
         }
@@ -182,7 +183,7 @@ impl McpServer {
         match rows {
             Err(e) => McpResponse::err(id, -32603, e.to_string()),
             Ok(rows) if rows.is_empty() => {
-                McpResponse::text(id, "No projects found. Add one with docnx_add_project.")
+                McpResponse::text(id, "No projects found. Add one with doxus_add_project.")
             }
             Ok(rows) => {
                 let mut lines =
@@ -216,7 +217,7 @@ impl McpServer {
         match result {
             Ok(_) => McpResponse::text(
                 id,
-                format!("Project '{name}' added. Run docnx_index_project to index it."),
+                format!("Project '{name}' added. Run doxus_index_project to index it."),
             ),
             Err(e) => McpResponse::err(id, -32603, e.to_string()),
         }
@@ -854,10 +855,10 @@ impl McpServer {
         lines.push(format!("Documents: {documents}"));
         lines.push(format!("Chunks   : {chunks}"));
         if projects == 0 {
-            lines.push("\nNo projects found. Add one with docnx_add_project.".to_string());
+            lines.push("\nNo projects found. Add one with doxus_add_project.".to_string());
         }
         if documents == 0 && projects > 0 {
-            lines.push("\nNo documents indexed yet. Run docnx_index_project.".to_string());
+            lines.push("\nNo documents indexed yet. Run doxus_index_project.".to_string());
         }
         lines.push(format!("\nRaw: {}", serde_json::to_string(&diag).unwrap_or_default()));
 
@@ -1617,150 +1618,150 @@ fn extract_toc(content: &str) -> String {
     lines.join("\n")
 }
 
-// ── Tool definitions (all 37 docnx_* tools) ──────────────────────────────────
+// ── Tool definitions (all 37 doxus_* tools) ──────────────────────────────────
 
 fn tool_list() -> Value {
     json!({
         "tools": [
             // Search & document
-            tool("docnx_search", "Hybrid search across indexed documents", &[
+            tool("doxus_search", "Hybrid search across indexed documents", &[
                 param("query", "string", "Search query text"),
                 param_opt("project", "string", "Restrict to project name"),
                 param_opt("mode", "string", "Search mode: hybrid|fts|vector"),
                 param_opt("limit", "number", "Max results (default 20)"),
             ]),
-            tool("docnx_get_document", "Get full document content", &[
+            tool("doxus_get_document", "Get full document content", &[
                 param("project", "string", "Project name"),
                 param("id", "string", "Source document ID"),
             ]),
-            tool("docnx_get_section", "Get specific section by heading (token-efficient)", &[
+            tool("doxus_get_section", "Get specific section by heading (token-efficient)", &[
                 param("project", "string", "Project name"),
                 param("id", "string", "Source document ID"),
                 param("heading", "string", "Heading text to find"),
             ]),
-            tool("docnx_get_metadata", "Get document frontmatter and metadata", &[
+            tool("doxus_get_metadata", "Get document frontmatter and metadata", &[
                 param("project", "string", "Project name"),
                 param("id", "string", "Source document ID"),
             ]),
-            tool("docnx_get_backlinks", "Get documents that link to this document", &[
+            tool("doxus_get_backlinks", "Get documents that link to this document", &[
                 param("project", "string", "Project name"),
                 param("id", "string", "Source document ID"),
             ]),
-            tool("docnx_get_links", "Get documents this document links to", &[
+            tool("doxus_get_links", "Get documents this document links to", &[
                 param("project", "string", "Project name"),
                 param("id", "string", "Source document ID"),
             ]),
-            tool("docnx_list_documents", "List all documents in a project", &[
+            tool("doxus_list_documents", "List all documents in a project", &[
                 param("project", "string", "Project name"),
                 param_opt("cursor", "string", "Pagination cursor (numeric offset)"),
                 param_opt("limit", "number", "Max results (default 50)"),
             ]),
-            tool("docnx_get_documents", "Batch fetch multiple documents", &[
+            tool("doxus_get_documents", "Batch fetch multiple documents", &[
                 param("ids", "array", "Array of document IDs"),
                 param("project", "string", "Project name"),
             ]),
-            tool("docnx_list_projects", "List all projects with status", &[]),
-            tool("docnx_add_project", "Add a new project", &[
+            tool("doxus_list_projects", "List all projects with status", &[]),
+            tool("doxus_add_project", "Add a new project", &[
                 param("name", "string", "Project slug (unique)"),
                 param("path", "string", "Source path or identifier"),
                 param_opt("display_name", "string", "Human-readable name"),
             ]),
-            tool("docnx_remove_project", "Remove project index data (original files untouched)", &[
+            tool("doxus_remove_project", "Remove project index data (original files untouched)", &[
                 param("name", "string", "Project name"),
             ]),
-            tool("docnx_index_project", "Trigger indexing for a project", &[
+            tool("doxus_index_project", "Trigger indexing for a project", &[
                 param("project", "string", "Project name"),
             ]),
-            tool("docnx_sync_project", "Sync incremental changes for a project", &[
+            tool("doxus_sync_project", "Sync incremental changes for a project", &[
                 param("project", "string", "Project name"),
             ]),
-            tool("docnx_resolve_alias", "Resolve an alias to a document ID", &[
+            tool("doxus_resolve_alias", "Resolve an alias to a document ID", &[
                 param("alias", "string", "Alias or wikilink text"),
             ]),
-            tool("docnx_get_toc", "Get table of contents for a document", &[
+            tool("doxus_get_toc", "Get table of contents for a document", &[
                 param("project", "string", "Project name"),
                 param("id", "string", "Document ID"),
             ]),
-            tool("docnx_get_ranking", "Get document ranking by view count", &[
+            tool("doxus_get_ranking", "Get document ranking by view count", &[
                 param("project", "string", "Project name"),
                 param_opt("limit", "number", "Max results"),
             ]),
-            tool("docnx_inspect_document", "Inspect document indexing state", &[
+            tool("doxus_inspect_document", "Inspect document indexing state", &[
                 param("project", "string", "Project name"),
                 param("id", "string", "Document ID"),
             ]),
-            tool("docnx_status", "Get server status and health", &[]),
-            tool("docnx_help", "Get usage documentation", &[]),
-            tool("docnx_onboard", "Interactive setup guide", &[]),
+            tool("doxus_status", "Get server status and health", &[]),
+            tool("doxus_help", "Get usage documentation", &[]),
+            tool("doxus_onboard", "Interactive setup guide", &[]),
             // Graph
-            tool("docnx_find_related", "Find related documents via RRF ranking", &[
+            tool("doxus_find_related", "Find related documents via RRF ranking", &[
                 param("project", "string", "Project name"),
                 param("id", "string", "Source document ID"),
                 param_opt("k", "number", "Number of results (default 10)"),
             ]),
-            tool("docnx_find_path", "Find shortest path between two documents", &[
+            tool("doxus_find_path", "Find shortest path between two documents", &[
                 param("from", "string", "Source document ID"),
                 param("to", "string", "Target document ID"),
                 param_opt("max_hops", "number", "Max hops (default 6)"),
             ]),
-            tool("docnx_get_cluster", "Multi-hop graph traversal", &[
+            tool("doxus_get_cluster", "Multi-hop graph traversal", &[
                 param("project", "string", "Project name"),
                 param("id", "string", "Start document ID"),
                 param_opt("depth", "number", "Traversal depth (default 2, max 5)"),
             ]),
             // Plugin management
-            tool("docnx_plugin_list", "List installed plugins", &[]),
-            tool("docnx_plugin_search", "Search plugin marketplace", &[
+            tool("doxus_plugin_list", "List installed plugins", &[]),
+            tool("doxus_plugin_search", "Search plugin marketplace", &[
                 param("query", "string", "Search query"),
             ]),
-            tool("docnx_plugin_install", "Install a plugin", &[
+            tool("doxus_plugin_install", "Install a plugin", &[
                 param("id", "string", "Plugin ID"),
                 param_opt("version", "string", "Version (default: latest)"),
             ]),
-            tool("docnx_plugin_remove", "Remove an installed plugin", &[
+            tool("doxus_plugin_remove", "Remove an installed plugin", &[
                 param("id", "string", "Plugin ID"),
             ]),
-            tool("docnx_plugin_update", "Update a plugin", &[
+            tool("doxus_plugin_update", "Update a plugin", &[
                 param("id", "string", "Plugin ID"),
             ]),
-            tool("docnx_plugin_status", "Get plugin health status", &[
+            tool("doxus_plugin_status", "Get plugin health status", &[
                 param("id", "string", "Plugin ID"),
             ]),
-            tool("docnx_plugin_logs", "Get plugin runtime logs", &[
+            tool("doxus_plugin_logs", "Get plugin runtime logs", &[
                 param("id", "string", "Plugin ID"),
                 param_opt("level", "string", "Min log level"),
                 param_opt("limit", "number", "Max entries"),
             ]),
-            tool("docnx_plugin_info", "Get detailed plugin information", &[
+            tool("doxus_plugin_info", "Get detailed plugin information", &[
                 param("id", "string", "Plugin ID"),
             ]),
             // Workspace
-            tool("docnx_create_document", "Create a workspace document", &[
+            tool("doxus_create_document", "Create a workspace document", &[
                 param("title", "string", "Document title"),
                 param_opt("template", "string", "Template name"),
                 param_opt("doc_type", "string", "note|meeting|decision|journal"),
             ]),
-            tool("docnx_update_document", "Update a workspace document", &[
+            tool("doxus_update_document", "Update a workspace document", &[
                 param("id", "string", "Document ID"),
                 param("content", "string", "New content"),
             ]),
-            tool("docnx_delete_document", "Delete a workspace document", &[
+            tool("doxus_delete_document", "Delete a workspace document", &[
                 param("id", "string", "Document ID"),
             ]),
-            tool("docnx_list_workspace_documents", "List workspace documents", &[
+            tool("doxus_list_workspace_documents", "List workspace documents", &[
                 param_opt("doc_type", "string", "Filter by type"),
                 param_opt("status", "string", "Filter by status"),
             ]),
-            tool("docnx_apply_template", "Apply a template to create a document", &[
+            tool("doxus_apply_template", "Apply a template to create a document", &[
                 param("template", "string", "Template name"),
                 param_opt("variables", "object", "Template variables"),
             ]),
             // Diagnostics
-            tool("docnx_diagnose", "Interactive troubleshooting guide", &[
+            tool("doxus_diagnose", "Interactive troubleshooting guide", &[
                 param_opt("issue", "string", "Issue description"),
             ]),
-            tool("docnx_system_report", "Full system health snapshot", &[]),
-            tool("docnx_explain_search", "Explain why a search returned these results", &[
+            tool("doxus_system_report", "Full system health snapshot", &[]),
+            tool("doxus_explain_search", "Explain why a search returned these results", &[
                 param("query", "string", "Original query"),
                 param("document_id", "string", "Document to explain"),
             ]),
@@ -1803,28 +1804,28 @@ fn param_opt(name: &str, type_: &str, description: &str) -> Value {
 
 // ── Static text ───────────────────────────────────────────────────────────────
 
-static HELP_TEXT: &str = r#"doxus MCP — 37 docnx_* tools
+static HELP_TEXT: &str = r#"doxus MCP — 37 doxus_* tools
 
-SEARCH:      docnx_search, docnx_get_document, docnx_get_section, docnx_get_metadata
-GRAPH:       docnx_get_backlinks, docnx_get_links, docnx_find_related, docnx_find_path, docnx_get_cluster
-PROJECTS:    docnx_list_projects, docnx_add_project, docnx_remove_project, docnx_index_project, docnx_sync_project
-DOCUMENTS:   docnx_list_documents, docnx_get_documents, docnx_get_toc, docnx_get_ranking, docnx_resolve_alias
-PLUGINS:     docnx_plugin_list, docnx_plugin_install, docnx_plugin_status
-WORKSPACE:   docnx_create_document, docnx_apply_template
-DIAGNOSTICS: docnx_diagnose, docnx_system_report, docnx_inspect_document
+SEARCH:      doxus_search, doxus_get_document, doxus_get_section, doxus_get_metadata
+GRAPH:       doxus_get_backlinks, doxus_get_links, doxus_find_related, doxus_find_path, doxus_get_cluster
+PROJECTS:    doxus_list_projects, doxus_add_project, doxus_remove_project, doxus_index_project, doxus_sync_project
+DOCUMENTS:   doxus_list_documents, doxus_get_documents, doxus_get_toc, doxus_get_ranking, doxus_resolve_alias
+PLUGINS:     doxus_plugin_list, doxus_plugin_install, doxus_plugin_status
+WORKSPACE:   doxus_create_document, doxus_apply_template
+DIAGNOSTICS: doxus_diagnose, doxus_system_report, doxus_inspect_document
 
 Run 'tools/list' for full schema."#;
 
 static ONBOARD_TEXT: &str = r#"Welcome to doxus!
 
 Quick start:
-1. docnx_list_projects        — see your projects
-2. docnx_add_project          — add a new project (name, path)
+1. doxus_list_projects        — see your projects
+2. doxus_add_project          — add a new project (name, path)
 3. doxus index <project>      — index via CLI (required before search)
-4. docnx_search               — search across indexed documents
-5. docnx_system_report        — check overall health
+4. doxus_search               — search across indexed documents
+5. doxus_system_report        — check overall health
 
-For help: docnx_help"#;
+For help: doxus_help"#;
 
 // ── JSONL stdio loop ──────────────────────────────────────────────────────────
 
@@ -1861,6 +1862,14 @@ async fn main() -> Result<()> {
             Ok(l) if !l.trim().is_empty() => l,
             _ => continue,
         };
+
+        // Notifications (no "id" field) are fire-and-forget — skip silently.
+        let is_notification = serde_json::from_str::<serde_json::Value>(&line)
+            .map(|v| v.get("id").is_none())
+            .unwrap_or(false);
+        if is_notification {
+            continue;
+        }
 
         let response = match serde_json::from_str::<McpRequest>(&line) {
             Ok(req) => {
@@ -1938,7 +1947,7 @@ mod tests {
     #[test]
     fn test_list_projects_empty() {
         let server = test_server();
-        let resp = server.dispatch_tool("docnx_list_projects", json!(1), &json!({}));
+        let resp = server.dispatch_tool("doxus_list_projects", json!(1), &json!({}));
         assert!(resp.error.is_none());
         let text = &resp.result.unwrap()["content"][0]["text"];
         assert!(text.as_str().unwrap().contains("No projects"));
@@ -1948,10 +1957,10 @@ mod tests {
     fn test_add_and_list_projects() {
         let server = test_server();
         let resp =
-            server.dispatch_tool("docnx_add_project", json!(1), &json!({"name": "vault", "path": "/tmp/vault"}));
+            server.dispatch_tool("doxus_add_project", json!(1), &json!({"name": "vault", "path": "/tmp/vault"}));
         assert!(resp.error.is_none());
 
-        let resp = server.dispatch_tool("docnx_list_projects", json!(2), &json!({}));
+        let resp = server.dispatch_tool("doxus_list_projects", json!(2), &json!({}));
         let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
         assert!(text.contains("vault"));
     }
@@ -1960,7 +1969,7 @@ mod tests {
     fn test_add_project_missing_name() {
         let server = test_server();
         let resp =
-            server.dispatch_tool("docnx_add_project", json!(1), &json!({"path": "/tmp"}));
+            server.dispatch_tool("doxus_add_project", json!(1), &json!({"path": "/tmp"}));
         assert!(resp.error.is_some());
     }
 
@@ -1969,7 +1978,7 @@ mod tests {
         let server = test_server();
         insert_project(&server, "todel", "/tmp");
         let resp =
-            server.dispatch_tool("docnx_remove_project", json!(1), &json!({"name": "todel"}));
+            server.dispatch_tool("doxus_remove_project", json!(1), &json!({"name": "todel"}));
         assert!(resp.error.is_none());
         let count: i64 = server
             .conn
@@ -1982,7 +1991,7 @@ mod tests {
     fn test_remove_project_not_found() {
         let server = test_server();
         let resp =
-            server.dispatch_tool("docnx_remove_project", json!(1), &json!({"name": "nope"}));
+            server.dispatch_tool("doxus_remove_project", json!(1), &json!({"name": "nope"}));
         assert!(resp.error.is_some());
     }
 
@@ -1993,7 +2002,7 @@ mod tests {
         insert_document(&server, pid, "doc1", "# Hello\n\nWorld");
 
         let resp = server.dispatch_tool(
-            "docnx_get_document",
+            "doxus_get_document",
             json!(1),
             &json!({"project": "proj", "id": "doc1"}),
         );
@@ -2014,7 +2023,7 @@ mod tests {
         );
 
         let resp = server.dispatch_tool(
-            "docnx_get_section",
+            "doxus_get_section",
             json!(1),
             &json!({"project": "proj", "id": "doc1", "heading": "Section A"}),
         );
@@ -2032,7 +2041,7 @@ mod tests {
         insert_document(&server, pid, "doc2", "content2");
 
         let resp = server.dispatch_tool(
-            "docnx_list_documents",
+            "doxus_list_documents",
             json!(1),
             &json!({"project": "proj"}),
         );
@@ -2045,7 +2054,7 @@ mod tests {
     #[test]
     fn test_diagnose() {
         let server = test_server();
-        let resp = server.dispatch_tool("docnx_diagnose", json!(1), &json!({}));
+        let resp = server.dispatch_tool("doxus_diagnose", json!(1), &json!({}));
         assert!(resp.error.is_none());
         let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
         assert!(text.contains("Projects"));
@@ -2054,7 +2063,7 @@ mod tests {
     #[test]
     fn test_system_report() {
         let server = test_server();
-        let resp = server.dispatch_tool("docnx_system_report", json!(1), &json!({}));
+        let resp = server.dispatch_tool("doxus_system_report", json!(1), &json!({}));
         assert!(resp.error.is_none());
         let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
         assert!(text.contains("doxus-mcp"));
@@ -2068,7 +2077,7 @@ mod tests {
         insert_document(&server, pid, "doc1", "content");
 
         let resp = server.dispatch_tool(
-            "docnx_get_backlinks",
+            "doxus_get_backlinks",
             json!(1),
             &json!({"project": "proj", "id": "doc1"}),
         );
@@ -2102,7 +2111,7 @@ mod tests {
     #[test]
     fn test_unknown_tool() {
         let server = test_server();
-        let resp = server.dispatch_tool("docnx_nonexistent", json!(1), &json!({}));
+        let resp = server.dispatch_tool("doxus_nonexistent", json!(1), &json!({}));
         assert!(resp.error.is_some());
     }
 
@@ -2117,7 +2126,7 @@ mod tests {
         insert_document(&server, pid, "doc2", "hello world python programming language");
 
         let resp = server.dispatch_tool(
-            "docnx_find_related",
+            "doxus_find_related",
             json!(1),
             &json!({"project": "proj", "id": "doc1"}),
         );
@@ -2127,7 +2136,7 @@ mod tests {
     #[test]
     fn test_find_related_missing_args() {
         let server = test_server();
-        let resp = server.dispatch_tool("docnx_find_related", json!(1), &json!({"project": "p"}));
+        let resp = server.dispatch_tool("doxus_find_related", json!(1), &json!({"project": "p"}));
         assert!(resp.error.is_some());
     }
 
@@ -2135,7 +2144,7 @@ mod tests {
     fn test_find_path_no_table() {
         let server = test_server();
         let resp = server.dispatch_tool(
-            "docnx_find_path",
+            "doxus_find_path",
             json!(1),
             &json!({"from": "doc1", "to": "doc2"}),
         );
@@ -2151,7 +2160,7 @@ mod tests {
         insert_document(&server, pid, "doc1", "content");
 
         let resp = server.dispatch_tool(
-            "docnx_get_cluster",
+            "doxus_get_cluster",
             json!(1),
             &json!({"project": "proj", "id": "doc1"}),
         );
@@ -2165,7 +2174,7 @@ mod tests {
         let server = test_server();
         insert_project(&server, "proj", "/tmp");
         let resp = server.dispatch_tool(
-            "docnx_sync_project",
+            "doxus_sync_project",
             json!(1),
             &json!({"project": "proj"}),
         );
@@ -2180,14 +2189,14 @@ mod tests {
     fn test_plugin_install_and_status() {
         let server = test_server();
         let resp = server.dispatch_tool(
-            "docnx_plugin_install",
+            "doxus_plugin_install",
             json!(1),
             &json!({"id": "com.test.plugin", "version": "1.0.0"}),
         );
         assert!(resp.error.is_none());
 
         let resp = server.dispatch_tool(
-            "docnx_plugin_status",
+            "doxus_plugin_status",
             json!(2),
             &json!({"id": "com.test.plugin"}),
         );
@@ -2199,42 +2208,42 @@ mod tests {
     #[test]
     fn test_plugin_remove() {
         let server = test_server();
-        server.dispatch_tool("docnx_plugin_install", json!(1), &json!({"id": "com.test.rm"}));
-        let resp = server.dispatch_tool("docnx_plugin_remove", json!(2), &json!({"id": "com.test.rm"}));
+        server.dispatch_tool("doxus_plugin_install", json!(1), &json!({"id": "com.test.rm"}));
+        let resp = server.dispatch_tool("doxus_plugin_remove", json!(2), &json!({"id": "com.test.rm"}));
         assert!(resp.error.is_none());
         // now status should fail
-        let resp = server.dispatch_tool("docnx_plugin_status", json!(3), &json!({"id": "com.test.rm"}));
+        let resp = server.dispatch_tool("doxus_plugin_status", json!(3), &json!({"id": "com.test.rm"}));
         assert!(resp.error.is_some());
     }
 
     #[test]
     fn test_plugin_update() {
         let server = test_server();
-        server.dispatch_tool("docnx_plugin_install", json!(1), &json!({"id": "com.test.upd", "version": "1.0.0"}));
-        let resp = server.dispatch_tool("docnx_plugin_update", json!(2), &json!({"id": "com.test.upd", "version": "2.0.0"}));
+        server.dispatch_tool("doxus_plugin_install", json!(1), &json!({"id": "com.test.upd", "version": "1.0.0"}));
+        let resp = server.dispatch_tool("doxus_plugin_update", json!(2), &json!({"id": "com.test.upd", "version": "2.0.0"}));
         assert!(resp.error.is_none());
     }
 
     #[test]
     fn test_plugin_remove_not_found() {
         let server = test_server();
-        let resp = server.dispatch_tool("docnx_plugin_remove", json!(1), &json!({"id": "nope"}));
+        let resp = server.dispatch_tool("doxus_plugin_remove", json!(1), &json!({"id": "nope"}));
         assert!(resp.error.is_some());
     }
 
     #[test]
     fn test_plugin_search() {
         let server = test_server();
-        server.dispatch_tool("docnx_plugin_install", json!(1), &json!({"id": "com.test.confluence"}));
-        let resp = server.dispatch_tool("docnx_plugin_search", json!(2), &json!({"query": "confluence"}));
+        server.dispatch_tool("doxus_plugin_install", json!(1), &json!({"id": "com.test.confluence"}));
+        let resp = server.dispatch_tool("doxus_plugin_search", json!(2), &json!({"query": "confluence"}));
         assert!(resp.error.is_none());
     }
 
     #[test]
     fn test_plugin_logs_empty() {
         let server = test_server();
-        server.dispatch_tool("docnx_plugin_install", json!(1), &json!({"id": "com.test.logs"}));
-        let resp = server.dispatch_tool("docnx_plugin_logs", json!(2), &json!({"id": "com.test.logs"}));
+        server.dispatch_tool("doxus_plugin_install", json!(1), &json!({"id": "com.test.logs"}));
+        let resp = server.dispatch_tool("doxus_plugin_logs", json!(2), &json!({"id": "com.test.logs"}));
         assert!(resp.error.is_none());
         let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
         assert!(text.contains("No logs"));
@@ -2243,8 +2252,8 @@ mod tests {
     #[test]
     fn test_plugin_info() {
         let server = test_server();
-        server.dispatch_tool("docnx_plugin_install", json!(1), &json!({"id": "com.test.info", "version": "0.5.0"}));
-        let resp = server.dispatch_tool("docnx_plugin_info", json!(2), &json!({"id": "com.test.info"}));
+        server.dispatch_tool("doxus_plugin_install", json!(1), &json!({"id": "com.test.info", "version": "0.5.0"}));
+        let resp = server.dispatch_tool("doxus_plugin_info", json!(2), &json!({"id": "com.test.info"}));
         assert!(resp.error.is_none());
         let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
         assert!(text.contains("0.5.0"));
@@ -2256,7 +2265,7 @@ mod tests {
     fn test_create_workspace_document() {
         let server = test_server();
         let resp = server.dispatch_tool(
-            "docnx_create_document",
+            "doxus_create_document",
             json!(1),
             &json!({"title": "My Note", "doc_type": "note"}),
         );
@@ -2268,10 +2277,10 @@ mod tests {
     #[test]
     fn test_list_workspace_documents() {
         let server = test_server();
-        server.dispatch_tool("docnx_create_document", json!(1), &json!({"title": "Doc A", "doc_type": "note"}));
-        server.dispatch_tool("docnx_create_document", json!(2), &json!({"title": "Doc B", "doc_type": "meeting"}));
+        server.dispatch_tool("doxus_create_document", json!(1), &json!({"title": "Doc A", "doc_type": "note"}));
+        server.dispatch_tool("doxus_create_document", json!(2), &json!({"title": "Doc B", "doc_type": "meeting"}));
 
-        let resp = server.dispatch_tool("docnx_list_workspace_documents", json!(3), &json!({}));
+        let resp = server.dispatch_tool("doxus_list_workspace_documents", json!(3), &json!({}));
         assert!(resp.error.is_none());
         let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
         assert!(text.contains("Doc A") || text.contains("Doc B"));
@@ -2280,11 +2289,11 @@ mod tests {
     #[test]
     fn test_list_workspace_documents_filtered() {
         let server = test_server();
-        server.dispatch_tool("docnx_create_document", json!(1), &json!({"title": "Note X", "doc_type": "note"}));
-        server.dispatch_tool("docnx_create_document", json!(2), &json!({"title": "Meeting Y", "doc_type": "meeting"}));
+        server.dispatch_tool("doxus_create_document", json!(1), &json!({"title": "Note X", "doc_type": "note"}));
+        server.dispatch_tool("doxus_create_document", json!(2), &json!({"title": "Meeting Y", "doc_type": "meeting"}));
 
         let resp = server.dispatch_tool(
-            "docnx_list_workspace_documents",
+            "doxus_list_workspace_documents",
             json!(3),
             &json!({"doc_type": "note"}),
         );
@@ -2296,13 +2305,13 @@ mod tests {
     #[test]
     fn test_update_workspace_document() {
         let server = test_server();
-        server.dispatch_tool("docnx_create_document", json!(1), &json!({"title": "Update Me"}));
+        server.dispatch_tool("doxus_create_document", json!(1), &json!({"title": "Update Me"}));
         let new_id: i64 = server.conn
             .query_row("SELECT id FROM workspace_documents ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
             .unwrap();
 
         let resp = server.dispatch_tool(
-            "docnx_update_document",
+            "doxus_update_document",
             json!(2),
             &json!({"id": new_id, "content": "new content here"}),
         );
@@ -2312,12 +2321,12 @@ mod tests {
     #[test]
     fn test_delete_workspace_document() {
         let server = test_server();
-        server.dispatch_tool("docnx_create_document", json!(1), &json!({"title": "Delete Me"}));
+        server.dispatch_tool("doxus_create_document", json!(1), &json!({"title": "Delete Me"}));
         let new_id: i64 = server.conn
             .query_row("SELECT id FROM workspace_documents ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
             .unwrap();
 
-        let resp = server.dispatch_tool("docnx_delete_document", json!(2), &json!({"id": new_id}));
+        let resp = server.dispatch_tool("doxus_delete_document", json!(2), &json!({"id": new_id}));
         assert!(resp.error.is_none());
 
         let count: i64 = server.conn
@@ -2329,7 +2338,7 @@ mod tests {
     #[test]
     fn test_delete_workspace_document_not_found() {
         let server = test_server();
-        let resp = server.dispatch_tool("docnx_delete_document", json!(1), &json!({"id": 9999}));
+        let resp = server.dispatch_tool("doxus_delete_document", json!(1), &json!({"id": 9999}));
         assert!(resp.error.is_some());
     }
 
@@ -2337,7 +2346,7 @@ mod tests {
     fn test_apply_template_no_template_in_db() {
         let server = test_server();
         let resp = server.dispatch_tool(
-            "docnx_apply_template",
+            "doxus_apply_template",
             json!(1),
             &json!({"template": "weekly-review", "variables": {"title": "Week 14"}}),
         );
@@ -2355,7 +2364,7 @@ mod tests {
         insert_document(&server, pid, "doc1", "rust programming language systems");
 
         let resp = server.dispatch_tool(
-            "docnx_explain_search",
+            "doxus_explain_search",
             json!(1),
             &json!({"query": "rust programming", "document_id": "doc1"}),
         );
@@ -2368,7 +2377,7 @@ mod tests {
     fn test_explain_search_not_found() {
         let server = test_server();
         let resp = server.dispatch_tool(
-            "docnx_explain_search",
+            "doxus_explain_search",
             json!(1),
             &json!({"query": "foo", "document_id": "nonexistent"}),
         );
@@ -2384,7 +2393,7 @@ mod tests {
         insert_document(&server, pid, "mydoc", "Full document content here");
 
         let resp = server.dispatch_tool(
-            "docnx_get_document",
+            "doxus_get_document",
             json!(1),
             &json!({"project": "proj", "id": "mydoc"}),
         );
@@ -2398,7 +2407,7 @@ mod tests {
         let server = test_server();
         insert_project(&server, "proj", "/tmp");
         let resp = server.dispatch_tool(
-            "docnx_get_document",
+            "doxus_get_document",
             json!(1),
             &json!({"project": "proj", "id": "nonexistent"}),
         );
@@ -2409,7 +2418,7 @@ mod tests {
     fn test_add_project_inserts_and_returns_id() {
         let server = test_server();
         let resp = server.dispatch_tool(
-            "docnx_add_project",
+            "doxus_add_project",
             json!(1),
             &json!({"name": "newproj", "path": "/tmp/newproj", "display_name": "New Project"}),
         );
@@ -2428,12 +2437,12 @@ mod tests {
     fn test_add_project_rejects_duplicate_name() {
         let server = test_server();
         server.dispatch_tool(
-            "docnx_add_project",
+            "doxus_add_project",
             json!(1),
             &json!({"name": "dup", "path": "/tmp/a"}),
         );
         let resp = server.dispatch_tool(
-            "docnx_add_project",
+            "doxus_add_project",
             json!(2),
             &json!({"name": "dup", "path": "/tmp/b"}),
         );
@@ -2454,7 +2463,7 @@ mod tests {
         assert_eq!(doc_count, 2);
 
         let resp = server.dispatch_tool(
-            "docnx_remove_project",
+            "doxus_remove_project",
             json!(1),
             &json!({"name": "rmproj"}),
         );
@@ -2480,7 +2489,7 @@ mod tests {
         insert_document(&server, pid, "d1", "c1");
         insert_document(&server, pid, "d2", "c2");
 
-        let resp = server.dispatch_tool("docnx_status", json!(1), &json!({}));
+        let resp = server.dispatch_tool("doxus_status", json!(1), &json!({}));
         assert!(resp.error.is_none());
         let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
         assert!(text.contains("Projects: 2"));
@@ -2492,7 +2501,7 @@ mod tests {
         let server = test_server();
         insert_project(&server, "idxproj", "/tmp/idx");
         let resp = server.dispatch_tool(
-            "docnx_index_project",
+            "doxus_index_project",
             json!(1),
             &json!({"project": "idxproj"}),
         );
@@ -2505,7 +2514,7 @@ mod tests {
     fn test_index_project_not_found() {
         let server = test_server();
         let resp = server.dispatch_tool(
-            "docnx_index_project",
+            "doxus_index_project",
             json!(1),
             &json!({"project": "ghost"}),
         );
