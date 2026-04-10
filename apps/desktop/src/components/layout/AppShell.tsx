@@ -1,47 +1,163 @@
-import { ReactNode } from "react";
+import { ReactNode, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { ChatDrawer } from "./ChatDrawer";
 import { useChatStore } from "../../stores/useChatStore";
 
+// ── SVG 아이콘 ──────────────────────────────────────────────────────────────
+function IconDashboard() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5 shrink-0">
+      <rect x="3" y="3" width="7" height="7" rx="1" />
+      <rect x="14" y="3" width="7" height="7" rx="1" />
+      <rect x="3" y="14" width="7" height="7" rx="1" />
+      <rect x="14" y="14" width="7" height="7" rx="1" />
+    </svg>
+  );
+}
+function IconSearch() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5 shrink-0">
+      <circle cx="11" cy="11" r="7" />
+      <line x1="16.5" y1="16.5" x2="22" y2="22" />
+    </svg>
+  );
+}
+function IconProjects() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5 shrink-0">
+      <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+    </svg>
+  );
+}
+function IconWorkspace() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5 shrink-0">
+      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+    </svg>
+  );
+}
+function IconMarket() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5 shrink-0">
+      <path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z" />
+      <line x1="3" y1="6" x2="21" y2="6" />
+      <path d="M16 10a4 4 0 0 1-8 0" />
+    </svg>
+  );
+}
+function IconSettings() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5 shrink-0">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  );
+}
+function IconChat() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5 shrink-0">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </svg>
+  );
+}
+function IconSidebarCollapse({ collapsed }: { collapsed: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5 shrink-0">
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <line x1="9" y1="3" x2="9" y2="21" />
+      {collapsed
+        ? <polyline points="13 9 17 12 13 15" />
+        : <polyline points="15 9 11 12 15 15" />}
+    </svg>
+  );
+}
+
+// ── 네비게이션 아이템 정의 ──────────────────────────────────────────────────
 const NAV_ITEMS = [
-  { to: "/", label: "대시보드" },
-  { to: "/search", label: "검색" },
-  { to: "/projects", label: "프로젝트" },
-  { to: "/workspace", label: "워크스페이스" },
-  { to: "/market", label: "마켓" },
-  { to: "/settings", label: "설정" },
+  { to: "/", label: "대시보드", icon: <IconDashboard /> },
+  { to: "/search", label: "검색", icon: <IconSearch /> },
+  { to: "/projects", label: "프로젝트", icon: <IconProjects /> },
+  { to: "/workspace", label: "워크스페이스", icon: <IconWorkspace /> },
+  { to: "/market", label: "마켓", icon: <IconMarket /> },
+  { to: "/settings", label: "설정", icon: <IconSettings /> },
 ];
+
+function getInitialSidebarOpen(): boolean {
+  const stored = localStorage.getItem("doxus-sidebar-open");
+  return stored === null ? true : stored === "true";
+}
 
 export function AppShell({ children }: { children: ReactNode }) {
   const { isOpen, toggle } = useChatStore();
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(getInitialSidebarOpen);
+
+  function toggleSidebar() {
+    const next = !sidebarOpen;
+    setSidebarOpen(next);
+    localStorage.setItem("doxus-sidebar-open", String(next));
+  }
 
   return (
     <div className="flex h-screen bg-gray-950 text-gray-100">
       {/* 사이드바 */}
-      <nav className="w-48 flex-shrink-0 border-r border-gray-800 flex flex-col p-4 gap-1">
-        <span className="text-lg font-bold mb-4 text-indigo-400">doxus</span>
-        {NAV_ITEMS.map(({ to, label }) => (
-          <NavLink
-            key={to}
-            to={to}
-            end={to === "/"}
-            className={({ isActive }) =>
-              `px-3 py-2 rounded-lg text-sm transition-colors ${
-                isActive
-                  ? "bg-indigo-600 text-white"
-                  : "text-gray-400 hover:text-white hover:bg-gray-800"
-              }`
-            }
+      <nav
+        data-testid="sidebar"
+        className={`${sidebarOpen ? "w-52" : "w-14"} flex-shrink-0 border-r border-gray-800 flex flex-col transition-all duration-200 overflow-hidden`}
+      >
+        {/* 헤더: 로고 + 토글 버튼 */}
+        <div className={`flex items-center px-3 py-4 ${sidebarOpen ? "justify-between" : "justify-center"}`}>
+          {sidebarOpen && (
+            <span className="text-base font-bold text-indigo-400 truncate">doxus</span>
+          )}
+          <button
+            data-testid="sidebar-toggle"
+            onClick={toggleSidebar}
+            title={sidebarOpen ? "사이드바 접기" : "사이드바 펼치기"}
+            className="p-1.5 rounded-lg text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors"
           >
-            {label}
-          </NavLink>
-        ))}
-        <div className="mt-auto">
+            <IconSidebarCollapse collapsed={!sidebarOpen} />
+          </button>
+        </div>
+
+        {/* 구분선 */}
+        <div className="border-t border-gray-800 mx-3 mb-2" />
+
+        {/* 네비게이션 */}
+        <div className="flex flex-col gap-0.5 px-2 flex-1">
+          {NAV_ITEMS.map(({ to, label, icon }) => (
+            <NavLink
+              key={to}
+              to={to}
+              end={to === "/"}
+              title={!sidebarOpen ? label : undefined}
+              className={({ isActive }) =>
+                `flex items-center gap-3 rounded-lg text-sm transition-colors ${
+                  sidebarOpen ? "px-3 py-2" : "px-2 py-2 justify-center"
+                } ${
+                  isActive
+                    ? "bg-indigo-600/30 text-indigo-300"
+                    : "text-gray-400 hover:text-white hover:bg-gray-800"
+                }`
+              }
+            >
+              {icon}
+              {sidebarOpen && <span>{label}</span>}
+            </NavLink>
+          ))}
+        </div>
+
+        {/* 하단: AI 채팅 버튼 */}
+        <div className="px-2 py-3 border-t border-gray-800">
           <button
             onClick={toggle}
-            className="w-full px-3 py-2 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800 transition-colors"
+            title={!sidebarOpen ? "AI 채팅" : undefined}
+            className={`w-full flex items-center gap-3 px-2 py-2 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800 transition-colors ${
+              !sidebarOpen ? "justify-center" : ""
+            } ${isOpen ? "bg-indigo-600/20 text-indigo-300" : ""}`}
           >
-            {isOpen ? "채팅 닫기" : "AI 채팅"}
+            <IconChat />
+            {sidebarOpen && <span>{isOpen ? "채팅 닫기" : "채팅"}</span>}
           </button>
         </div>
       </nav>

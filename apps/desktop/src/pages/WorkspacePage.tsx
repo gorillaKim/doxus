@@ -20,6 +20,8 @@ const BUILTIN_TEMPLATES: Template[] = [
   { id: 'decision', name: '의사결정', description: '아키텍처 의사결정 기록 (ADR)' },
   { id: 'journal', name: '일지', description: '일별 작업 일지' },
   { id: 'retrospective', name: '회고', description: '스프린트 회고록' },
+  { id: 'todo', name: 'TODO 목록', description: '할 일 체크리스트' },
+  { id: 'techspec', name: '기술 명세서', description: '기능 기술 스펙 문서' },
 ];
 
 const TEMPLATE_ICONS: Record<string, string> = {
@@ -28,6 +30,8 @@ const TEMPLATE_ICONS: Record<string, string> = {
   decision: '⚖️',
   journal: '📖',
   retrospective: '🔄',
+  todo: '✅',
+  techspec: '🔧',
 };
 
 function formatDate(ts: number): string {
@@ -138,6 +142,12 @@ function NewDocModal({ initialTemplateId, onClose, onCreated }: NewDocModalProps
 
 type TabKey = 'documents' | 'templates';
 
+interface EditingDoc {
+  id: number;
+  title: string;
+  content: string;
+}
+
 export default function WorkspacePage() {
   const [activeTab, setActiveTab] = useState<TabKey>('documents');
   const [documents, setDocuments] = useState<WorkspaceDocument[]>([]);
@@ -145,6 +155,13 @@ export default function WorkspacePage() {
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [preselectedTemplate, setPreselectedTemplate] = useState<string | null>(null);
+  const [editingDoc, setEditingDoc] = useState<EditingDoc | null>(null);
+
+  const fetchDocuments = () => {
+    invoke<WorkspaceDocument[]>('list_workspace_documents')
+      .then(setDocuments)
+      .catch(() => setDocuments([]));
+  };
 
   useEffect(() => {
     invoke<WorkspaceDocument[]>('list_workspace_documents')
@@ -231,19 +248,29 @@ export default function WorkspacePage() {
           ) : (
             <div className="grid gap-3">
               {documents.map((doc) => (
-                <button
+                <div
                   key={doc.id}
-                  onClick={() => setExpandedId(expandedId === doc.id ? null : doc.id)}
                   className="w-full text-left bg-gray-900 border border-gray-800 rounded-xl p-4 hover:border-gray-700 transition-colors"
                 >
                   <div className="flex items-start justify-between gap-3">
-                    <div className="flex-1 min-w-0">
+                    <button
+                      className="flex-1 min-w-0 text-left"
+                      onClick={() => setExpandedId(expandedId === doc.id ? null : doc.id)}
+                    >
                       <h3 className="text-white font-semibold truncate">{doc.title}</h3>
                       <p className="text-gray-400 text-sm mt-0.5">{formatDate(doc.created_at)}</p>
+                    </button>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        onClick={() => setEditingDoc({ id: doc.id, title: doc.title, content: doc.content_preview ?? '' })}
+                        className="text-gray-500 hover:text-indigo-400 text-xs px-2 py-1 rounded border border-gray-700 hover:border-indigo-500 transition-colors"
+                      >
+                        수정
+                      </button>
+                      <span className="text-gray-600 text-xs">
+                        {expandedId === doc.id ? '▲' : '▼'}
+                      </span>
                     </div>
-                    <span className="text-gray-600 text-xs mt-1 shrink-0">
-                      {expandedId === doc.id ? '▲' : '▼'}
-                    </span>
                   </div>
                   {expandedId === doc.id && (
                     <div className="mt-3 pt-3 border-t border-gray-800">
@@ -256,7 +283,7 @@ export default function WorkspacePage() {
                       )}
                     </div>
                   )}
-                </button>
+                </div>
               ))}
             </div>
           )}
@@ -298,6 +325,48 @@ export default function WorkspacePage() {
           }}
           onCreated={handleCreated}
         />
+      )}
+
+      {editingDoc && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 w-full max-w-2xl flex flex-col gap-4 shadow-2xl">
+            <div className="flex items-center justify-between">
+              <input
+                value={editingDoc.title}
+                onChange={(e) => setEditingDoc((prev) => prev ? { ...prev, title: e.target.value } : null)}
+                className="text-base font-semibold text-gray-100 bg-transparent border-b border-gray-700 focus:outline-none focus:border-indigo-500 flex-1"
+              />
+              <button onClick={() => setEditingDoc(null)} className="text-gray-500 hover:text-gray-300 ml-4">✕</button>
+            </div>
+            <textarea
+              value={editingDoc.content}
+              onChange={(e) => setEditingDoc((prev) => prev ? { ...prev, content: e.target.value } : null)}
+              className="bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500 resize-none h-64 font-mono"
+            />
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setEditingDoc(null)} className="px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200">취소</button>
+              <button
+                onClick={async () => {
+                  if (!editingDoc) return;
+                  try {
+                    await invoke('update_workspace_document', {
+                      id: editingDoc.id,
+                      title: editingDoc.title,
+                      content: editingDoc.content,
+                    });
+                    setEditingDoc(null);
+                    fetchDocuments();
+                  } catch (e) {
+                    console.error(e);
+                  }
+                }}
+                className="px-4 py-1.5 text-sm bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors"
+              >
+                저장
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

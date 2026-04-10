@@ -1,14 +1,102 @@
 import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { invoke } from '@tauri-apps/api/core';
 import { useSearchStore } from '../stores/useSearchStore';
 
 interface Hit {
+  document_id?: number;
   title?: string;
   score: number;
   heading_path?: string;
   file_path?: string;
   snippet?: string;
   content?: string;
+}
+
+interface TreeNode {
+  name: string;
+  path: string;
+  isDir: boolean;
+  children: TreeNode[];
+  hit?: Hit;
+}
+
+function buildTree(hits: Hit[]): TreeNode[] {
+  const root: TreeNode[] = [];
+  for (const hit of hits) {
+    if (!hit.file_path) continue;
+    const parts = hit.file_path.split('/').filter(Boolean);
+    let nodes = root;
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      const isLast = i === parts.length - 1;
+      let node = nodes.find(n => n.name === part);
+      if (!node) {
+        node = {
+          name: part,
+          path: parts.slice(0, i + 1).join('/'),
+          isDir: !isLast,
+          children: [],
+          hit: isLast ? hit : undefined,
+        };
+        nodes.push(node);
+      }
+      nodes = node.children;
+    }
+  }
+  return root;
+}
+
+function TreeItem({
+  node,
+  depth,
+  selectedHit,
+  onSelect,
+}: {
+  node: TreeNode;
+  depth: number;
+  selectedHit: Hit | null;
+  onSelect: (hit: Hit) => void;
+}) {
+  const [open, setOpen] = useState(true);
+  if (node.isDir) {
+    return (
+      <div>
+        <button
+          onClick={() => setOpen(v => !v)}
+          className="flex items-center gap-1 w-full text-left px-2 py-0.5 text-xs text-gray-400 hover:text-gray-200 transition-colors"
+          style={{ paddingLeft: depth * 12 + 8 }}
+        >
+          <span>{open ? '▾' : '▸'}</span>
+          <span className="truncate">{node.name}</span>
+        </button>
+        {open &&
+          node.children.map(child => (
+            <TreeItem
+              key={child.path}
+              node={child}
+              depth={depth + 1}
+              selectedHit={selectedHit}
+              onSelect={onSelect}
+            />
+          ))}
+      </div>
+    );
+  }
+  const isSelected = node.hit != null && selectedHit === node.hit;
+  return (
+    <button
+      onClick={() => node.hit && onSelect(node.hit)}
+      className={`w-full text-left px-2 py-0.5 text-xs truncate transition-colors ${
+        isSelected
+          ? 'text-indigo-300 bg-indigo-950/50'
+          : 'text-gray-500 hover:text-gray-200'
+      }`}
+      style={{ paddingLeft: depth * 12 + 8 }}
+    >
+      {node.name}
+    </button>
+  );
 }
 
 function MarkdownPreview({ content }: { content: string }) {
@@ -33,19 +121,42 @@ export function SearchPage() {
   const { query, hits, isLoading, error, setQuery, search, clear } = useSearchStore();
   const [inputValue, setInputValue] = useState(query);
   const [selectedHit, setSelectedHit] = useState<Hit | null>(null);
+  const [previewContent, setPreviewContent] = useState<string | null>(null);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setQuery(inputValue);
     setSelectedHit(null);
+    setPreviewContent(null);
     search();
   };
 
   const handleClear = () => {
     clear();
     setSelectedHit(null);
+    setPreviewContent(null);
     setInputValue('');
   };
+
+  const handleSelectHit = async (hit: Hit) => {
+    setSelectedHit(hit);
+    setPreviewContent(null);
+    if (hit.document_id != null) {
+      invoke('increment_view_count', { documentId: hit.document_id }).catch(() => {});
+    }
+    if (hit.file_path) {
+      try {
+        const result = await invoke<{ content: string }>('get_document_content', {
+          filePath: hit.file_path,
+        });
+        setPreviewContent(result.content);
+      } catch {
+        // fallback: use snippet from hit
+      }
+    }
+  };
+
+  const treeNodes = buildTree(hits as Hit[]);
 
   return (
     <div className="flex flex-col h-full gap-4">
@@ -82,10 +193,26 @@ export function SearchPage() {
         </div>
       )}
 
-      {/* 결과 영역: 좌측 목록 + 우측 프리뷰 */}
+      {/* 결과 영역 */}
       <div className="flex-1 overflow-hidden flex gap-4">
-        {/* 좌측: 검색 결과 목록 */}
-        <div className={`flex flex-col gap-2 overflow-auto ${selectedHit ? 'w-80 shrink-0' : 'flex-1'}`}>
+        {/* 디렉토리 트리 (hits 있을 때만) */}
+        {hits.length > 0 && (
+          <div className="w-48 shrink-0 overflow-auto bg-gray-950 border border-gray-800 rounded-xl p-2">
+            <p className="text-xs text-gray-600 px-2 py-1 uppercase tracking-wider mb-1">파일 목록</p>
+            {treeNodes.map(node => (
+              <TreeItem
+                key={node.path}
+                node={node}
+                depth={0}
+                selectedHit={selectedHit}
+                onSelect={handleSelectHit}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* 검색 결과 목록 */}
+        <div className={`flex flex-col gap-2 overflow-auto ${selectedHit ? 'w-72 shrink-0' : 'flex-1'}`}>
           {hits.length === 0 && !isLoading && query && (
             <div className="flex items-center justify-center h-48">
               <p className="text-gray-500 text-sm">"{query}"에 대한 검색 결과가 없습니다</p>
@@ -101,7 +228,14 @@ export function SearchPage() {
           {(hits as Hit[]).map((hit, i) => (
             <button
               key={i}
-              onClick={() => setSelectedHit(selectedHit === hit ? null : hit)}
+              onClick={() => {
+                if (selectedHit === hit) {
+                  setSelectedHit(null);
+                  setPreviewContent(null);
+                } else {
+                  handleSelectHit(hit);
+                }
+              }}
               className={`w-full text-left p-4 rounded-xl border transition-colors ${
                 selectedHit === hit
                   ? 'bg-indigo-950 border-indigo-700'
@@ -147,7 +281,7 @@ export function SearchPage() {
                 )}
               </div>
               <button
-                onClick={() => setSelectedHit(null)}
+                onClick={() => { setSelectedHit(null); setPreviewContent(null); }}
                 className="text-gray-600 hover:text-gray-300 transition-colors shrink-0 ml-3 text-lg"
               >
                 ✕
@@ -156,7 +290,9 @@ export function SearchPage() {
 
             {/* 프리뷰 내용 */}
             <div className="flex-1 overflow-auto p-5">
-              {selectedHit.content ? (
+              {previewContent ? (
+                <MarkdownPreview content={previewContent} />
+              ) : selectedHit.content ? (
                 <MarkdownPreview content={selectedHit.content} />
               ) : selectedHit.snippet ? (
                 <div className="space-y-4">

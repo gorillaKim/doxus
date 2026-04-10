@@ -12,9 +12,9 @@ interface SystemStatus {
 type StatusLevel = 'ok' | 'warn' | 'error' | 'unknown';
 
 function statusLevel(status: string): StatusLevel {
-  if (status === 'running' || status === 'connected' || status === 'installed') return 'ok';
-  if (status === 'not found' || status === 'not installed') return 'error';
-  if (status === 'not started') return 'warn';
+  if (status === 'ok' || status === 'running' || status === 'connected' || status === 'installed') return 'ok';
+  if (status === 'warn' || status === 'not started') return 'warn';
+  if (status === 'error' || status === 'not found' || status === 'not installed') return 'error';
   return 'unknown';
 }
 
@@ -148,11 +148,14 @@ export default function SettingsPage() {
   const handleMcpTest = async () => {
     setMcpTestLoading(true);
     setMcpTestResult(null);
-    // MCP 서버 포트 확인 (실제 구현 전 stub)
-    setTimeout(() => {
-      setMcpTestResult('✗ MCP 서버가 실행되지 않음 (Phase 1에서 구현 예정)');
+    try {
+      const res = await invoke<SystemStatus>('get_system_status');
+      setMcpTestResult(res.mcp.status === 'running' ? '✓ 연결됨' : '✗ 실행되지 않음');
+    } catch (e) {
+      setMcpTestResult(`✗ ${String(e)}`);
+    } finally {
       setMcpTestLoading(false);
-    }, 800);
+    }
   };
 
   const handleClaudeTest = async () => {
@@ -275,52 +278,11 @@ export default function SettingsPage() {
           <InfoRow label="버전" value={sysStatus?.app.version ?? '—'} />
           <InfoRow label="플랫폼" value="macOS (Tauri v2)" />
           <InfoRow label="DB 경로" value={sysStatus?.database.path ?? '—'} mono />
-          <InfoRow label="Phase" value="Phase 2b — WASM MVP 진행 중" />
         </div>
       </section>
 
       {/* 개발 도구 */}
-      <section className="flex flex-col gap-3">
-        <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">개발 도구</h2>
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 flex flex-col gap-3">
-          <p className="text-sm text-gray-400">로컬 개발 환경에서 사용 가능한 도구</p>
-          <div className="flex flex-wrap gap-2">
-            <DevButton
-              label="DB 재인덱싱"
-              onClick={async () => {
-                try {
-                  await invoke('trigger_reindex');
-                } catch {
-                  // not yet implemented
-                }
-              }}
-            />
-            <DevButton
-              label="검색 엔진 상태"
-              onClick={async () => {
-                try {
-                  await invoke('search_engine_status');
-                } catch {
-                  // not yet implemented
-                }
-              }}
-            />
-            <DevButton
-              label="플러그인 로그"
-              onClick={async () => {
-                try {
-                  await invoke('get_plugin_logs');
-                } catch {
-                  // not yet implemented
-                }
-              }}
-            />
-          </div>
-          <p className="text-xs text-gray-600">
-            * 대부분의 개발 도구는 Phase 6 (관측성/디버깅)에서 구현됩니다
-          </p>
-        </div>
-      </section>
+      <DevToolsSection />
     </div>
   );
 }
@@ -336,24 +298,60 @@ function InfoRow({ label, value, mono }: { label: string; value: string; mono?: 
   );
 }
 
-function DevButton({ label, onClick }: { label: string; onClick: () => void }) {
-  const [result, setResult] = useState<string | null>(null);
-  const handleClick = async () => {
-    setResult('실행 중...');
-    try {
-      await onClick();
-      setResult('완료');
-    } catch {
-      setResult('미구현');
-    }
-    setTimeout(() => setResult(null), 2000);
-  };
+function DevToolsSection() {
+  const [devResult, setDevResult] = useState<string | null>(null);
+
   return (
-    <button
-      onClick={handleClick}
-      className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg border border-gray-700 transition-colors"
-    >
-      {result ?? label}
-    </button>
+    <section className="flex flex-col gap-3">
+      <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">개발 도구</h2>
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 flex flex-col gap-3">
+        <p className="text-sm text-gray-400">로컬 개발 환경에서 사용 가능한 도구</p>
+        <div className="flex flex-wrap gap-2">
+          <button
+            className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg border border-gray-700 transition-colors"
+            onClick={async () => {
+              try {
+                const res = await invoke<{ indexed: number; message: string }>('trigger_reindex');
+                setDevResult(res.message);
+              } catch (e) {
+                setDevResult(`✗ ${String(e)}`);
+              }
+            }}
+          >
+            DB 재인덱싱
+          </button>
+          <button
+            className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg border border-gray-700 transition-colors"
+            onClick={async () => {
+              try {
+                const res = await invoke<{ total_documents: number; total_projects: number }>('search_engine_status');
+                setDevResult(`문서 ${res.total_documents}개, 프로젝트 ${res.total_projects}개`);
+              } catch (e) {
+                setDevResult(`✗ ${String(e)}`);
+              }
+            }}
+          >
+            검색 엔진 상태
+          </button>
+          <button
+            className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg border border-gray-700 transition-colors"
+            onClick={async () => {
+              try {
+                const res = await invoke<{ logs: { level: string; message: string }[] }>('get_plugin_logs');
+                setDevResult(`최근 로그 ${res.logs.length}건`);
+              } catch (e) {
+                setDevResult(`✗ ${String(e)}`);
+              }
+            }}
+          >
+            플러그인 로그
+          </button>
+        </div>
+        {devResult && <p className="text-xs text-emerald-400 mt-1">{devResult}</p>}
+        <p className="text-xs text-gray-600">
+          * 대부분의 개발 도구는 Phase 6 (관측성/디버깅)에서 구현됩니다
+        </p>
+      </div>
+    </section>
   );
 }

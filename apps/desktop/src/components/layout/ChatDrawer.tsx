@@ -1,5 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import rehypeHighlight from 'rehype-highlight';
+import 'highlight.js/styles/github-dark.css';
 import {
   useChatStore,
   AiProvider,
@@ -115,16 +118,51 @@ function SessionList({ onClose }: { onClose: () => void }) {
 
 function MarkdownMessage({ content }: { content: string }) {
   return (
-    <div className="prose prose-invert prose-xs max-w-none text-gray-100
-      prose-headings:text-white prose-headings:text-sm prose-headings:font-semibold
-      prose-p:text-gray-200 prose-p:leading-relaxed prose-p:my-1
-      prose-strong:text-white
-      prose-code:text-indigo-300 prose-code:bg-gray-700 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs
-      prose-pre:bg-gray-700 prose-pre:border prose-pre:border-gray-600 prose-pre:text-xs
-      prose-blockquote:border-indigo-500 prose-blockquote:text-gray-400
-      prose-a:text-indigo-400
-      prose-li:text-gray-200 prose-ul:my-1 prose-ol:my-1">
-      <ReactMarkdown>{content}</ReactMarkdown>
+    <div className="
+      text-sm text-gray-100 leading-relaxed
+      [&_h1]:text-base [&_h1]:font-bold [&_h1]:text-white [&_h1]:mt-3 [&_h1]:mb-1
+      [&_h2]:text-sm [&_h2]:font-semibold [&_h2]:text-white [&_h2]:mt-3 [&_h2]:mb-1
+      [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:text-gray-200 [&_h3]:mt-2 [&_h3]:mb-1
+      [&_p]:my-1.5 [&_p]:text-gray-200
+      [&_strong]:text-white [&_strong]:font-semibold
+      [&_em]:text-gray-300 [&_em]:italic
+      [&_a]:text-indigo-400 [&_a]:underline [&_a]:underline-offset-2 [&_a:hover]:text-indigo-300
+      [&_ul]:my-1.5 [&_ul]:pl-4 [&_ul]:list-disc [&_ul]:space-y-0.5
+      [&_ol]:my-1.5 [&_ol]:pl-4 [&_ol]:list-decimal [&_ol]:space-y-0.5
+      [&_li]:text-gray-200
+      [&_blockquote]:border-l-2 [&_blockquote]:border-indigo-500 [&_blockquote]:pl-3 [&_blockquote]:my-2 [&_blockquote]:text-gray-400 [&_blockquote]:italic
+      [&_code]:text-indigo-300 [&_code]:bg-gray-700/60 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-xs [&_code]:font-mono
+      [&_pre]:my-2 [&_pre]:rounded-lg [&_pre]:overflow-x-auto [&_pre]:border [&_pre]:border-gray-700
+      [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_pre_code]:text-xs
+      [&_hr]:border-gray-700 [&_hr]:my-3
+      [&_table]:w-full [&_table]:my-2 [&_table]:text-xs [&_table]:border-collapse [&_table]:block [&_table]:overflow-x-auto
+      [&_thead]:bg-gray-700/50
+      [&_th]:px-3 [&_th]:py-2 [&_th]:text-left [&_th]:text-gray-300 [&_th]:font-semibold [&_th]:border [&_th]:border-gray-600
+      [&_td]:px-3 [&_td]:py-1.5 [&_td]:text-gray-300 [&_td]:border [&_td]:border-gray-700
+      [&_tr:nth-child(even)]:bg-gray-700/20
+    ">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeHighlight]}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+}
+
+// ── 에이전트 상태 인디케이터 ──────────────────────────────────────────────
+
+function StatusIndicator({ provider, toolInfo }: { provider: string; toolInfo: string | null }) {
+  return (
+    <div className="flex items-center gap-2 text-xs text-gray-500 py-1">
+      {/* 스피너 */}
+      <div className="w-3.5 h-3.5 border-2 border-gray-700 border-t-indigo-400 rounded-full animate-spin shrink-0" />
+      <span>
+        {toolInfo
+          ? toolInfo
+          : `${provider === 'claude' ? 'Claude' : 'Gemini'} 답변 생성 중...`}
+      </span>
     </div>
   );
 }
@@ -132,12 +170,56 @@ function MarkdownMessage({ content }: { content: string }) {
 // ── 채팅 드로어 ──────────────────────────────────────────────────────────
 
 export function ChatDrawer() {
-  const { isOpen, sessions, activeSessionId, close, sendMessage, isLoading } = useChatStore();
+  const {
+    isOpen,
+    sessions,
+    activeSessionId,
+    close,
+    sendMessage,
+    cancelMessage,
+    isLoading,
+    toolInfo,
+  } = useChatStore();
   const [showNewForm, setShowNewForm] = useState(false);
   const [showSessions, setShowSessions] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [drawerWidth, setDrawerWidth] = useState<number>(() => {
+    const stored = localStorage.getItem('doxus-drawer-width');
+    const val = stored ? parseInt(stored, 10) : 384;
+    return isNaN(val) ? 384 : Math.min(700, Math.max(280, val));
+  });
+  const isDragging = useRef(false);
+
+  const handleDragStart = (e: React.MouseEvent) => {
+    e.preventDefault();
+    isDragging.current = true;
+    document.body.style.userSelect = 'none';
+
+    const onMove = (ev: MouseEvent) => {
+      if (!isDragging.current) return;
+      const newWidth = Math.min(700, Math.max(280, window.innerWidth - ev.clientX));
+      setDrawerWidth(newWidth);
+      localStorage.setItem('doxus-drawer-width', String(newWidth));
+    };
+
+    const onUp = () => {
+      isDragging.current = false;
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  };
 
   const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null;
   const messages = activeSession?.messages ?? [];
+
+  // 새 메시지 / 로딩 상태 변경 시 자동 스크롤
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages.length, isLoading]);
 
   const handleSend = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -152,7 +234,16 @@ export function ChatDrawer() {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed right-0 top-0 h-full w-96 bg-gray-900 border-l border-gray-800 shadow-2xl flex flex-col z-50">
+    <div
+      className="fixed right-0 top-0 h-full bg-gray-900 border-l border-gray-800 shadow-2xl flex flex-col z-50"
+      style={{ width: drawerWidth }}
+    >
+      {/* Drag handle - 좌측 경계 */}
+      <div
+        onMouseDown={handleDragStart}
+        className="absolute left-0 top-0 h-full w-1 cursor-col-resize hover:bg-indigo-500/50 transition-colors"
+        style={{ zIndex: 1 }}
+      />
       {/* 헤더 */}
       <div className="flex items-center justify-between px-4 py-3 bg-gray-950 border-b border-gray-800 shrink-0">
         <div className="flex items-center gap-2">
@@ -203,29 +294,32 @@ export function ChatDrawer() {
         </div>
       )}
 
-      {/* 메시지 목록 */}
-      <div className="flex-1 overflow-auto p-4 space-y-3">
+      {/* 메시지 목록
+          key={activeSessionId}로 세션 전환 시 DOM을 강제 재마운트 → 메시지 올바르게 갱신 */}
+      <div
+        key={activeSessionId ?? 'none'}
+        className="flex-1 overflow-auto p-4 space-y-3"
+      >
         {!activeSession && (
           <p className="text-sm text-gray-600 text-center py-8">
             세션을 만들어 사서 에이전트와 대화하세요.
           </p>
         )}
-        {activeSession && messages.length === 0 && (
+        {activeSession && messages.length === 0 && !isLoading && (
           <p className="text-sm text-gray-600 text-center py-8">
             문서에 대해 무엇이든 물어보세요.
           </p>
         )}
+
         {messages.map((m) => (
           <div
             key={m.id}
             className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}
           >
             <div
-              className={`max-w-[85%] px-3 py-2 rounded-lg text-sm leading-relaxed ${
+              className={`max-w-[85%] min-w-0 px-3 py-2 rounded-lg text-sm leading-relaxed overflow-x-auto ${
                 m.role === 'user'
-                  ? 'bg-indigo-600 text-white'
-                  : m.role === 'thought'
-                  ? 'bg-gray-800 text-gray-500 italic text-xs'
+                  ? 'bg-indigo-600 text-white break-words'
                   : 'bg-gray-800 text-gray-100'
               }`}
             >
@@ -237,6 +331,20 @@ export function ChatDrawer() {
             </div>
           </div>
         ))}
+
+        {/* 에이전트 동작 상태 인디케이터 (도구 호출 / 답변 생성 중) */}
+        {isLoading && activeSession && (
+          <div className="flex justify-start">
+            <div className="bg-gray-800 px-3 py-2 rounded-lg max-w-[85%]">
+              <StatusIndicator
+                provider={activeSession.provider}
+                toolInfo={toolInfo}
+              />
+            </div>
+          </div>
+        )}
+
+        <div ref={messagesEndRef} />
       </div>
 
       {/* 입력 */}
@@ -247,16 +355,27 @@ export function ChatDrawer() {
         <input
           name="message"
           placeholder={activeSession ? '문서에 대해 질문하세요…' : '먼저 세션을 시작하세요'}
-          disabled={!activeSession}
+          disabled={!activeSession || isLoading}
           className="flex-1 px-3 py-2 text-sm bg-gray-800 border border-gray-700 text-gray-200 placeholder-gray-600 rounded-md focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:opacity-40"
         />
-        <button
-          type="submit"
-          disabled={!activeSession || isLoading}
-          className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          전송
-        </button>
+        {isLoading ? (
+          <button
+            type="button"
+            onClick={() => cancelMessage()}
+            className="px-3 py-2 bg-red-700 hover:bg-red-600 text-white text-sm rounded-md transition-colors"
+            title="답변 중지"
+          >
+            ■
+          </button>
+        ) : (
+          <button
+            type="submit"
+            disabled={!activeSession}
+            className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            전송
+          </button>
+        )}
       </form>
     </div>
   );

@@ -218,11 +218,23 @@ function AddProjectModal({ onClose }: { onClose: () => void }) {
 }
 
 export function ProjectsPage() {
-  const { projects, isLoading, error, fetch, toggleStatus } = useProjectStore();
+  const { projects, isLoading, error, fetch, toggleStatus, indexProject, indexingNames } = useProjectStore();
   const [showModal, setShowModal] = useState(false);
   const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [indexResult, setIndexResult] = useState<{ name: string; message: string } | null>(null);
 
   useEffect(() => { fetch(); }, [fetch]);
+
+  const handleIndex = async (name: string) => {
+    try {
+      const result = await indexProject(name);
+      setIndexResult({ name, message: result.message });
+      setTimeout(() => setIndexResult(null), 4000);
+    } catch (e) {
+      setIndexResult({ name, message: `오류: ${String(e)}` });
+      setTimeout(() => setIndexResult(null), 4000);
+    }
+  };
 
   const handleToggleStatus = async (name: string, currentStatus: 'active' | 'disabled') => {
     setTogglingId(name);
@@ -238,6 +250,13 @@ export function ProjectsPage() {
   return (
     <div className="flex flex-col h-full gap-5 max-w-3xl">
       {showModal && <AddProjectModal onClose={() => setShowModal(false)} />}
+
+      {indexResult && (
+        <div className="fixed bottom-6 right-6 z-50 px-4 py-3 bg-gray-900 border border-gray-700 rounded-xl shadow-xl text-sm text-gray-200 max-w-xs">
+          <span className="font-medium text-indigo-400">{indexResult.name}</span>
+          <span className="ml-2">{indexResult.message}</span>
+        </div>
+      )}
 
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-gray-100">프로젝트</h1>
@@ -281,6 +300,13 @@ export function ProjectsPage() {
               }`}>
                 {p.status}
               </span>
+              <button
+                onClick={() => handleIndex(p.name)}
+                disabled={indexingNames.has(p.name)}
+                className="text-xs px-2.5 py-1 border border-indigo-700 text-indigo-400 rounded-lg hover:bg-indigo-950 disabled:opacity-50 transition-colors"
+              >
+                {indexingNames.has(p.name) ? '인덱싱 중...' : '인덱싱'}
+              </button>
               <button onClick={() => handleToggleStatus(p.name, p.status)} disabled={togglingId === p.name}
                 className="text-xs px-2.5 py-1 border border-gray-700 text-gray-400 rounded-lg hover:bg-gray-800 hover:text-gray-200 disabled:opacity-50 transition-colors">
                 {togglingId === p.name ? '...' : p.status === 'active' ? '비활성화' : '활성화'}
