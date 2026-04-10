@@ -264,3 +264,81 @@ cargo test --workspace: 387 passed, 0 failed (+24개 신규 테스트)
 - `document_links` 테이블 인덱서 연결
 - `ToolBridge` ↔ `McpServer` dispatcher 배선
 - Desktop UI (Phase 8)
+
+---
+
+## 2026-04-10 (세션 4) — TDD autopilot: sync_loop/tool_sync/agent 배선 + 보안 수정
+
+### 작업 배경
+
+세션 3에서 남긴 4개 미완성 항목 + critic 리뷰에서 발견된 pagination 버그를 TDD 방식으로 구현. autopilot으로 8개 태스크 완료 (commit: `c8b10a1`, 409 tests passing).
+
+### 구현 완료
+
+**A-1 — sync_loop + PluginManager.get_source() 연결**
+- `PluginManager::get_source(plugin_id: &str) -> Option<Box<dyn DocSource + Send + Sync>>` 추가
+  - `"com.doxus.obsidian"` → `Box::new(ObsidianPlugin::new())`, 나머지 → `None`
+- `spawn_sync_loop()` 시그니처에 `Arc<PluginManager>` 추가
+- 루프: `config_json` 파싱 → `initialize()` → `fetch_changes()` → `mark_synced()`
+- `DueInstance` 구조체에 `config_json: String` 필드 추가, SQL 업데이트
+- 잘못된 `config_json`은 warn + continue (패닉 없음)
+
+**A-2 — tool_index_project 페이지네이션 수정**
+- `next_cursor` 루프 추가: 단일 `fetch_all()` 호출에서 전체 페이지 순회
+- 루프마다 `document_links` 삽입: `metadata["links"]` JSON 배열 → `document_links` 테이블
+
+**A-3 — tool_sync_project 풀 구현**
+- 기존 `// TODO` 스텁 → 실제 증분 동기화 구현
+- `ObsidianPlugin` 초기화 → `fetch_changes()` → 트랜잭션 묶음 upsert + delete + `mark_synced()`
+- `sync_cursor` NULL 처리: `unwrap_or("")` → `Option<&str>` 정확한 NULL 저장
+
+**B-1 — CLI 플러그인 커맨드 (install/remove/update)**
+- `PluginAction::Install { plugin_id }` → DB `INSERT OR IGNORE` (레지스트리 다운로드는 향후 연결)
+- `PluginAction::Remove { plugin_id }` → `DELETE FROM plugins` + `.wasm` 파일 삭제
+- `PluginAction::Update { plugin_id }` → 버전 업데이트 스텁 (MVP)
+
+**B-2 — SessionRunner (SidecarManager + ToolBridge 연결)**
+- `crates/agent/src/session.rs` 신규 파일
+- `SessionRunner { sidecar: SidecarManager, bridge: ToolBridge }`
+- `process_one()`: JSONL 라인 수신 → `ToolBridge.handle_line()` 먼저 시도 → tool_use면 결과 전송, 아니면 `AgentMessage` 파싱해서 반환
+- `AgentMessage::ToolUse { id, name, input }` variant 추가
+- `SidecarManager::recv_raw() / send_raw()` 로우 바이트 메서드 추가
+
+**C-1 — OAuth CSRF 수정 (Confluence)**
+- `oauth_pending_state: Option<String>` → `std::sync::Mutex<Option<String>>`
+- `oauth_start(&self)`: state 생성 → Mutex에 저장 → auth URL 반환 (interior mutability)
+- `oauth_exchange(&mut self, code, state)`: Mutex에서 expected state 취득 → 불일치 시 `OAuthError::StateMismatch`
+- 기존 테스트: `oauth_start()` 먼저 호출 후 URL query param에서 state 추출로 수정
+
+**C-2 — 보안 수정 (CQL injection + path traversal)**
+- `validate_config`: `space_key` 영숫자 전용 검증 (`[a-zA-Z0-9_-]`) → CQL 인젝션 차단
+- `tool_plugin_remove`: `plugin_id` 문자셋 검증 + canonical path check → path traversal 차단
+- `PluginMetadata::capabilities()`: `oauth: true` 하드코딩 → `oauth: self.oauth_config.is_some()` 동적 반환
+
+### 발견된 문제와 해결
+
+| 문제 | 해결 |
+|------|------|
+| `oauth_exchange` 테스트에서 `oauth_start()` 없이 직접 호출 → `AuthRequired` | 테스트를 `oauth_start()` → URL state 추출 → `oauth_exchange()` 순서로 수정 |
+| `make_oauth_plugin(&server, false).await` 컴파일 오류 (sync 함수에 await) | `.await` 제거 |
+| `cargo test -p doxus-plugin-confluence` 0 tests | `--lib` 플래그 필요 |
+| sync_cursor NULL 저장 오류 (`""` 빈 문자열 저장) | `Option<&str>` 타입으로 NULL 정확히 저장 |
+
+### 설계 결정
+
+- **`oauth_start(&self)` 불변 참조에서 state 저장**: `&mut self` 대신 `Mutex<Option<String>>` interior mutability 사용 — trait 시그니처 `&self` 유지
+- **`Box<dyn DocSource>` 직접 호출**: `SyncRunner<S: DocSource>` 제네릭 래퍼 대신 직접 `fetch_changes()` 호출 — object-safety 우회 불필요
+
+### 결과
+
+```
+cargo test --workspace: 409 passed, 0 failed
+커밋: c8b10a1
+```
+
+### 남은 작업
+
+- Desktop UI (Phase 8): ChatDrawer 에이전트 연결, MarketPage 실제 데이터, SettingsPage 저장
+- `doxus plugin install`: 레지스트리 API 실제 다운로드 미연결
+- `PluginAction::Update`: 버전 스텁, 실제 업데이트 로직 미구현
+- `SidecarMessage` / `HostMessage` 중복 타입 정리 (Low priority)

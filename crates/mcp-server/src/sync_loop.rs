@@ -108,14 +108,24 @@ pub fn spawn_sync_loop(
                                     let updated = changeset.updated.len();
                                     let new_cursor = changeset.next_cursor;
                                     // Write back last_synced + cursor under the lock.
-                                    if let Ok(guard) = conn.lock() {
-                                        let sync_db = SyncDb::new(&*guard);
-                                        if let Err(e) = sync_db.mark_synced(inst.id, new_cursor.as_deref()) {
-                                            tracing::warn!(
+                                    match conn.lock() {
+                                        Ok(guard) => {
+                                            let sync_db = SyncDb::new(&*guard);
+                                            if let Err(e) = sync_db.mark_synced(inst.id, new_cursor.as_deref()) {
+                                                tracing::warn!(
+                                                    instance_id = inst.id,
+                                                    error = %e,
+                                                    "sync_loop: failed to mark synced"
+                                                );
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(
                                                 instance_id = inst.id,
                                                 error = %e,
-                                                "sync_loop: failed to mark synced"
+                                                "sync_loop: connection lock poisoned, aborting loop"
                                             );
+                                            return;
                                         }
                                     }
                                     tracing::info!(

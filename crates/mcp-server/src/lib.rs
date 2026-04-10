@@ -1062,6 +1062,7 @@ impl McpServer {
         let fts_query = query_text.split_whitespace()
             .filter(|w| w.len() > 3)
             .take(10)
+            .map(|w| format!("\"{}\"", w.replace('"', "\"\"")))
             .collect::<Vec<_>>()
             .join(" OR ");
 
@@ -1406,7 +1407,7 @@ impl McpServer {
                 plugins_dir.canonicalize()
                     .map(|p| p.join(format!("{plugin_id}.wasm")))
             }) {
-                let safe_prefix = home.join(".doxus/plugins");
+                let safe_prefix = plugins_dir.canonicalize().unwrap_or(plugins_dir.clone());
                 if canonical.starts_with(&safe_prefix) && wasm_path.exists() {
                     let _ = std::fs::remove_file(&wasm_path);
                 }

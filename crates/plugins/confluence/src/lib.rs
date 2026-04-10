@@ -301,16 +301,9 @@ impl DocSource for ConfluencePlugin {
         let flow = OAuthFlow::new(config.clone());
         // Generate a cryptographically random state for CSRF protection.
         let state = {
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            use std::time::{SystemTime, UNIX_EPOCH};
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .subsec_nanos();
-            let mut h = DefaultHasher::new();
-            (nanos, std::thread::current().id()).hash(&mut h);
-            format!("{:016x}", h.finish())
+            let mut bytes = [0u8; 16];
+            getrandom::getrandom(&mut bytes).expect("OS RNG unavailable");
+            bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
         };
         let url = flow.authorization_url(&state).ok()?;
         // Store state for CSRF validation in oauth_exchange.
