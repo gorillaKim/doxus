@@ -1,5 +1,6 @@
 use rusqlite::{Connection, Result as SqlResult};
 use std::path::Path;
+use std::sync::Once;
 use thiserror::Error;
 
 pub mod schema;
@@ -63,10 +64,33 @@ pub fn migrate(conn: &Connection) -> Result<(), DbError> {
     Ok(())
 }
 
+static VEC_INIT: Once = Once::new();
+
+/// Register the sqlite-vec extension process-wide (idempotent).
+pub fn ensure_vec_extension() {
+    VEC_INIT.call_once(|| unsafe {
+        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+            sqlite_vec::sqlite3_vec_init as *const (),
+        )));
+    });
+}
+
+/// Create the vec0 virtual table for chunk embeddings (idempotent).
+pub fn create_vec0_table(conn: &Connection) -> Result<(), DbError> {
+    conn.execute_batch(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS chunk_embeddings \
+         USING vec0(chunk_id INTEGER PRIMARY KEY, embedding FLOAT[384]);",
+    )
+    .map_err(DbError::Sqlite)?;
+    Ok(())
+}
+
 /// Open a DB connection, apply PRAGMAs, and run migrations.
 pub fn open(path: &Path) -> Result<Connection, DbError> {
+    ensure_vec_extension();
     let conn = Connection::open(path).map_err(DbError::Sqlite)?;
     apply_pragmas(&conn).map_err(DbError::Sqlite)?;
+    create_vec0_table(&conn)?;
     migrate(&conn)?;
     Ok(conn)
 }
@@ -77,7 +101,7 @@ static MIGRATIONS: &[(&str, &str)] = &[
     ("V1__initial_projects",   include_str!("migrations/V1__initial_projects.sql")),
     ("V2__documents",          include_str!("migrations/V2__documents.sql")),
     ("V3__chunks_fts",         include_str!("migrations/V3__chunks_fts.sql")),
-    // V4 (vec0) is applied after sqlite-vec extension load — handled in Database::open
+    ("V4__vec0_placeholder",   "-- vec0 DDL applied separately via create_vec0_table()"),
     ("V5__graph",              include_str!("migrations/V5__graph.sql")),
     ("V6__view_counts",        include_str!("migrations/V6__view_counts.sql")),
     ("V7__plugins",            include_str!("migrations/V7__plugins.sql")),
@@ -96,16 +120,14 @@ pub struct TestDb {
 #[cfg(any(test, feature = "test-helpers"))]
 impl TestDb {
     pub fn new() -> Self {
+        ensure_vec_extension();
         let conn = Connection::open_in_memory().expect("in-memory db");
         apply_pragmas(&conn).expect("pragmas");
-        // Apply non-vec0 migrations
+        create_vec0_table(&conn).expect("vec0 table");
+        // Apply all migrations
         let migrations: &[(&str, &str)] = MIGRATIONS;
         for (i, (_name, sql)) in migrations.iter().enumerate() {
             let version = (i + 1) as u32;
-            // Skip V4 (vec0) — requires sqlite-vec extension
-            if version == 4 {
-                continue;
-            }
             conn.execute_batch(sql).unwrap_or_else(|e| {
                 panic!("migration V{version} failed: {e}");
             });
@@ -207,5 +229,50 @@ mod tests {
         apply_pragmas(&conn).unwrap();
         migrate(&conn).unwrap();
         migrate(&conn).unwrap();
+    }
+
+    #[test]
+    fn vec0_table_exists_after_open() {
+        let db = TestDb::new();
+        let name: String = db
+            .conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='chunk_embeddings'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("chunk_embeddings table should exist");
+        assert_eq!(name, "chunk_embeddings");
+    }
+
+    #[test]
+    fn can_insert_and_query_embedding() {
+        let db = TestDb::new();
+        // Insert a fake embedding (384-dim, all 0.1)
+        let embedding: Vec<f32> = vec![0.1f32; 384];
+        let emb_bytes: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+
+        db.conn
+            .execute(
+                "INSERT INTO chunk_embeddings(chunk_id, embedding) VALUES (?1, ?2)",
+                rusqlite::params![1i64, emb_bytes],
+            )
+            .expect("insert embedding");
+
+        // KNN query
+        let query_emb: Vec<f32> = vec![0.1f32; 384];
+        let query_bytes: Vec<u8> = query_emb.iter().flat_map(|f| f.to_le_bytes()).collect();
+
+        let (chunk_id, distance): (i64, f64) = db
+            .conn
+            .query_row(
+                "SELECT chunk_id, distance FROM chunk_embeddings WHERE embedding MATCH ?1 ORDER BY distance LIMIT 1",
+                rusqlite::params![query_bytes],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("KNN query should return result");
+
+        assert_eq!(chunk_id, 1);
+        assert!(distance < 0.001, "identical vectors should have near-zero distance");
     }
 }

@@ -22,6 +22,8 @@ url = "2"
 reqwest = { workspace = true }
 sha2 = "0.10"
 hex = "0.4"
+sqlite-vec = { workspace = true }
+zerocopy = { workspace = true }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand = "0.8"
 handlebars = "6"

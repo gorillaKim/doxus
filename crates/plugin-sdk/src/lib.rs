@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
 
+pub mod wasm_types;
+
 // ── Shared error type ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Error, Serialize, Deserialize, Clone)]

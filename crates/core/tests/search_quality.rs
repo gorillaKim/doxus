@@ -15,7 +15,7 @@
 ///   - score_gap  : 1위-2위 score 차이
 use doxus_core::{
     db::TestDb,
-    search::{SearchEngine, SearchOpts},
+    search::{SearchEngine, SearchOpts, SyncSearchEngine},
 };
 use rusqlite;
 
@@ -185,7 +185,7 @@ fn setup() -> (TestDb, i64) {
 }
 
 fn measure(
-    engine: &SearchEngine,
+    engine: &SyncSearchEngine,
     pid: i64,
     label: &str,
     query: &'static str,

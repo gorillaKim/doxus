@@ -39,6 +39,9 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # crypto / hashing
 sha2 = "0.10"
 hex = "0.4"
+# vector search
+sqlite-vec = "0.1.9"
+zerocopy = { version = "0.7", features = ["derive"] }
 # testing
 tokio-test = "0.4"
 tempfile = "3"

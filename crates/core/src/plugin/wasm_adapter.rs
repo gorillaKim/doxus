@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use doxus_plugin_sdk::{
-    Capabilities, ChangeSet, DocSource, DocumentStream, FetchAllOpts, FetchChangesOpts,
-    HealthStatus, PluginConfig, PluginError, PluginKind, PluginMetadata, PluginSecrets,
-    RawDocument, SourceDocId,
+    Capabilities, ChangeSet, ContentType, DocSource, DocumentStream, FetchAllOpts,
+    FetchChangesOpts, HealthStatus, PluginConfig, PluginError, PluginKind, PluginMetadata,
+    PluginSecrets, RawDocument, SourceDocId,
 };
 use extism::{Manifest, Plugin, Wasm};
 use serde::{Deserialize, Serialize};
@@ -190,7 +190,6 @@ impl WasmDocSourceAdapter {
     }
 
     /// Call a WASM function with JSON input, get JSON output
-    #[allow(dead_code)]
     async fn call_wasm<I, O>(&self, func: &str, input: &I) -> Result<O, PluginError>
     where
         I: Serialize + Send + Sync,
@@ -213,6 +212,24 @@ impl WasmDocSourceAdapter {
         })
         .await
         .map_err(|e| PluginError::Internal(format!("spawn_blocking: {e}")))?
+    }
+}
+
+fn raw_doc_from_wasm(d: doxus_plugin_sdk::wasm_types::RawDocumentWasm) -> RawDocument {
+    let content_type = match d.content_type.as_str() {
+        "plain_text" => ContentType::PlainText,
+        "html" => ContentType::Html,
+        _ => ContentType::Markdown,
+    };
+    RawDocument {
+        id: SourceDocId(d.id),
+        title: d.title,
+        content: d.content,
+        content_type,
+        url: d.url,
+        metadata: d.metadata,
+        tags: d.tags,
+        updated_at: d.updated_at,
     }
 }
 
@@ -242,30 +259,56 @@ impl DocSource for WasmDocSourceAdapter {
         Ok(())
     }
 
-    async fn fetch_all(&self, _opts: FetchAllOpts) -> Result<DocumentStream, PluginError> {
+    async fn fetch_all(&self, opts: FetchAllOpts) -> Result<DocumentStream, PluginError> {
+        use doxus_plugin_sdk::wasm_types::{DocumentStreamWasm, FetchAllOptsWasm};
+
+        let wasm_opts = FetchAllOptsWasm {
+            cursor: opts.cursor,
+            page_size: opts.page_size,
+        };
+        let result: DocumentStreamWasm = self.call_wasm("fetch_all", &wasm_opts).await?;
         Ok(DocumentStream {
-            documents: vec![],
-            next_cursor: None,
-            estimated_total: Some(0),
+            documents: result.documents.into_iter().map(raw_doc_from_wasm).collect(),
+            next_cursor: result.next_cursor,
+            estimated_total: result.estimated_total,
         })
     }
 
     async fn fetch_document(&self, id: &SourceDocId) -> Result<RawDocument, PluginError> {
-        Err(PluginError::NotFound(id.0.clone()))
+        use doxus_plugin_sdk::wasm_types::{FetchDocumentOptsWasm, RawDocumentWasm};
+
+        let opts = FetchDocumentOptsWasm { id: id.0.clone() };
+        let result: RawDocumentWasm = self.call_wasm("fetch_document", &opts).await?;
+        Ok(raw_doc_from_wasm(result))
     }
 
     async fn health_check(&self) -> HealthStatus {
-        HealthStatus {
-            healthy: true,
-            message: None,
+        let result: Result<String, _> = self.call_wasm("health_check", &()).await;
+        match result {
+            Ok(_) => HealthStatus {
+                healthy: true,
+                message: None,
+            },
+            Err(e) => HealthStatus {
+                healthy: false,
+                message: Some(e.to_string()),
+            },
         }
     }
 
-    async fn fetch_changes(&self, _opts: FetchChangesOpts) -> Result<ChangeSet, PluginError> {
+    async fn fetch_changes(&self, opts: FetchChangesOpts) -> Result<ChangeSet, PluginError> {
+        use doxus_plugin_sdk::wasm_types::{ChangeSetWasm, FetchChangesOptsWasm};
+
+        let wasm_opts = FetchChangesOptsWasm {
+            since: opts.since,
+            cursor: opts.cursor,
+            page_size: opts.page_size,
+        };
+        let result: ChangeSetWasm = self.call_wasm("fetch_changes", &wasm_opts).await?;
         Ok(ChangeSet {
-            updated: vec![],
-            deleted_ids: vec![],
-            next_cursor: None,
+            updated: result.updated.into_iter().map(raw_doc_from_wasm).collect(),
+            deleted_ids: result.deleted.into_iter().map(SourceDocId).collect(),
+            next_cursor: result.next_cursor,
         })
     }
 }
@@ -316,17 +359,10 @@ mod tests {
         assert!(!caps.native_search);
     }
 
-    #[tokio::test]
-    async fn health_check_returns_healthy_when_loaded() {
-        let adapter =
-            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest()).unwrap();
-        let status = adapter.health_check().await;
-        assert!(status.healthy);
-        assert!(status.message.is_none());
-    }
+    // health_check_returns_unhealthy_for_minimal_wasm is defined below with other wasm bridge tests
 
     #[tokio::test]
-    async fn fetch_all_returns_empty_stream_for_minimal_wasm() {
+    async fn fetch_all_errors_for_minimal_wasm_without_export() {
         let adapter =
             WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest()).unwrap();
         let opts = FetchAllOpts {
@@ -334,14 +370,11 @@ mod tests {
             page_size: 10,
         };
         let result = adapter.fetch_all(opts).await;
-        assert!(result.is_ok());
-        let stream = result.unwrap();
-        assert!(stream.documents.is_empty());
-        assert!(stream.next_cursor.is_none());
+        assert!(result.is_err(), "minimal wasm has no fetch_all export");
     }
 
     #[tokio::test]
-    async fn fetch_changes_returns_empty_changeset() {
+    async fn fetch_changes_errors_for_minimal_wasm_without_export() {
         let adapter =
             WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest()).unwrap();
         let opts = doxus_plugin_sdk::FetchChangesOpts {
@@ -350,11 +383,40 @@ mod tests {
             page_size: 10,
         };
         let result = adapter.fetch_changes(opts).await;
-        assert!(result.is_ok());
-        let changeset = result.unwrap();
-        assert!(changeset.updated.is_empty());
-        assert!(changeset.deleted_ids.is_empty());
-        assert!(changeset.next_cursor.is_none());
+        assert!(result.is_err(), "minimal wasm has no fetch_changes export");
+    }
+
+    #[tokio::test]
+    async fn fetch_document_errors_for_minimal_wasm_without_export() {
+        let adapter =
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest()).unwrap();
+        let result = adapter.fetch_document(&SourceDocId("doc1".into())).await;
+        assert!(result.is_err(), "minimal wasm has no fetch_document export");
+    }
+
+    #[tokio::test]
+    async fn health_check_returns_unhealthy_for_minimal_wasm() {
+        let adapter =
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest()).unwrap();
+        let status = adapter.health_check().await;
+        assert!(!status.healthy, "minimal wasm has no health_check export");
+        assert!(status.message.is_some());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires pre-built test_plugin.wasm fixture (wasm32-unknown-unknown)"]
+    async fn fetch_all_calls_wasm_export() {
+        let wasm_bytes = include_bytes!("../../../core/tests/fixtures/test_plugin.wasm");
+        let adapter =
+            WasmDocSourceAdapter::from_bytes(wasm_bytes.to_vec(), test_manifest()).unwrap();
+        let opts = FetchAllOpts {
+            cursor: None,
+            page_size: 10,
+        };
+        let result = adapter.fetch_all(opts).await.unwrap();
+        assert!(result.documents.is_empty());
+        assert!(result.next_cursor.is_none());
+        assert_eq!(result.estimated_total, Some(0));
     }
 
     #[test]

@@ -1,6 +1,9 @@
 use crate::db::schema::SearchHit;
+use crate::embedding::{EmbeddingError, EmbeddingProvider};
 use rusqlite::Connection;
+use sha2::{Sha256, Digest};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -9,6 +12,22 @@ pub enum SearchError {
     Db(#[from] rusqlite::Error),
     #[error("embedding failed: {0}")]
     Embedding(String),
+    #[error("connection lock poisoned")]
+    LockPoisoned,
+    #[error("task join error: {0}")]
+    Join(String),
+}
+
+impl From<EmbeddingError> for SearchError {
+    fn from(e: EmbeddingError) -> Self {
+        SearchError::Embedding(e.to_string())
+    }
+}
+
+impl From<tokio::task::JoinError> for SearchError {
+    fn from(e: tokio::task::JoinError) -> Self {
+        SearchError::Join(e.to_string())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -73,17 +92,316 @@ fn rrf_score(rank: usize) -> f64 {
     1.0 / (RRF_K + rank) as f64
 }
 
-pub struct SearchEngine<'a> {
+/// Merge two ranked result lists via Reciprocal Rank Fusion.
+fn rrf_merge(fts_hits: Vec<SearchHit>, vec_hits: Vec<SearchHit>) -> Vec<SearchHit> {
+    let mut scores: HashMap<i64, (f64, SearchHit)> = HashMap::new();
+
+    for (rank, hit) in fts_hits.into_iter().enumerate() {
+        let entry = scores.entry(hit.chunk_id).or_insert((0.0, hit.clone()));
+        entry.0 += rrf_score(rank + 1);
+        // Keep the richer hit data
+        if entry.1.snippet.is_empty() && !hit.snippet.is_empty() {
+            entry.1 = hit;
+        }
+    }
+    for (rank, hit) in vec_hits.into_iter().enumerate() {
+        let entry = scores.entry(hit.chunk_id).or_insert((0.0, hit.clone()));
+        entry.0 += rrf_score(rank + 1);
+        if entry.1.snippet.is_empty() && !hit.snippet.is_empty() {
+            entry.1 = hit;
+        }
+    }
+
+    let mut merged: Vec<SearchHit> = scores
+        .into_values()
+        .map(|(score, mut hit)| {
+            hit.score = score;
+            hit
+        })
+        .collect();
+    merged.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    merged
+}
+
+/// No-op embedder for FTS-only usage (avoids requiring a real model).
+struct NoOpEmbedder;
+
+#[async_trait::async_trait]
+impl EmbeddingProvider for NoOpEmbedder {
+    async fn embed(&self, _texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        Err(EmbeddingError::Inference("no embedder configured".into()))
+    }
+    fn dimension(&self) -> usize {
+        384
+    }
+    fn model_info(&self) -> &crate::embedding::ModelInfo {
+        // This is only called in error paths; use a static leak for simplicity
+        static INFO: std::sync::OnceLock<crate::embedding::ModelInfo> = std::sync::OnceLock::new();
+        INFO.get_or_init(|| crate::embedding::ModelInfo {
+            name: "noop".to_string(),
+            dimension: 384,
+            max_tokens: 0,
+        })
+    }
+}
+
+pub struct SearchEngine {
+    conn: Arc<Mutex<Connection>>,
+    embedder: Arc<dyn EmbeddingProvider>,
+}
+
+impl SearchEngine {
+    /// Create a new SearchEngine with an embedding provider.
+    pub fn with_embedder(conn: Arc<Mutex<Connection>>, embedder: Arc<dyn EmbeddingProvider>) -> Self {
+        Self { conn, embedder }
+    }
+
+    /// Create a SearchEngine from a borrowed connection (FTS-only, sync-compatible).
+    /// This wraps the connection in Arc<Mutex<>> with a NoOpEmbedder.
+    /// Primarily for backward compatibility with callers that pass &Connection.
+    pub fn new(conn: &Connection) -> SyncSearchEngine<'_> {
+        SyncSearchEngine { conn }
+    }
+
+    /// Create a SearchEngine owning the connection (FTS-only).
+    pub fn new_fts_only(conn: Connection) -> Self {
+        Self {
+            conn: Arc::new(Mutex::new(conn)),
+            embedder: Arc::new(NoOpEmbedder),
+        }
+    }
+
+    /// Index a document: insert/replace into documents, chunks, and chunk_embeddings.
+    pub async fn index_document_async(
+        &self,
+        project_id: i64,
+        source_doc_id: &str,
+        title: &str,
+        content: &str,
+    ) -> Result<(), SearchError> {
+        // 1. Generate embedding
+        let embedding_result = self.embedder.embed(&[content]).await;
+        let emb_bytes: Option<Vec<u8>> = match embedding_result {
+            Ok(vecs) => {
+                let emb = vecs.into_iter().next().ok_or_else(|| {
+                    SearchError::Embedding("empty embedding result".into())
+                })?;
+                Some(emb.iter().flat_map(|f| f.to_le_bytes()).collect())
+            }
+            Err(EmbeddingError::Inference(_)) => None, // NoOp embedder - skip vector storage
+            Err(e) => return Err(SearchError::Embedding(e.to_string())),
+        };
+
+        // 2. DB writes via spawn_blocking
+        let conn = Arc::clone(&self.conn);
+        let source_doc_id = source_doc_id.to_string();
+        let title = title.to_string();
+        let content = content.to_string();
+
+        tokio::task::spawn_blocking(move || -> Result<(), SearchError> {
+            let conn = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
+            index_document_sync(&conn, project_id, &source_doc_id, &title, &content, emb_bytes.as_deref())
+        })
+        .await??;
+
+        Ok(())
+    }
+
+    /// Hybrid search: FTS5 + vector similarity, merged via RRF.
+    pub async fn search_async(&self, query: &SearchQuery) -> Result<Vec<SearchHit>, SearchError> {
+        match query.mode {
+            SearchMode::Fts => self.fts_search_async(query).await,
+            SearchMode::Vector => self.vector_search_async(query).await,
+            SearchMode::Hybrid => {
+                let fts_hits = self.fts_search_async(query).await?;
+                let vec_hits = self.vector_search_async(query).await.unwrap_or_default();
+                Ok(rrf_merge(fts_hits, vec_hits))
+            }
+        }
+    }
+
+    async fn fts_search_async(&self, query: &SearchQuery) -> Result<Vec<SearchHit>, SearchError> {
+        let conn = Arc::clone(&self.conn);
+        let query = query.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
+            fts_search_sync(&conn, &query)
+        })
+        .await?
+    }
+
+    async fn vector_search_async(&self, query: &SearchQuery) -> Result<Vec<SearchHit>, SearchError> {
+        let embedding = self.embedder.embed(&[query.text.as_str()]).await
+            .map_err(|e| SearchError::Embedding(e.to_string()))?;
+        let emb = embedding.into_iter().next()
+            .ok_or_else(|| SearchError::Embedding("empty".into()))?;
+        let emb_bytes: Vec<u8> = emb.iter().flat_map(|f| f.to_le_bytes()).collect();
+
+        let conn = Arc::clone(&self.conn);
+        let limit = query.limit as i64;
+        let project_ids = query.project_ids.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
+            vector_search_sync(&conn, &emb_bytes, limit, &project_ids)
+        })
+        .await?
+    }
+}
+
+// ── Sync free functions (used inside spawn_blocking) ─────────────────────────
+
+fn index_document_sync(
+    conn: &Connection,
+    project_id: i64,
+    source_doc_id: &str,
+    title: &str,
+    content: &str,
+    emb_bytes: Option<&[u8]>,
+) -> Result<(), SearchError> {
+    // Upsert document
+    let content_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
+    conn.execute(
+        "INSERT INTO documents (project_id, source_doc_id, title, content, content_hash, last_indexed)
+         VALUES (?1, ?2, ?3, ?4, ?5, unixepoch())
+         ON CONFLICT(project_id, source_doc_id) DO UPDATE SET
+            title = excluded.title,
+            content = excluded.content,
+            content_hash = excluded.content_hash,
+            last_indexed = excluded.last_indexed",
+        rusqlite::params![project_id, source_doc_id, title, content, content_hash],
+    )?;
+
+    let doc_id: i64 = conn.query_row(
+        "SELECT id FROM documents WHERE project_id = ?1 AND source_doc_id = ?2",
+        rusqlite::params![project_id, source_doc_id],
+        |row| row.get(0),
+    )?;
+
+    // Delete old chunks (triggers handle FTS cleanup)
+    conn.execute("DELETE FROM chunks WHERE document_id = ?1", [doc_id])?;
+
+    // Insert single chunk (whole content)
+    conn.execute(
+        "INSERT INTO chunks (document_id, content, chunk_index) VALUES (?1, ?2, 0)",
+        rusqlite::params![doc_id, content],
+    )?;
+
+    // Store embedding in chunk_embeddings if provided
+    if let Some(bytes) = emb_bytes {
+        let chunk_id: i64 = conn.query_row(
+            "SELECT id FROM chunks WHERE document_id = ?1 AND chunk_index = 0",
+            [doc_id],
+            |row| row.get(0),
+        )?;
+        conn.execute(
+            "INSERT OR REPLACE INTO chunk_embeddings(chunk_id, embedding) VALUES (?1, ?2)",
+            rusqlite::params![chunk_id, bytes],
+        )?;
+    }
+
+    Ok(())
+}
+
+fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchHit>, SearchError> {
+    let limit = query.limit as i64;
+
+    let project_filter = if query.project_ids.is_empty() {
+        "AND p.status = 'active'".to_string()
+    } else {
+        let ids: Vec<String> = query.project_ids.iter().map(|id| id.to_string()).collect();
+        format!("AND d.project_id IN ({})", ids.join(","))
+    };
+
+    let sql = format!(
+        "SELECT d.id, c.id, d.title, d.file_path, c.heading_path,
+                snippet(chunks_fts, 0, '<b>', '</b>', '…', 20) AS snippet,
+                bm25(chunks_fts) AS score
+         FROM chunks_fts
+         JOIN chunks c ON c.id = chunks_fts.rowid
+         JOIN documents d ON d.id = c.document_id
+         JOIN projects p ON p.id = d.project_id
+         WHERE chunks_fts MATCH ?1
+         {project_filter}
+         ORDER BY score
+         LIMIT ?2"
+    );
+
+    let mut stmt = conn.prepare(&sql)?;
+    let hits = stmt
+        .query_map([query.text.as_str(), &limit.to_string()], |row| {
+            Ok(SearchHit {
+                document_id: row.get(0)?,
+                chunk_id: row.get(1)?,
+                title: row.get(2)?,
+                file_path: row.get(3)?,
+                heading_path: row.get(4)?,
+                snippet: row.get(5)?,
+                score: row.get::<_, f64>(6).unwrap_or(0.0).abs(),
+            })
+        })?
+        .collect::<Result<Vec<_>, rusqlite::Error>>()?;
+
+    Ok(hits)
+}
+
+fn vector_search_sync(
+    conn: &Connection,
+    emb_bytes: &[u8],
+    limit: i64,
+    project_ids: &[i64],
+) -> Result<Vec<SearchHit>, SearchError> {
+    let project_filter = if project_ids.is_empty() {
+        "AND p.status = 'active'".to_string()
+    } else {
+        let ids: Vec<String> = project_ids.iter().map(|id| id.to_string()).collect();
+        format!("AND d.project_id IN ({})", ids.join(","))
+    };
+
+    // vec0 KNN requires LIMIT on the virtual table query directly,
+    // so we use a subquery to get candidate chunk_ids first, then join.
+    let sql = format!(
+        "SELECT c.id, c.document_id, d.title, d.file_path, c.heading_path, c.content, knn.distance
+         FROM (
+             SELECT chunk_id, distance FROM chunk_embeddings
+             WHERE embedding MATCH ?1 AND k = ?2
+         ) knn
+         JOIN chunks c ON knn.chunk_id = c.id
+         JOIN documents d ON d.id = c.document_id
+         JOIN projects p ON p.id = d.project_id
+         WHERE 1=1 {project_filter}
+         ORDER BY knn.distance"
+    );
+
+    let mut stmt = conn.prepare(&sql)?;
+    let hits = stmt
+        .query_map(rusqlite::params![emb_bytes, limit], |row| {
+            let distance: f64 = row.get(6)?;
+            Ok(SearchHit {
+                chunk_id: row.get(0)?,
+                document_id: row.get(1)?,
+                title: row.get(2)?,
+                file_path: row.get(3)?,
+                heading_path: row.get(4)?,
+                snippet: row.get(5)?,
+                score: 1.0 / (RRF_K as f64 + distance),
+            })
+        })?
+        .collect::<Result<Vec<_>, rusqlite::Error>>()?;
+
+    Ok(hits)
+}
+
+// ── SyncSearchEngine (backward-compatible wrapper) ───────────────────────────
+
+/// Synchronous search engine that borrows a connection directly.
+/// Used by callers that already hold a lock on the connection.
+pub struct SyncSearchEngine<'a> {
     conn: &'a Connection,
 }
 
-impl<'a> SearchEngine<'a> {
-    pub fn new(conn: &'a Connection) -> Self {
-        Self { conn }
-    }
-
-    /// Index a document: insert/replace into documents and chunks tables.
-    /// The FTS5 triggers will keep chunks_fts in sync automatically.
+impl<'a> SyncSearchEngine<'a> {
+    /// Index a document (sync, FTS only — no embedding).
     pub fn index_document(
         &self,
         project_id: i64,
@@ -91,38 +409,7 @@ impl<'a> SearchEngine<'a> {
         title: &str,
         content: &str,
     ) -> Result<(), SearchError> {
-        // Upsert document
-        self.conn.execute(
-            "INSERT INTO documents (project_id, source_doc_id, title, content, content_hash, last_indexed)
-             VALUES (?1, ?2, ?3, ?4, ?5, unixepoch())
-             ON CONFLICT(project_id, source_doc_id) DO UPDATE SET
-                title = excluded.title,
-                content = excluded.content,
-                content_hash = excluded.content_hash,
-                last_indexed = excluded.last_indexed",
-            rusqlite::params![project_id, source_doc_id, title, content, content],
-        )?;
-
-        let doc_id: i64 = self.conn.query_row(
-            "SELECT id FROM documents WHERE project_id = ?1 AND source_doc_id = ?2",
-            rusqlite::params![project_id, source_doc_id],
-            |row| row.get(0),
-        )?;
-
-        // Delete old chunks (triggers handle FTS cleanup)
-        self.conn.execute(
-            "DELETE FROM chunks WHERE document_id = ?1",
-            [doc_id],
-        )?;
-
-        // Insert single chunk (whole content)
-        self.conn.execute(
-            "INSERT INTO chunks (document_id, content, chunk_index)
-             VALUES (?1, ?2, 0)",
-            rusqlite::params![doc_id, content],
-        )?;
-
-        Ok(())
+        index_document_sync(self.conn, project_id, source_doc_id, title, content, None)
     }
 
     /// Convenience search: query string + options, returns `Hit` with RRF scoring.
@@ -170,7 +457,6 @@ impl<'a> SearchEngine<'a> {
             .filter_map(|r| r.ok())
             .collect();
 
-        // Apply RRF scoring (currently FTS-only; vector rank will be merged here later)
         let mut rrf_map: HashMap<i64, Hit> = HashMap::new();
         for (rank, (doc_id, project_id, source_doc_id, title, snippet, _fts_score)) in
             rows.into_iter().enumerate()
@@ -191,61 +477,15 @@ impl<'a> SearchEngine<'a> {
         Ok(hits)
     }
 
-    /// Hybrid search: FTS5 + (optionally) vector similarity, merged via RRF.
+    /// FTS search using SearchQuery.
     pub fn search(&self, query: &SearchQuery) -> Result<Vec<SearchHit>, SearchError> {
         match query.mode {
-            SearchMode::Fts | SearchMode::Hybrid => self.fts_search(query),
+            SearchMode::Fts | SearchMode::Hybrid => fts_search_sync(self.conn, query),
             SearchMode::Vector => {
-                // Vector-only search requires sqlite-vec extension
-                // Fall back to FTS for now
-                self.fts_search(query)
+                // Vector-only search requires embedder — fall back to FTS
+                fts_search_sync(self.conn, query)
             }
         }
-    }
-
-    fn fts_search(&self, query: &SearchQuery) -> Result<Vec<SearchHit>, SearchError> {
-        let limit = query.limit as i64;
-
-        // Build project filter
-        let project_filter = if query.project_ids.is_empty() {
-            // Only search active projects
-            "AND p.status = 'active'".to_string()
-        } else {
-            let ids: Vec<String> = query.project_ids.iter().map(|id| id.to_string()).collect();
-            format!("AND d.project_id IN ({})", ids.join(","))
-        };
-
-        let sql = format!(
-            "SELECT d.id, c.id, d.title, d.file_path, c.heading_path,
-                    snippet(chunks_fts, 0, '<b>', '</b>', '…', 20) AS snippet,
-                    bm25(chunks_fts) AS score
-             FROM chunks_fts
-             JOIN chunks c ON c.id = chunks_fts.rowid
-             JOIN documents d ON d.id = c.document_id
-             JOIN projects p ON p.id = d.project_id
-             WHERE chunks_fts MATCH ?1
-             {project_filter}
-             ORDER BY score
-             LIMIT ?2"
-        );
-
-        let mut stmt = self.conn.prepare(&sql)?;
-        let hits = stmt
-            .query_map([query.text.as_str(), &limit.to_string()], |row| {
-                Ok(SearchHit {
-                    document_id: row.get(0)?,
-                    chunk_id: row.get(1)?,
-                    title: row.get(2)?,
-                    file_path: row.get(3)?,
-                    heading_path: row.get(4)?,
-                    snippet: row.get(5)?,
-                    score: row.get::<_, f64>(6).unwrap_or(0.0).abs(),
-                })
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        Ok(hits)
     }
 }
 
@@ -379,5 +619,133 @@ mod tests {
         let hits = engine.search_simple("xyzzy", &opts).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].source_doc_id, "x");
+    }
+
+    // ── TDD: async SearchEngine with embedder ───────────────────────────
+
+    #[tokio::test]
+    async fn index_document_stores_embedding() {
+        let db = TestDb::new();
+        let pid = insert_project(&db, "emb-test", "/tmp");
+
+        let conn = Arc::new(Mutex::new({
+            // Move the connection out of TestDb
+            // We need to create a fresh one since TestDb owns it
+            crate::db::ensure_vec_extension();
+            let c = Connection::open_in_memory().unwrap();
+            crate::db::apply_pragmas(&c).unwrap();
+            crate::db::create_vec0_table(&c).unwrap();
+            let migrations = &[
+                include_str!("db/migrations/V1__initial_projects.sql"),
+                include_str!("db/migrations/V2__documents.sql"),
+                include_str!("db/migrations/V3__chunks_fts.sql"),
+                include_str!("db/migrations/V5__graph.sql"),
+                include_str!("db/migrations/V6__view_counts.sql"),
+                include_str!("db/migrations/V7__plugins.sql"),
+                include_str!("db/migrations/V8__workspace.sql"),
+                include_str!("db/migrations/V9__workspace_content.sql"),
+            ];
+            for sql in migrations {
+                c.execute_batch(sql).unwrap();
+            }
+            c.execute(
+                "INSERT INTO projects(name, display_name, path, created_at, updated_at) VALUES ('emb-test', 'emb-test', '/tmp', unixepoch(), unixepoch())",
+                [],
+            ).unwrap();
+            c
+        }));
+
+        let embedder: Arc<dyn EmbeddingProvider> = Arc::new(crate::embedding::MockEmbedder::new(384));
+        let engine = SearchEngine::with_embedder(conn.clone(), embedder);
+
+        engine
+            .index_document_async(1, "doc1", "Test", "hello world")
+            .await
+            .unwrap();
+
+        // Verify embedding was stored
+        let c = conn.lock().unwrap();
+        let count: i64 = c
+            .query_row("SELECT COUNT(*) FROM chunk_embeddings", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "embedding should be stored in chunk_embeddings");
+    }
+
+    #[tokio::test]
+    async fn vector_search_returns_results() {
+        crate::db::ensure_vec_extension();
+        let c = Connection::open_in_memory().unwrap();
+        crate::db::apply_pragmas(&c).unwrap();
+        crate::db::create_vec0_table(&c).unwrap();
+        let migrations = &[
+            include_str!("db/migrations/V1__initial_projects.sql"),
+            include_str!("db/migrations/V2__documents.sql"),
+            include_str!("db/migrations/V3__chunks_fts.sql"),
+            include_str!("db/migrations/V5__graph.sql"),
+            include_str!("db/migrations/V6__view_counts.sql"),
+            include_str!("db/migrations/V7__plugins.sql"),
+            include_str!("db/migrations/V8__workspace.sql"),
+            include_str!("db/migrations/V9__workspace_content.sql"),
+        ];
+        for sql in migrations {
+            c.execute_batch(sql).unwrap();
+        }
+        c.execute(
+            "INSERT INTO projects(name, display_name, path, created_at, updated_at) VALUES ('vtest', 'vtest', '/tmp', unixepoch(), unixepoch())",
+            [],
+        ).unwrap();
+
+        let conn = Arc::new(Mutex::new(c));
+        let embedder: Arc<dyn EmbeddingProvider> = Arc::new(crate::embedding::MockEmbedder::new(384));
+        let engine = SearchEngine::with_embedder(conn.clone(), embedder);
+
+        // Index two documents
+        engine.index_document_async(1, "d1", "Doc One", "content one").await.unwrap();
+        engine.index_document_async(1, "d2", "Doc Two", "content two").await.unwrap();
+
+        // Vector search
+        let query = SearchQuery {
+            text: "content".to_string(),
+            project_ids: vec![],
+            limit: 10,
+            mode: SearchMode::Vector,
+        };
+        let hits = engine.search_async(&query).await.unwrap();
+        assert_eq!(hits.len(), 2, "should find both documents via vector search");
+    }
+
+    #[tokio::test]
+    async fn hybrid_search_merges_fts_and_vector() {
+        crate::db::ensure_vec_extension();
+        let c = Connection::open_in_memory().unwrap();
+        crate::db::apply_pragmas(&c).unwrap();
+        crate::db::create_vec0_table(&c).unwrap();
+        let migrations = &[
+            include_str!("db/migrations/V1__initial_projects.sql"),
+            include_str!("db/migrations/V2__documents.sql"),
+            include_str!("db/migrations/V3__chunks_fts.sql"),
+            include_str!("db/migrations/V5__graph.sql"),
+            include_str!("db/migrations/V6__view_counts.sql"),
+            include_str!("db/migrations/V7__plugins.sql"),
+            include_str!("db/migrations/V8__workspace.sql"),
+            include_str!("db/migrations/V9__workspace_content.sql"),
+        ];
+        for sql in migrations {
+            c.execute_batch(sql).unwrap();
+        }
+        c.execute(
+            "INSERT INTO projects(name, display_name, path, created_at, updated_at) VALUES ('htest', 'htest', '/tmp', unixepoch(), unixepoch())",
+            [],
+        ).unwrap();
+
+        let conn = Arc::new(Mutex::new(c));
+        let embedder: Arc<dyn EmbeddingProvider> = Arc::new(crate::embedding::MockEmbedder::new(384));
+        let engine = SearchEngine::with_embedder(conn, embedder);
+
+        engine.index_document_async(1, "h1", "Rust Guide", "rust programming language").await.unwrap();
+
+        let query = SearchQuery::new("rust programming");
+        let hits = engine.search_async(&query).await.unwrap();
+        assert!(!hits.is_empty(), "hybrid search should return results");
     }
 }
