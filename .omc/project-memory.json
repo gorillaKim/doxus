@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "lastScanned": 1775263565204,
+  "lastScanned": 1775816139213,
   "projectRoot": "/Users/madup/gorillaProject/doxus",
   "techStack": {
     "languages": [
@@ -33,23 +33,51 @@
   "structure": {
     "isMonorepo": false,
     "workspaces": [],
-    "mainDirectories": [],
+    "mainDirectories": [
+      "docs",
+      "scripts"
+    ],
     "gitBranches": null
   },
   "customNotes": [],
   "directoryMap": {
+    "apps": {
+      "path": "apps",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1775816139202,
+      "keyFiles": []
+    },
     "crates": {
       "path": "crates",
       "purpose": null,
       "fileCount": 0,
-      "lastAccessed": 1775263565199,
+      "lastAccessed": 1775816139202,
       "keyFiles": []
+    },
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 1,
+      "lastAccessed": 1775816139203,
+      "keyFiles": [
+        "todo.md"
+      ]
+    },
+    "scripts": {
+      "path": "scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 1,
+      "lastAccessed": 1775816139203,
+      "keyFiles": [
+        "download-model.sh"
+      ]
     },
     "target": {
       "path": "target",
       "purpose": null,
       "fileCount": 2,
-      "lastAccessed": 1775263565199,
+      "lastAccessed": 1775816139203,
       "keyFiles": [
         "CACHEDIR.TAG"
       ]
@@ -57,304 +85,220 @@
   },
   "hotPaths": [
     {
-      "path": "apps/desktop/src-tauri/src/commands/market.rs",
-      "accessCount": 42,
-      "lastAccessed": 1775298438501,
-      "type": "file"
-    },
-    {
-      "path": "apps/desktop/src/pages/MarketPage.tsx",
-      "accessCount": 37,
-      "lastAccessed": 1775296164240,
-      "type": "file"
-    },
-    {
-      "path": "crates/mcp-server/src/main.rs",
-      "accessCount": 36,
-      "lastAccessed": 1775298305273,
-      "type": "file"
-    },
-    {
-      "path": "crates/plugins/github/src/lib.rs",
-      "accessCount": 28,
-      "lastAccessed": 1775298369787,
-      "type": "file"
-    },
-    {
-      "path": "apps/desktop/src-tauri/Cargo.toml",
-      "accessCount": 20,
-      "lastAccessed": 1775297388715,
-      "type": "file"
-    },
-    {
-      "path": "crates/agent/src/lib.rs",
-      "accessCount": 20,
-      "lastAccessed": 1775298252006,
+      "path": "crates/mcp-server/src/lib.rs",
+      "accessCount": 53,
+      "lastAccessed": 1775818323323,
       "type": "file"
     },
     {
       "path": "crates/plugins/confluence/src/lib.rs",
-      "accessCount": 20,
-      "lastAccessed": 1775298430639,
-      "type": "file"
-    },
-    {
-      "path": "apps/desktop/src-tauri/src/main.rs",
-      "accessCount": 19,
-      "lastAccessed": 1775296963947,
-      "type": "file"
-    },
-    {
-      "path": "crates/core/src/plugin/manager.rs",
-      "accessCount": 17,
-      "lastAccessed": 1775290473070,
-      "type": "file"
-    },
-    {
-      "path": "",
-      "accessCount": 17,
-      "lastAccessed": 1775298305575,
+      "accessCount": 37,
+      "lastAccessed": 1775818357043,
       "type": "directory"
     },
     {
-      "path": "apps/desktop/src-tauri/src/commands/search.rs",
-      "accessCount": 16,
-      "lastAccessed": 1775298144247,
-      "type": "file"
-    },
-    {
-      "path": "crates/core/Cargo.toml",
-      "accessCount": 13,
-      "lastAccessed": 1775288697239,
-      "type": "file"
-    },
-    {
-      "path": "crates/core/src/marketplace/registry.rs",
-      "accessCount": 12,
-      "lastAccessed": 1775275531216,
-      "type": "file"
-    },
-    {
-      "path": "docs/devlog/2026-04-04-doxus-phase0-3-implementation.md",
-      "accessCount": 12,
-      "lastAccessed": 1775295748301,
-      "type": "file"
-    },
-    {
-      "path": "crates/core/src/lib.rs",
-      "accessCount": 11,
-      "lastAccessed": 1775297946268,
+      "path": "crates/mcp-server/src/sync_loop.rs",
+      "accessCount": 19,
+      "lastAccessed": 1775818317546,
       "type": "file"
     },
     {
       "path": "crates/cli/src/main.rs",
       "accessCount": 10,
-      "lastAccessed": 1775288655951,
-      "type": "file"
+      "lastAccessed": 1775818106915,
+      "type": "directory"
     },
     {
-      "path": "crates/plugin-sdk/src/lib.rs",
-      "accessCount": 10,
-      "lastAccessed": 1775298284360,
-      "type": "file"
-    },
-    {
-      "path": "apps/desktop/src-tauri/src/state.rs",
-      "accessCount": 9,
-      "lastAccessed": 1775295998407,
-      "type": "file"
-    },
-    {
-      "path": "crates/core/src/plugin/manifest.rs",
-      "accessCount": 7,
-      "lastAccessed": 1775264255898,
-      "type": "file"
-    },
-    {
-      "path": "crates/plugins/obsidian/src/lib.rs",
-      "accessCount": 7,
-      "lastAccessed": 1775297962591,
-      "type": "file"
-    },
-    {
-      "path": "crates/agent/src/manager.rs",
-      "accessCount": 7,
-      "lastAccessed": 1775298288382,
-      "type": "file"
-    },
-    {
-      "path": "crates/core/src/plugin/wasm_adapter.rs",
+      "path": "crates/agent/src/sidecar.rs",
       "accessCount": 6,
-      "lastAccessed": 1775264193720,
+      "lastAccessed": 1775818108689,
       "type": "file"
     },
     {
-      "path": "crates/core/src/marketplace/installer.rs",
-      "accessCount": 6,
-      "lastAccessed": 1775275432464,
-      "type": "file"
-    },
-    {
-      "path": "Cargo.toml",
-      "accessCount": 6,
-      "lastAccessed": 1775288630094,
-      "type": "file"
-    },
-    {
-      "path": "crates/core/src/workspace/mod.rs",
-      "accessCount": 6,
-      "lastAccessed": 1775289787665,
-      "type": "file"
-    },
-    {
-      "path": "crates/core/src/search.rs",
-      "accessCount": 6,
-      "lastAccessed": 1775297949524,
-      "type": "file"
-    },
-    {
-      "path": "apps/desktop/src-tauri/src/commands/mod.rs",
-      "accessCount": 6,
-      "lastAccessed": 1775297955679,
-      "type": "file"
-    },
-    {
-      "path": "crates/core/src/auth.rs",
+      "path": "crates/agent/src/protocol.rs",
       "accessCount": 5,
-      "lastAccessed": 1775264303744,
-      "type": "file"
+      "lastAccessed": 1775818108638,
+      "type": "directory"
     },
     {
-      "path": "crates/core/src/plugin/mod.rs",
-      "accessCount": 5,
-      "lastAccessed": 1775266000708,
-      "type": "file"
-    },
-    {
-      "path": "crates/plugins/confluence/Cargo.toml",
-      "accessCount": 5,
-      "lastAccessed": 1775298119300,
-      "type": "file"
-    },
-    {
-      "path": "crates/agent/Cargo.toml",
+      "path": "crates/core/src/plugin/manager.rs",
       "accessCount": 4,
-      "lastAccessed": 1775264065840,
+      "lastAccessed": 1775818105594,
       "type": "file"
     },
     {
-      "path": "crates/core/src/observability.rs",
-      "accessCount": 4,
-      "lastAccessed": 1775271127261,
-      "type": "file"
-    },
-    {
-      "path": "crates/core/src/marketplace/signing.rs",
-      "accessCount": 4,
-      "lastAccessed": 1775275432753,
-      "type": "file"
-    },
-    {
-      "path": "apps/desktop/src/pages/WorkspacePage.tsx",
-      "accessCount": 4,
-      "lastAccessed": 1775287038407,
+      "path": "docs/context/doxus-implementation-roadmap.md",
+      "accessCount": 3,
+      "lastAccessed": 1775816176902,
       "type": "file"
     },
     {
       "path": "crates/core/src",
-      "accessCount": 4,
-      "lastAccessed": 1775297284135,
+      "accessCount": 3,
+      "lastAccessed": 1775816952297,
       "type": "directory"
+    },
+    {
+      "path": "crates/plugins/obsidian/src/lib.rs",
+      "accessCount": 3,
+      "lastAccessed": 1775816957848,
+      "type": "file"
+    },
+    {
+      "path": "crates/core/src/search.rs",
+      "accessCount": 3,
+      "lastAccessed": 1775816967711,
+      "type": "directory"
+    },
+    {
+      "path": "crates/mcp-server/src/main.rs",
+      "accessCount": 3,
+      "lastAccessed": 1775817417422,
+      "type": "file"
+    },
+    {
+      "path": "crates/core/src/sync/db.rs",
+      "accessCount": 3,
+      "lastAccessed": 1775818106077,
+      "type": "file"
+    },
+    {
+      "path": "crates/agent/src/lib.rs",
+      "accessCount": 3,
+      "lastAccessed": 1775818116876,
+      "type": "file"
+    },
+    {
+      "path": "crates/agent/src/session.rs",
+      "accessCount": 3,
+      "lastAccessed": 1775818123047,
+      "type": "file"
+    },
+    {
+      "path": "UNIMPLEMENTED_ITEMS.md",
+      "accessCount": 2,
+      "lastAccessed": 1775816543524,
+      "type": "file"
+    },
+    {
+      "path": "",
+      "accessCount": 2,
+      "lastAccessed": 1775816572036,
+      "type": "directory"
+    },
+    {
+      "path": "crates/core/src/sync/runner.rs",
+      "accessCount": 2,
+      "lastAccessed": 1775817174561,
+      "type": "file"
+    },
+    {
+      "path": "crates/core/Cargo.toml",
+      "accessCount": 2,
+      "lastAccessed": 1775817295998,
+      "type": "file"
+    },
+    {
+      "path": "crates/agent/src/tool_bridge.rs",
+      "accessCount": 2,
+      "lastAccessed": 1775817692858,
+      "type": "file"
+    },
+    {
+      "path": "crates/plugin-sdk/src/lib.rs",
+      "accessCount": 2,
+      "lastAccessed": 1775817826100,
+      "type": "file"
+    },
+    {
+      "path": "crates/plugins/confluence/Cargo.toml",
+      "accessCount": 2,
+      "lastAccessed": 1775817927997,
+      "type": "file"
+    },
+    {
+      "path": "crates/mcp-server/Cargo.toml",
+      "accessCount": 2,
+      "lastAccessed": 1775817956311,
+      "type": "file"
     },
     {
       "path": "crates/core/src/db/mod.rs",
-      "accessCount": 4,
-      "lastAccessed": 1775298167154,
-      "type": "file"
-    },
-    {
-      "path": "crates/core/src/sync/mod.rs",
-      "accessCount": 4,
-      "lastAccessed": 1775298176402,
-      "type": "file"
-    },
-    {
-      "path": "crates/core/src/plugin/kv_store.rs",
-      "accessCount": 3,
-      "lastAccessed": 1775264191698,
-      "type": "file"
-    },
-    {
-      "path": "crates/mcp-server/src/lib.rs",
-      "accessCount": 3,
-      "lastAccessed": 1775297946202,
-      "type": "file"
-    },
-    {
-      "path": "crates/core/src/marketplace/mod.rs",
-      "accessCount": 3,
-      "lastAccessed": 1775297965229,
-      "type": "file"
-    },
-    {
-      "path": "apps/desktop/src-tauri/tauri.conf.json",
-      "accessCount": 2,
-      "lastAccessed": 1775285107196,
-      "type": "file"
-    },
-    {
-      "path": "apps/desktop/package.json",
-      "accessCount": 2,
-      "lastAccessed": 1775287037489,
-      "type": "file"
-    },
-    {
-      "path": "apps/desktop/src/stores/useMarketStore.ts",
       "accessCount": 1,
-      "lastAccessed": 1775270914556,
+      "lastAccessed": 1775816943562,
       "type": "file"
     },
     {
-      "path": "apps/desktop/src/stores/useWorkspaceStore.ts",
+      "path": "crates/core/src/db/migrations/V5__graph.sql",
       "accessCount": 1,
-      "lastAccessed": 1775270915634,
+      "lastAccessed": 1775816943660,
       "type": "file"
     },
     {
-      "path": "crates/core/src/db",
+      "path": "crates/core/src/plugin",
       "accessCount": 1,
-      "lastAccessed": 1775270990531,
+      "lastAccessed": 1775817158856,
       "type": "directory"
     },
     {
-      "path": "crates/core/src/db/migrations/V8__workspace.sql",
+      "path": "crates/core/src/sync",
       "accessCount": 1,
-      "lastAccessed": 1775271007967,
-      "type": "file"
-    },
-    {
-      "path": "crates/core",
-      "accessCount": 1,
-      "lastAccessed": 1775271123317,
+      "lastAccessed": 1775817163623,
       "type": "directory"
     },
     {
-      "path": "CHANGELOG.md",
+      "path": "crates/agent/src",
       "accessCount": 1,
-      "lastAccessed": 1775271439818,
-      "type": "file"
+      "lastAccessed": 1775817604135,
+      "type": "directory"
+    },
+    {
+      "path": "crates/plugins",
+      "accessCount": 1,
+      "lastAccessed": 1775817817059,
+      "type": "directory"
+    },
+    {
+      "path": "crates",
+      "accessCount": 1,
+      "lastAccessed": 1775817821335,
+      "type": "directory"
+    },
+    {
+      "path": "crates/cli/src",
+      "accessCount": 1,
+      "lastAccessed": 1775817822079,
+      "type": "directory"
     },
     {
       "path": "crates/cli/Cargo.toml",
       "accessCount": 1,
-      "lastAccessed": 1775281363794,
+      "lastAccessed": 1775817894089,
       "type": "file"
     },
     {
-      "path": "apps/desktop/vite.config.ts",
+      "path": "crates/core/src/db/migrations",
       "accessCount": 1,
-      "lastAccessed": 1775281468345,
+      "lastAccessed": 1775817897657,
+      "type": "directory"
+    },
+    {
+      "path": "crates/core/src/auth.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775817917828,
       "type": "file"
+    },
+    {
+      "path": "crates/plugin-sdk/src",
+      "accessCount": 1,
+      "lastAccessed": 1775817922351,
+      "type": "directory"
+    },
+    {
+      "path": "crates/mcp-server/src",
+      "accessCount": 1,
+      "lastAccessed": 1775818128950,
+      "type": "directory"
     }
   ],
   "userDirectives": []

@@ -1,7 +1,7 @@
 {
   "tool_name": "Read",
-  "tool_input_preview": "{\"file_path\":\"/Users/madup/gorillaProject/doxus/crates/mcp-server/src/main.rs\"}",
-  "error": "File content (29666 tokens) exceeds maximum allowed tokens (10000). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file.",
-  "timestamp": "2026-04-04T10:24:42.515Z",
-  "retry_count": 2
+  "tool_input_preview": "{\"file_path\":\"/Users/madup/gorillaProject/doxus/crates/mcp-server/src/lib.rs\"}",
+  "error": "File content (35282 tokens) exceeds maximum allowed tokens (10000). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file.",
+  "timestamp": "2026-04-10T10:48:25.145Z",
+  "retry_count": 1
 }

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "doxus": {
+      "command": "/Users/madup/gorillaProject/doxus/target/release/doxus-mcp",
+      "args": [],
+      "env": {
+        "DOXUS_DB_PATH": "/Users/madup/.doxus/db/doxus.db"
+      }
+    }
+  }
+}

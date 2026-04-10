@@ -86,6 +86,34 @@ impl SidecarManager {
             .map_err(|e| AgentError::Protocol(format!("deserialize failed: {e}: {line}")))
     }
 
+    /// Receive one raw JSONL line (unparsed) from the sidecar stdout.
+    pub async fn recv_raw(&mut self) -> Result<String, AgentError> {
+        let stdout = self
+            .stdout
+            .as_mut()
+            .ok_or_else(|| AgentError::Protocol("stdout not available".into()))?;
+        let mut line = String::new();
+        let n = stdout
+            .read_line(&mut line)
+            .await
+            .map_err(AgentError::SpawnFailed)?;
+        if n == 0 {
+            return Err(AgentError::Protocol("sidecar stdout closed".into()));
+        }
+        Ok(line)
+    }
+
+    /// Send a raw JSONL string to the sidecar stdin.
+    pub async fn send_raw(&mut self, raw: &str) -> Result<(), AgentError> {
+        let stdin = self
+            .stdin
+            .as_mut()
+            .ok_or_else(|| AgentError::Protocol("stdin not available".into()))?;
+        stdin.write_all(raw.as_bytes()).await.map_err(AgentError::SpawnFailed)?;
+        stdin.flush().await.map_err(AgentError::SpawnFailed)?;
+        Ok(())
+    }
+
     /// Kill the sidecar process if it is still running.
     pub async fn shutdown(&mut self) {
         // Close stdin first so the Node process can exit gracefully.

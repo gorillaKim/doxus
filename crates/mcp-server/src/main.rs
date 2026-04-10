@@ -39,10 +39,13 @@ async fn main() -> Result<()> {
         .and_then(|v| v.parse().ok())
         .unwrap_or(3600);
 
-    let sync_handle = spawn_sync_loop(sync_conn, interval_secs);
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let plugins_dir = std::path::PathBuf::from(&home).join(".doxus/plugins");
+    let plugin_manager = std::sync::Arc::new(doxus_core::plugin::PluginManager::new(plugins_dir));
+
+    let sync_handle = spawn_sync_loop(sync_conn, plugin_manager, interval_secs);
 
     // Attempt to initialize OnnxEmbedder; fall back gracefully if model is absent.
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     let model_path = std::path::PathBuf::from(&home)
         .join(".doxus/models/all-MiniLM-L6-v2/model.onnx");
     let embedder: Option<std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider>> =

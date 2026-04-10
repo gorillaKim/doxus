@@ -9,6 +9,7 @@ pub mod sidecar;
 pub mod sync_sidecar;
 pub mod prompt;
 pub mod tool_bridge;
+pub mod session;
 
 // Re-export commonly used items at crate root for convenience.
 pub use cli_detector::{detect_cli, CliKind};

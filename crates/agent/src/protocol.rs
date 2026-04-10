@@ -18,6 +18,7 @@ pub enum HostMessage {
 pub enum AgentMessage {
     Init { model: String },
     Thought { content: String },
+    ToolUse { id: String, name: String, input: serde_json::Value },
     Text { content: String },
     Result { content: String },
     Error { message: String },

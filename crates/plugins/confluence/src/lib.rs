@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use doxus_core::auth::{OAuthConfig, OAuthFlow, OAuthToken};
 use doxus_plugin_sdk::{
     validate_base_url, Capabilities, ChangeSet, ContentType, DocSource, DocumentStream,
     FetchAllOpts, FetchChangesOpts, HealthStatus, PluginConfig, PluginError, PluginKind,
@@ -57,6 +58,10 @@ pub struct ConfluencePlugin {
     base_url: Option<String>,
     api_token: Option<String>,
     space_key: Option<String>,
+    oauth_config: Option<OAuthConfig>,
+    oauth_token: Option<OAuthToken>,
+    /// Pending state value generated during oauth_start, used to validate oauth_exchange.
+    oauth_pending_state: std::sync::Mutex<Option<String>>,
     client: reqwest::Client,
 }
 
@@ -72,6 +77,9 @@ impl ConfluencePlugin {
             base_url: None,
             api_token: None,
             space_key: None,
+            oauth_config: None,
+            oauth_token: None,
+            oauth_pending_state: std::sync::Mutex::new(None),
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
@@ -199,7 +207,7 @@ impl DocSource for ConfluencePlugin {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             incremental_sync: true,
-            oauth: false,
+            oauth: self.oauth_config.is_some(),
             native_search: false,
         }
     }
@@ -214,6 +222,13 @@ impl DocSource for ConfluencePlugin {
         }
         if let Some(base_url) = config.fields.get("base_url").and_then(|v| v.as_str()) {
             validate_base_url(base_url)?;
+        }
+        if let Some(space_key) = config.fields.get("space_key").and_then(|v| v.as_str()) {
+            if !space_key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                return Err(PluginError::ConfigInvalid(
+                    "space_key must contain only alphanumeric characters, underscores, or hyphens".to_string(),
+                ));
+            }
         }
         Ok(())
     }
@@ -257,6 +272,75 @@ impl DocSource for ConfluencePlugin {
                     .map(String::from)
             });
 
+        // OAuth config — optional; only set when client_id + client_secret are provided
+        if let (Some(client_id), Some(client_secret)) = (
+            config.fields.get("client_id").and_then(|v| v.as_str()),
+            config.fields.get("client_secret").and_then(|v| v.as_str()),
+        ) {
+            let base = raw_base_url;
+            self.oauth_config = Some(OAuthConfig {
+                client_id: client_id.to_string(),
+                client_secret: client_secret.to_string(),
+                redirect_uri: config
+                    .fields
+                    .get("redirect_uri")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("http://localhost:8080/callback")
+                    .to_string(),
+                auth_url: format!("{base}/oauth2/authorize"),
+                token_url: format!("{base}/oauth2/token"),
+                scopes: vec!["read:confluence-content.all".to_string()],
+            });
+        }
+
+        Ok(())
+    }
+
+    async fn oauth_start(&self) -> Option<String> {
+        let config = self.oauth_config.as_ref()?;
+        let flow = OAuthFlow::new(config.clone());
+        // Generate a cryptographically random state for CSRF protection.
+        let state = {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .subsec_nanos();
+            let mut h = DefaultHasher::new();
+            (nanos, std::thread::current().id()).hash(&mut h);
+            format!("{:016x}", h.finish())
+        };
+        let url = flow.authorization_url(&state).ok()?;
+        // Store state for CSRF validation in oauth_exchange.
+        if let Ok(mut guard) = self.oauth_pending_state.lock() {
+            *guard = Some(state);
+        }
+        Some(url)
+    }
+
+    async fn oauth_exchange(&mut self, code: &str, state: &str) -> Result<(), PluginError> {
+        let config = self
+            .oauth_config
+            .as_ref()
+            .ok_or(PluginError::AuthRequired)?;
+        // Validate state to prevent CSRF attacks.
+        let expected = self
+            .oauth_pending_state
+            .lock()
+            .map_err(|_| PluginError::Internal("state lock poisoned".into()))?
+            .take()
+            .ok_or(PluginError::AuthRequired)?;
+        if expected != state {
+            return Err(PluginError::AuthRequired);
+        }
+        let flow = OAuthFlow::new(config.clone());
+        let token = flow
+            .exchange_code(code, state, &expected)
+            .await
+            .map_err(|e| PluginError::Internal(e.to_string()))?;
+        self.oauth_token = Some(token);
         Ok(())
     }
 
@@ -736,6 +820,106 @@ mod tests {
         let plugin = make_plugin(&server);
         let status = plugin.health_check().await;
         assert!(status.healthy);
+    }
+
+    // ── OAuth tests ───────────────────────────────────────────────────────────
+
+    fn make_oauth_plugin(server: &MockServer, with_oauth: bool) -> ConfluencePlugin {
+        // Use direct field assignment to bypass SSRF validation (wiremock uses HTTP localhost).
+        // This mirrors the pattern used by make_plugin() for fetch tests.
+        let base_url = server.uri().trim_end_matches('/').to_string();
+        let mut plugin = ConfluencePlugin::new();
+        plugin.base_url = Some(base_url.clone());
+        plugin.space_key = Some("TEST".to_string());
+        plugin.api_token = Some("tok".to_string());
+        if with_oauth {
+            plugin.oauth_config = Some(OAuthConfig {
+                client_id: "my-client-id".to_string(),
+                client_secret: "my-secret".to_string(),
+                redirect_uri: "http://localhost/cb".to_string(),
+                auth_url: format!("{base_url}/oauth2/authorize"),
+                token_url: format!("{base_url}/oauth2/token"),
+                scopes: vec!["read:confluence-content.all".to_string()],
+            });
+        }
+        plugin
+    }
+
+    #[tokio::test]
+    async fn oauth_start_returns_url_when_config_provided() {
+        let server = MockServer::start().await;
+        let plugin = make_oauth_plugin(&server, true);
+
+        let url = plugin.oauth_start().await;
+        assert!(url.is_some(), "expected auth URL");
+        let url = url.unwrap();
+        assert!(url.contains("oauth2/authorize"), "got: {url}");
+        assert!(url.contains("my-client-id"), "got: {url}");
+    }
+
+    #[tokio::test]
+    async fn oauth_start_returns_none_without_oauth_config() {
+        let server = MockServer::start().await;
+        let plugin = make_oauth_plugin(&server, false);
+
+        let url = plugin.oauth_start().await;
+        assert!(url.is_none(), "expected None without OAuth config");
+    }
+
+    #[tokio::test]
+    async fn oauth_exchange_stores_token() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/oauth2/token"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "access_token": "test-access-token",
+                    "token_type": "bearer",
+                    "expires_in": 3600,
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        let mut plugin = make_oauth_plugin(&server, true);
+        // Must call oauth_start first to generate and store the pending state.
+        let auth_url = plugin.oauth_start().await.expect("expected auth URL");
+        // Extract the state value from the generated URL query parameter.
+        let state = auth_url
+            .split("state=")
+            .nth(1)
+            .and_then(|s| s.split('&').next())
+            .expect("state param in auth URL");
+        plugin.oauth_exchange("auth-code", state).await.unwrap();
+
+        assert!(plugin.oauth_token.is_some(), "token should be stored after exchange");
+        assert_eq!(
+            plugin.oauth_token.as_ref().unwrap().access_token,
+            "test-access-token"
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_exchange_errors_without_oauth_config() {
+        let server = MockServer::start().await;
+        let mut plugin = make_oauth_plugin(&server, false);
+
+        let result = plugin.oauth_exchange("code", "state").await;
+        assert!(matches!(result, Err(PluginError::AuthRequired)));
+    }
+
+    #[tokio::test]
+    async fn capabilities_oauth_true_when_config_present() {
+        let server = MockServer::start().await;
+        let plugin = make_oauth_plugin(&server, true);
+        assert!(plugin.capabilities().oauth);
+    }
+
+    #[tokio::test]
+    async fn capabilities_oauth_false_without_config() {
+        let server = MockServer::start().await;
+        let plugin = make_oauth_plugin(&server, false);
+        assert!(!plugin.capabilities().oauth);
     }
 
     #[tokio::test]

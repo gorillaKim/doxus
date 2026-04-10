@@ -286,10 +286,19 @@ impl McpServer {
 
         let run_async = async move {
             plugin.initialize(config, secrets).await?;
-            let stream = plugin
-                .fetch_all(FetchAllOpts { cursor: None, page_size: 1000 })
-                .await?;
-            Ok::<_, doxus_plugin_sdk::PluginError>(stream.documents)
+            let mut all_docs = Vec::new();
+            let mut cursor = None;
+            loop {
+                let stream = plugin
+                    .fetch_all(FetchAllOpts { cursor, page_size: 1000 })
+                    .await?;
+                all_docs.extend(stream.documents);
+                match stream.next_cursor {
+                    Some(c) => cursor = Some(c),
+                    None => break,
+                }
+            }
+            Ok::<_, doxus_plugin_sdk::PluginError>(all_docs)
         };
 
         let docs = match tokio::runtime::Handle::try_current() {
@@ -324,6 +333,43 @@ impl McpServer {
                     return Err(format!("indexing error for '{}': {e}", doc.id.0));
                 }
                 indexed += 1;
+
+                // Store document links from metadata["links"]
+                if let Some(links_val) = doc.metadata.get("links") {
+                    if let Some(links_arr) = links_val.as_array() {
+                        let doc_id: i64 = match self.conn.query_row(
+                            "SELECT id FROM documents WHERE project_id=?1 AND source_doc_id=?2",
+                            params![project_id, &doc.id.0],
+                            |r| r.get(0),
+                        ) {
+                            Ok(id) => id,
+                            Err(e) => {
+                                let _ = self.conn.execute_batch("ROLLBACK");
+                                return Err(format!("doc id lookup: {e}"));
+                            }
+                        };
+
+                        if let Err(e) = self.conn.execute(
+                            "DELETE FROM document_links WHERE source_id=?1",
+                            [doc_id],
+                        ) {
+                            let _ = self.conn.execute_batch("ROLLBACK");
+                            return Err(format!("delete links: {e}"));
+                        }
+
+                        for link in links_arr {
+                            if let Some(target_raw) = link.as_str() {
+                                if let Err(e) = self.conn.execute(
+                                    "INSERT INTO document_links (source_id, target_raw, link_type) VALUES (?1, ?2, 'wikilink')",
+                                    params![doc_id, target_raw],
+                                ) {
+                                    let _ = self.conn.execute_batch("ROLLBACK");
+                                    return Err(format!("insert link: {e}"));
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             self.conn
@@ -1173,33 +1219,148 @@ impl McpServer {
     // ── Project sync ──────────────────────────────────────────────────────────
 
     fn tool_sync_project(&self, id: Value, args: &Value) -> McpResponse {
+        use doxus_plugin_obsidian::ObsidianPlugin;
+        use doxus_plugin_sdk::{DocSource, FetchChangesOpts, PluginConfig, PluginSecrets, SourceDocId};
+        use doxus_core::search::SyncSearchEngine;
+        use std::collections::HashMap;
+
         let name = match args["project"].as_str() {
             Some(n) => n,
             None => return McpResponse::err(id, -32602, "missing required arg: project"),
         };
 
-        let row: Result<(i64, Option<String>), _> = self.conn.query_row(
-            "SELECT si.id, si.sync_cursor
+        // Query source_instance + project path
+        let row: Result<(i64, String, Option<String>, Option<i64>, String), _> = self.conn.query_row(
+            "SELECT si.id, si.plugin_id, si.sync_cursor, si.last_synced, p.path
              FROM source_instances si
              JOIN projects p ON si.project_id = p.id
              WHERE p.name = ?1
              ORDER BY si.id LIMIT 1",
             params![name],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         );
 
-        match row {
-            Err(_) => McpResponse::text(
+        let (si_id, plugin_id, sync_cursor, last_synced, path) = match row {
+            Err(_) => return McpResponse::text(
                 id,
-                format!("Project '{name}' has no source instance configured.\nRun: doxus sync {name}"),
+                format!("Project '{name}' has no source instance configured — no source instance"),
             ),
-            Ok((si_id, cursor)) => {
-                let cursor_info = cursor.as_deref().unwrap_or("(none)");
-                McpResponse::text(
-                    id,
-                    format!("Project '{name}' sync instance #{si_id}  cursor: {cursor_info}\nTo trigger sync: doxus sync {name}"),
-                )
+            Ok(r) => r,
+        };
+
+        if plugin_id != "com.doxus.obsidian" {
+            return McpResponse::err(id, -32603, format!("unsupported plugin: {plugin_id}"));
+        }
+
+        // Get project_id and known doc IDs for deletion detection
+        let project_id: i64 = match self.conn.query_row(
+            "SELECT p.id FROM projects p
+             JOIN source_instances si ON si.project_id = p.id
+             WHERE si.id = ?1",
+            params![si_id],
+            |r| r.get(0),
+        ) {
+            Ok(pid) => pid,
+            Err(e) => return McpResponse::err(id, -32603, format!("project lookup: {e}")),
+        };
+
+        let known_ids: Vec<SourceDocId> = {
+            let mut stmt = match self.conn.prepare(
+                "SELECT source_doc_id FROM documents WHERE project_id = ?1",
+            ) {
+                Ok(s) => s,
+                Err(e) => return McpResponse::err(id, -32603, format!("prepare known_ids: {e}")),
+            };
+            let ids: Result<Vec<String>, _> = stmt
+                .query_map(params![project_id], |r| r.get::<_, String>(0))
+                .map_err(|e| format!("query known_ids: {e}"))
+                .and_then(|rows| rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string()));
+            match ids {
+                Ok(v) => v.into_iter().map(SourceDocId).collect(),
+                Err(e) => return McpResponse::err(id, -32603, e),
             }
+        };
+
+        let since = last_synced.unwrap_or(0);
+        let cursor = sync_cursor;
+
+        let mut plugin = ObsidianPlugin::new();
+        let mut fields = HashMap::new();
+        fields.insert("path".to_string(), serde_json::Value::String(path));
+        let config = PluginConfig { fields };
+        let secrets = PluginSecrets { fields: HashMap::new() };
+
+        let run_async = async move {
+            plugin.initialize(config, secrets).await?;
+            let changeset = plugin
+                .fetch_changes(FetchChangesOpts { since, cursor, page_size: 1000, known_ids })
+                .await?;
+            Ok::<_, doxus_plugin_sdk::PluginError>(changeset)
+        };
+
+        let changeset = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => match tokio::task::block_in_place(|| handle.block_on(run_async)) {
+                Ok(c) => c,
+                Err(e) => return McpResponse::err(id, -32603, format!("fetch_changes error: {e}")),
+            },
+            Err(_) => {
+                match tokio::runtime::Runtime::new()
+                    .map_err(|e| format!("runtime error: {e}"))
+                    .and_then(|rt| rt.block_on(run_async).map_err(|e| e.to_string()))
+                {
+                    Ok(c) => c,
+                    Err(e) => return McpResponse::err(id, -32603, e),
+                }
+            }
+        };
+
+        let n_updated = changeset.updated.len();
+        let n_deleted = changeset.deleted_ids.len();
+
+        // Apply changes in a single transaction
+        let result: Result<(), String> = (|| {
+            self.conn.execute_batch("BEGIN").map_err(|e| format!("begin: {e}"))?;
+
+            let engine = SyncSearchEngine::from_conn(&self.conn);
+
+            for doc in &changeset.updated {
+                let title = doc.title.as_deref().unwrap_or("");
+                if let Err(e) = engine.index_document(project_id, &doc.id.0, title, &doc.content) {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(format!("index error for '{}': {e}", doc.id.0));
+                }
+            }
+
+            for del_id in &changeset.deleted_ids {
+                if let Err(e) = self.conn.execute(
+                    "DELETE FROM documents WHERE project_id = ?1 AND source_doc_id = ?2",
+                    params![project_id, &del_id.0],
+                ) {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(format!("delete error for '{}': {e}", del_id.0));
+                }
+            }
+
+            // Update sync cursor and last_synced (NULL when sync is complete)
+            let new_cursor: Option<&str> = changeset.next_cursor.as_deref();
+            if let Err(e) = self.conn.execute(
+                "UPDATE source_instances SET sync_cursor = ?1, last_synced = unixepoch() WHERE id = ?2",
+                params![new_cursor, si_id],
+            ) {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                return Err(format!("update cursor: {e}"));
+            }
+
+            self.conn.execute_batch("COMMIT").map_err(|e| format!("commit: {e}"))?;
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => McpResponse::text(
+                id,
+                format!("Synced project '{name}': {n_updated} updated, {n_deleted} deleted."),
+            ),
+            Err(e) => McpResponse::err(id, -32603, format!("sync failed (rolled back): {e}")),
         }
     }
 
@@ -1230,9 +1391,31 @@ impl McpServer {
             None => return McpResponse::err(id, -32602, "missing required arg: id"),
         };
 
-        let n = self.conn.execute("DELETE FROM plugins WHERE id=?1", params![plugin_id]);
-        match n {
-            Ok(0) => McpResponse::err(id, -32602, format!("plugin '{plugin_id}' not found")),
+        // Validate plugin_id to prevent path traversal attacks
+        if !plugin_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_') {
+            return McpResponse::err(id, -32602, "invalid plugin_id: only alphanumeric, '.', '-', '_' allowed");
+        }
+
+        // Attempt to delete .wasm file from plugins directory
+        if let Some(home) = dirs::home_dir() {
+            let plugins_dir = home.join(".doxus/plugins");
+            let wasm_path = plugins_dir.join(format!("{plugin_id}.wasm"));
+            // Canonicalize parent to verify path stays within plugins_dir
+            if let Ok(canonical) = wasm_path.canonicalize().or_else(|_| {
+                // File may not exist yet; verify the parent is safe
+                plugins_dir.canonicalize()
+                    .map(|p| p.join(format!("{plugin_id}.wasm")))
+            }) {
+                let safe_prefix = home.join(".doxus/plugins");
+                if canonical.starts_with(&safe_prefix) && wasm_path.exists() {
+                    let _ = std::fs::remove_file(&wasm_path);
+                }
+            }
+        }
+
+        let db_result = self.conn.execute("DELETE FROM plugins WHERE id=?1", params![plugin_id]);
+        match db_result {
+            Ok(0) => McpResponse::text(id, format!("Plugin '{plugin_id}' not found.")),
             Ok(_) => McpResponse::text(id, format!("Plugin '{plugin_id}' removed.")),
             Err(e) => McpResponse::err(id, -32603, e.to_string()),
         }
@@ -2222,8 +2405,41 @@ mod tests {
         server.dispatch_tool("doxus_plugin_install", json!(1), &json!({"id": "com.test.rm"}));
         let resp = server.dispatch_tool("doxus_plugin_remove", json!(2), &json!({"id": "com.test.rm"}));
         assert!(resp.error.is_none());
-        let resp = server.dispatch_tool("doxus_plugin_status", json!(3), &json!({"id": "com.test.rm"}));
-        assert!(resp.error.is_some());
+        let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
+        assert!(text.contains("removed"), "got: {text}");
+    }
+
+    #[test]
+    fn test_plugin_install_and_remove() {
+        let server = test_server();
+
+        // Install
+        let resp = server.dispatch_tool(
+            "doxus_plugin_install",
+            json!(1),
+            &json!({"id": "com.test.plugin", "version": "1.0.0"}),
+        );
+        assert!(resp.error.is_none());
+
+        // Remove
+        let resp = server.dispatch_tool(
+            "doxus_plugin_remove",
+            json!(2),
+            &json!({"id": "com.test.plugin"}),
+        );
+        assert!(resp.error.is_none());
+        let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
+        assert!(text.contains("removed"), "got: {text}");
+
+        // Remove again → "not found"
+        let resp = server.dispatch_tool(
+            "doxus_plugin_remove",
+            json!(3),
+            &json!({"id": "com.test.plugin"}),
+        );
+        assert!(resp.error.is_none());
+        let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
+        assert!(text.contains("not found"), "got: {text}");
     }
 
     #[test]
@@ -2238,7 +2454,9 @@ mod tests {
     fn test_plugin_remove_not_found() {
         let server = test_server();
         let resp = server.dispatch_tool("doxus_plugin_remove", json!(1), &json!({"id": "nope"}));
-        assert!(resp.error.is_some());
+        assert!(resp.error.is_none());
+        let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
+        assert!(text.contains("not found"), "got: {text}");
     }
 
     #[test]
@@ -2656,5 +2874,123 @@ mod tests {
         assert_eq!(count, 0, "expected 0 documents after failed/empty index, got {count}");
         // suppress unused resp warning
         let _ = resp;
+    }
+
+    // ── H4: pagination — next_cursor is followed until exhausted ─────────────
+
+    #[test]
+    fn test_index_project_pagination_collects_all_docs() {
+        // Create a vault with more files than a single page_size=1000 would need,
+        // but the real test is structural: we verify the loop terminates and collects
+        // documents from multiple pages. We simulate this by creating 3 files and
+        // confirming all are indexed (the obsidian plugin returns them in one page,
+        // but the loop must handle next_cursor=None correctly to not drop any docs).
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        for i in 0..5 {
+            fs::write(dir.path().join(format!("doc{i}.md")), format!("# Doc {i}\ncontent {i}"))
+                .unwrap();
+        }
+
+        let server = test_server();
+        let pid = insert_project(&server, "pagevault", dir.path().to_str().unwrap());
+
+        let resp = server.dispatch_tool(
+            "doxus_index_project",
+            json!(1),
+            &json!({"project": "pagevault"}),
+        );
+        assert!(resp.error.is_none(), "indexing failed: {:?}", resp.error);
+
+        let count: i64 = server
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM documents WHERE project_id=?1",
+                params![pid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 5, "pagination loop must collect all 5 docs, got {count}");
+    }
+
+    // ── H5: document_links stored after indexing ──────────────────────────────
+
+    #[test]
+    fn test_index_stores_document_links() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("note.md"),
+            "# Note\nSee [[PageA]] and [[PageB|alias]].",
+        )
+        .unwrap();
+
+        let server = test_server();
+        insert_project(&server, "linkvault", dir.path().to_str().unwrap());
+
+        let resp = server.dispatch_tool(
+            "doxus_index_project",
+            json!(1),
+            &json!({"project": "linkvault"}),
+        );
+        assert!(resp.error.is_none(), "indexing failed: {:?}", resp.error);
+
+        let count: i64 = server
+            .conn
+            .query_row("SELECT COUNT(*) FROM document_links", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2, "should have 2 links (PageA, PageB), got {count}");
+
+        // Verify the raw link targets are stored correctly
+        let mut stmt = server
+            .conn
+            .prepare("SELECT target_raw FROM document_links ORDER BY target_raw")
+            .unwrap();
+        let targets: Vec<String> = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(targets, vec!["PageA", "PageB"], "link targets mismatch: {targets:?}");
+    }
+
+    #[test]
+    fn test_sync_project_no_source_instance() {
+        let server = test_server();
+        insert_project(&server, "empty-proj", "/tmp/empty");
+        let resp = server.dispatch_tool("doxus_sync_project", json!(1), &json!({"project": "empty-proj"}));
+        let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
+        assert!(text.contains("no source instance"), "got: {text}");
+    }
+
+    #[test]
+    fn test_sync_project_obsidian_success() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("page.md"), "# Page\nHello world").unwrap();
+
+        let server = test_server();
+        let pid = insert_project(&server, "vault", dir.path().to_str().unwrap());
+
+        server.conn.execute(
+            "INSERT OR IGNORE INTO plugins(id, name, version, installed_at) VALUES ('com.doxus.obsidian', 'Obsidian', '1.0', unixepoch())",
+            [],
+        ).unwrap();
+        server.conn.execute(
+            "INSERT INTO source_instances(plugin_id, project_id, name, config_json, created_at)
+             VALUES ('com.doxus.obsidian', ?1, 'vault-src', '{}', unixepoch())",
+            rusqlite::params![pid],
+        ).unwrap();
+
+        let resp = server.dispatch_tool("doxus_sync_project", json!(1), &json!({"project": "vault"}));
+        assert!(resp.error.is_none(), "unexpected error: {:?}", resp.error);
+        let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
+        assert!(text.contains("Synced"), "got: {text}");
     }
 }

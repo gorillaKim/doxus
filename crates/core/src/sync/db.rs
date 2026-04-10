@@ -13,6 +13,7 @@ pub struct DueInstance {
     pub project_id: i64,
     pub sync_cursor: Option<String>,
     pub project_name: String,
+    pub config_json: String,
 }
 
 impl<'a> SyncDb<'a> {
@@ -40,7 +41,7 @@ impl<'a> SyncDb<'a> {
         interval_secs: i64,
     ) -> Result<Vec<DueInstance>, rusqlite::Error> {
         let mut stmt = self.conn.prepare(
-            "SELECT si.id, si.plugin_id, si.project_id, si.sync_cursor, p.name
+            "SELECT si.id, si.plugin_id, si.project_id, si.sync_cursor, p.name, si.config_json
              FROM source_instances si
              JOIN projects p ON si.project_id = p.id
              WHERE p.status = 'active'
@@ -54,6 +55,7 @@ impl<'a> SyncDb<'a> {
                 project_id: r.get(2)?,
                 sync_cursor: r.get(3)?,
                 project_name: r.get(4)?,
+                config_json: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
             })
         })?;
         rows.collect()

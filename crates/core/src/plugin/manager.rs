@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use doxus_plugin_sdk::DocSource;
+
 use crate::marketplace::{
     installer::{InstallerError, PluginInstaller},
     registry::RegistryEntry,
@@ -68,6 +70,18 @@ impl PluginManager {
 
     pub fn is_installed(&self, plugin_id: &str) -> bool {
         self.installer.is_installed(plugin_id)
+    }
+
+    /// Returns a boxed `DocSource` for the given `plugin_id`.
+    /// Currently supports only the built-in Obsidian plugin.
+    /// Returns `None` for unknown or WASM-only plugins.
+    pub fn get_source(&self, plugin_id: &str) -> Option<Box<dyn DocSource + Send + Sync>> {
+        match plugin_id {
+            "com.doxus.obsidian" => {
+                Some(Box::new(doxus_plugin_obsidian::ObsidianPlugin::new()))
+            }
+            _ => None,
+        }
     }
 
     pub fn list_installed(&self) -> Result<Vec<String>, ManagerError> {

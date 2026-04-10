@@ -311,6 +311,21 @@ enum PluginAction {
         /// Plugin ID (e.g. com.doxus.confluence)
         plugin_id: String,
     },
+    /// Install a plugin from a registry URL or plugin ID
+    Install {
+        /// Plugin ID to install (e.g. com.doxus.confluence)
+        plugin_id: String,
+    },
+    /// Remove an installed plugin
+    Remove {
+        /// Plugin ID to remove
+        plugin_id: String,
+    },
+    /// Update an installed plugin to latest version
+    Update {
+        /// Plugin ID to update
+        plugin_id: String,
+    },
 }
 
 fn handle_plugin(conn: &rusqlite::Connection, action: PluginAction) -> Result<()> {
@@ -338,6 +353,36 @@ fn handle_plugin(conn: &rusqlite::Connection, action: PluginAction) -> Result<()
             println!("Plugin:     {plugin_id}");
             println!("Instances:  {}", result.0);
             println!("Last sync:  {last_sync}");
+        }
+        PluginAction::Install { plugin_id } => {
+            conn.execute(
+                "INSERT OR IGNORE INTO plugins(id, name, version, kind, trust_level, manifest_json, installed_at)
+                 VALUES (?1, ?1, '0.0.0', 'external', 'unverified', '{}', unixepoch())",
+                rusqlite::params![plugin_id],
+            )?;
+            println!("Plugin '{plugin_id}' registered.");
+        }
+        PluginAction::Remove { plugin_id } => {
+            let rows = conn.execute(
+                "DELETE FROM plugins WHERE id = ?1",
+                rusqlite::params![plugin_id],
+            )?;
+            if rows == 0 {
+                println!("Plugin '{plugin_id}' not found.");
+            } else {
+                println!("Plugin '{plugin_id}' removed.");
+            }
+        }
+        PluginAction::Update { plugin_id } => {
+            let rows = conn.execute(
+                "UPDATE plugins SET version = '0.0.1', installed_at = unixepoch() WHERE id = ?1",
+                rusqlite::params![plugin_id],
+            )?;
+            if rows == 0 {
+                println!("Plugin '{plugin_id}' not found. Install it first.");
+            } else {
+                println!("Plugin '{plugin_id}' updated.");
+            }
         }
     }
     Ok(())
@@ -586,6 +631,69 @@ mod tests {
     fn cli_parses_status() {
         let cli = Cli::try_parse_from(["doxus", "status"]).unwrap();
         assert!(matches!(cli.command, Commands::Status));
+    }
+
+    #[test]
+    fn plugin_action_install_parses() {
+        let args = Cli::try_parse_from(["doxus", "plugin", "install", "com.test.plugin"]);
+        assert!(args.is_ok());
+    }
+
+    #[test]
+    fn plugin_action_remove_parses() {
+        let args = Cli::try_parse_from(["doxus", "plugin", "remove", "com.test.plugin"]);
+        assert!(args.is_ok());
+    }
+
+    #[test]
+    fn plugin_action_update_parses() {
+        let args = Cli::try_parse_from(["doxus", "plugin", "update", "com.test.plugin"]);
+        assert!(args.is_ok());
+    }
+
+    #[test]
+    fn test_plugin_install_and_remove() {
+        let (conn, _dir) = setup_test_db();
+
+        // Install
+        handle_plugin(&conn, PluginAction::Install { plugin_id: "com.test.plugin".into() }).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM plugins WHERE id='com.test.plugin'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+
+        // Remove
+        handle_plugin(&conn, PluginAction::Remove { plugin_id: "com.test.plugin".into() }).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM plugins WHERE id='com.test.plugin'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_plugin_remove_not_found() {
+        let (conn, _dir) = setup_test_db();
+        // Should not error even when plugin doesn't exist
+        handle_plugin(&conn, PluginAction::Remove { plugin_id: "com.nonexistent".into() }).unwrap();
+    }
+
+    #[test]
+    fn test_plugin_update_not_found() {
+        let (conn, _dir) = setup_test_db();
+        // Should not error even when plugin doesn't exist
+        handle_plugin(&conn, PluginAction::Update { plugin_id: "com.nonexistent".into() }).unwrap();
+    }
+
+    #[test]
+    fn test_plugin_install_idempotent() {
+        let (conn, _dir) = setup_test_db();
+        handle_plugin(&conn, PluginAction::Install { plugin_id: "com.test.plugin".into() }).unwrap();
+        // Second install should be a no-op (INSERT OR IGNORE)
+        handle_plugin(&conn, PluginAction::Install { plugin_id: "com.test.plugin".into() }).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM plugins WHERE id='com.test.plugin'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[test]

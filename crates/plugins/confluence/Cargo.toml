@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 doxus-plugin-sdk = { path = "../../plugin-sdk" }
+doxus-core = { path = "../../core" }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
