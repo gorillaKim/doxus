@@ -8,9 +8,17 @@ use extism::{Manifest, Plugin, Wasm};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use tokio::sync::broadcast;
 
 use super::kv_store::KvStore;
 use super::manifest::PluginManifest;
+
+/// Progress event emitted by a WASM plugin via the `progress` host function.
+#[derive(Debug, Clone)]
+pub struct ProgressEvent {
+    pub current: i64,
+    pub total: i64,
+}
 
 /// Error type for Host Function operations.
 #[derive(Debug, thiserror::Error)]
@@ -43,12 +51,14 @@ pub struct WasmDocSourceAdapter {
     kv_store: KvStore,
     allowed_domains: Vec<String>,
     http_client: reqwest::Client,
+    progress_tx: Option<broadcast::Sender<ProgressEvent>>,
 }
 
 impl WasmDocSourceAdapter {
     pub fn from_bytes(
         wasm_bytes: impl Into<Vec<u8>>,
         manifest: PluginManifest,
+        progress_tx: Option<broadcast::Sender<ProgressEvent>>,
     ) -> Result<Self, PluginError> {
         if manifest.abi_version != 1 {
             return Err(PluginError::ConfigInvalid(format!(
@@ -80,6 +90,7 @@ impl WasmDocSourceAdapter {
             kv_store: KvStore::new(),
             allowed_domains,
             http_client,
+            progress_tx,
         })
     }
 
@@ -92,6 +103,7 @@ impl WasmDocSourceAdapter {
             abi_version: 1,
             http_domains: allowed_domains.clone(),
             kv_namespaces: vec![],
+            secrets: vec![],
         };
         // Minimal valid WASM module bytes
         let wasm_bytes: Vec<u8> = vec![
@@ -113,6 +125,7 @@ impl WasmDocSourceAdapter {
             kv_store: KvStore::new(),
             allowed_domains,
             http_client: reqwest::Client::new(),
+            progress_tx: None,
         }
     }
 
@@ -122,6 +135,55 @@ impl WasmDocSourceAdapter {
 
     pub fn kv_set(&self, key: String, value: Vec<u8>) {
         self.kv_store.set(key, value)
+    }
+
+    /// Send a progress event. No-op if no progress sender is configured.
+    pub fn send_progress(&self, current: i64, total: i64) {
+        if let Some(tx) = &self.progress_tx {
+            let _ = tx.send(ProgressEvent { current, total });
+        }
+    }
+
+    /// Look up a secret by key. Uses `DOXUS_SECRET_<key>` environment variable as a stub.
+    /// Returns `None` if the key is not found, not declared in manifest, or contains invalid characters.
+    // TODO: Replace with keychain integration (keyring crate) in a future PR.
+    pub fn secrets_get(&self, key: &str) -> Option<String> {
+        // Validate key characters: only alphanumeric and underscore
+        if !key.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            return None;
+        }
+        // Check against manifest allowlist
+        if !self.manifest.secrets.contains(&key.to_string()) {
+            return None;
+        }
+        let env_key = format!("DOXUS_SECRET_{key}");
+        std::env::var(&env_key).ok()
+    }
+
+    /// Transform raw content into normalized markdown.
+    /// Strips HTML tags and normalizes whitespace.
+    pub fn content_transform(raw: &str) -> String {
+        // Strip HTML tags with a simple state machine
+        let mut result = String::with_capacity(raw.len());
+        let mut in_tag = false;
+        for ch in raw.chars() {
+            match ch {
+                '<' => in_tag = true,
+                '>' if in_tag => {
+                    in_tag = false;
+                    // Insert space to separate content from adjacent tags
+                    if !result.ends_with(' ') && !result.is_empty() {
+                        result.push(' ');
+                    }
+                }
+                '>' => result.push(ch),
+                _ if !in_tag => result.push(ch),
+                _ => {}
+            }
+        }
+        // Normalize whitespace: collapse runs of whitespace into single spaces, trim
+        let normalized: String = result.split_whitespace().collect::<Vec<_>>().join(" ");
+        normalized
     }
 
     pub fn is_http_allowed(&self, url: &str) -> bool {
@@ -341,26 +403,27 @@ mod tests {
             abi_version: 1,
             http_domains: vec![],
             kv_namespaces: vec![],
+            secrets: vec![],
         }
     }
 
     #[test]
     fn wasm_adapter_can_be_created() {
-        let adapter = WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest());
+        let adapter = WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None);
         assert!(adapter.is_ok());
     }
 
     #[test]
     fn metadata_returns_correct_plugin_id() {
         let adapter =
-            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest()).unwrap();
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None).unwrap();
         assert_eq!(adapter.metadata().id, "com.test.plugin");
     }
 
     #[test]
     fn capabilities_returns_struct() {
         let adapter =
-            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest()).unwrap();
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None).unwrap();
         let caps = adapter.capabilities();
         assert!(!caps.incremental_sync);
         assert!(!caps.oauth);
@@ -372,7 +435,7 @@ mod tests {
     #[tokio::test]
     async fn fetch_all_errors_for_minimal_wasm_without_export() {
         let adapter =
-            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest()).unwrap();
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None).unwrap();
         let opts = FetchAllOpts {
             cursor: None,
             page_size: 10,
@@ -384,7 +447,7 @@ mod tests {
     #[tokio::test]
     async fn fetch_changes_errors_for_minimal_wasm_without_export() {
         let adapter =
-            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest()).unwrap();
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None).unwrap();
         let opts = doxus_plugin_sdk::FetchChangesOpts {
             since: 0,
             cursor: None,
@@ -397,7 +460,7 @@ mod tests {
     #[tokio::test]
     async fn fetch_document_errors_for_minimal_wasm_without_export() {
         let adapter =
-            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest()).unwrap();
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None).unwrap();
         let result = adapter.fetch_document(&SourceDocId("doc1".into())).await;
         assert!(result.is_err(), "minimal wasm has no fetch_document export");
     }
@@ -405,7 +468,7 @@ mod tests {
     #[tokio::test]
     async fn health_check_returns_unhealthy_for_minimal_wasm() {
         let adapter =
-            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest()).unwrap();
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None).unwrap();
         let status = adapter.health_check().await;
         assert!(!status.healthy, "minimal wasm has no health_check export");
         assert!(status.message.is_some());
@@ -416,7 +479,7 @@ mod tests {
     async fn fetch_all_calls_wasm_export() {
         let wasm_bytes = include_bytes!("../../../core/tests/fixtures/test_plugin.wasm");
         let adapter =
-            WasmDocSourceAdapter::from_bytes(wasm_bytes.to_vec(), test_manifest()).unwrap();
+            WasmDocSourceAdapter::from_bytes(wasm_bytes.to_vec(), test_manifest(), None).unwrap();
         let opts = FetchAllOpts {
             cursor: None,
             page_size: 10,
@@ -433,7 +496,7 @@ mod tests {
             abi_version: 2,
             ..test_manifest()
         };
-        let result = WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), manifest);
+        let result = WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), manifest, None);
         assert!(result.is_err());
         let err = result.err().unwrap();
         match err {
@@ -445,7 +508,7 @@ mod tests {
     #[test]
     fn kv_store_works_via_adapter() {
         let adapter =
-            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest()).unwrap();
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None).unwrap();
         assert!(adapter.kv_get("x").is_none());
         adapter.kv_set("x".into(), b"hello".to_vec());
         assert_eq!(adapter.kv_get("x"), Some(b"hello".to_vec()));
@@ -458,7 +521,7 @@ mod tests {
             ..test_manifest()
         };
         let adapter =
-            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), manifest).unwrap();
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), manifest, None).unwrap();
         assert!(adapter.is_http_allowed("https://example.com/api"));
         assert!(!adapter.is_http_allowed("https://evil.com/api"));
     }
@@ -605,11 +668,126 @@ mod tests {
             abi_version: 1,
             http_domains: vec![],
             kv_namespaces: vec![],
+            secrets: vec![],
         };
         let adapter =
-            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), manifest).unwrap();
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), manifest, None).unwrap();
         assert_eq!(adapter.metadata().id, "com.test.plugin");
         assert_eq!(adapter.metadata().name, "Test Plugin");
         assert_eq!(adapter.metadata().version, "1.2.3");
+    }
+
+    #[tokio::test]
+    async fn progress_host_function_sends_events() {
+        let (tx, mut rx) = broadcast::channel::<ProgressEvent>(16);
+        let adapter =
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), Some(tx))
+                .unwrap();
+
+        adapter.send_progress(5, 100);
+        adapter.send_progress(50, 100);
+
+        let evt1 = rx.recv().await.unwrap();
+        assert_eq!(evt1.current, 5);
+        assert_eq!(evt1.total, 100);
+
+        let evt2 = rx.recv().await.unwrap();
+        assert_eq!(evt2.current, 50);
+        assert_eq!(evt2.total, 100);
+    }
+
+    #[test]
+    fn progress_noop_without_sender() {
+        let adapter =
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None).unwrap();
+        // Should not panic
+        adapter.send_progress(1, 10);
+    }
+
+    fn manifest_with_secrets(secrets: Vec<&str>) -> PluginManifest {
+        PluginManifest {
+            secrets: secrets.into_iter().map(String::from).collect(),
+            ..test_manifest()
+        }
+    }
+
+    #[test]
+    fn secrets_get_returns_none_for_unknown_key() {
+        let adapter =
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None).unwrap();
+        let result = adapter.secrets_get("nonexistent_key_12345");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn secrets_get_reads_env_var() {
+        let manifest = manifest_with_secrets(vec!["test_token"]);
+        let adapter =
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), manifest, None).unwrap();
+        std::env::set_var("DOXUS_SECRET_test_token", "my_secret");
+        let result = adapter.secrets_get("test_token");
+        assert_eq!(result, Some("my_secret".to_string()));
+        std::env::remove_var("DOXUS_SECRET_test_token");
+    }
+
+    #[test]
+    fn test_secrets_get_rejects_undeclared_key() {
+        let manifest = manifest_with_secrets(vec!["allowed_key"]);
+        let adapter =
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), manifest, None).unwrap();
+        std::env::set_var("DOXUS_SECRET_other_key", "value");
+        assert!(adapter.secrets_get("other_key").is_none(), "undeclared key should be rejected");
+        std::env::remove_var("DOXUS_SECRET_other_key");
+    }
+
+    #[test]
+    fn test_secrets_get_rejects_special_chars() {
+        let manifest = manifest_with_secrets(vec!["../etc/passwd"]);
+        let adapter =
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), manifest, None).unwrap();
+        assert!(adapter.secrets_get("../etc/passwd").is_none(), "special chars should be rejected");
+    }
+
+    #[test]
+    fn test_secrets_get_returns_declared_key() {
+        let manifest = manifest_with_secrets(vec!["api_token"]);
+        let adapter =
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), manifest, None).unwrap();
+        std::env::set_var("DOXUS_SECRET_api_token", "secret123");
+        assert_eq!(adapter.secrets_get("api_token"), Some("secret123".to_string()));
+        std::env::remove_var("DOXUS_SECRET_api_token");
+    }
+
+    #[test]
+    fn content_transform_strips_html_tags() {
+        let raw = "<p>Hello <b>world</b></p>";
+        let result = WasmDocSourceAdapter::content_transform(raw);
+        assert_eq!(result, "Hello world");
+    }
+
+    #[test]
+    fn content_transform_normalizes_whitespace() {
+        let raw = "  hello   world\n\tfoo  ";
+        let result = WasmDocSourceAdapter::content_transform(raw);
+        assert_eq!(result, "hello world foo");
+    }
+
+    #[test]
+    fn content_transform_handles_empty_string() {
+        let result = WasmDocSourceAdapter::content_transform("");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn content_transform_preserves_literal_gt() {
+        let result = WasmDocSourceAdapter::content_transform("a > b");
+        assert!(result.contains("a > b"), "literal > should be preserved, got: {}", result);
+    }
+
+    #[test]
+    fn content_transform_mixed_html_and_text() {
+        let raw = "<div><h1>Title</h1><p>Some <em>emphasized</em> text</p></div>";
+        let result = WasmDocSourceAdapter::content_transform(raw);
+        assert_eq!(result, "Title Some emphasized text");
     }
 }

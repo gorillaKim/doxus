@@ -489,9 +489,10 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires ONNX model file"]
+    #[ignore = "requires model file at ~/.doxus/models/all-MiniLM-L6-v2/model.onnx — run scripts/download-model.sh"]
     async fn onnx_embedder_produces_384_dim_vectors() {
-        let path = "models/all-MiniLM-L6-v2.onnx";
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let path = format!("{home}/.doxus/models/all-MiniLM-L6-v2/model.onnx");
         let embedder = OnnxEmbedder::new(path).unwrap();
         let result = embedder
             .embed(&["hello world", "foo bar", "test"])
@@ -504,9 +505,10 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires ONNX model file"]
+    #[ignore = "requires model file at ~/.doxus/models/all-MiniLM-L6-v2/model.onnx — run scripts/download-model.sh"]
     async fn onnx_embedder_similar_texts_high_cosine() {
-        let path = "models/all-MiniLM-L6-v2.onnx";
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let path = format!("{home}/.doxus/models/all-MiniLM-L6-v2/model.onnx");
         let embedder = OnnxEmbedder::new(path).unwrap();
         let result = embedder
             .embed(&[

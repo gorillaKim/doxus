@@ -175,7 +175,7 @@ impl SearchEngine {
     /// This wraps the connection in Arc<Mutex<>> with a NoOpEmbedder.
     /// Primarily for backward compatibility with callers that pass &Connection.
     pub fn new(conn: &Connection) -> SyncSearchEngine<'_> {
-        SyncSearchEngine { conn }
+        SyncSearchEngine::from_conn(conn)
     }
 
     /// Create a SearchEngine owning the connection (FTS-only).
@@ -437,6 +437,12 @@ pub struct SyncSearchEngine<'a> {
 }
 
 impl<'a> SyncSearchEngine<'a> {
+    /// Create a SyncSearchEngine from a borrowed connection.
+    /// Preferred constructor; `SearchEngine::new` delegates here for backward compat.
+    pub fn from_conn(conn: &'a Connection) -> Self {
+        Self { conn }
+    }
+
     /// Index a document (sync, FTS only — no embedding).
     pub fn index_document(
         &self,
@@ -667,6 +673,43 @@ mod tests {
         assert_eq!(hits[0].source_doc_id, "x");
     }
 
+    // ── Async test helper ───────────────────────────────────────────────
+
+    /// Build a fresh in-memory SearchEngine with embedder plus a project row.
+    /// Returns `(engine, conn, project_id)` — conn is needed for direct DB assertions.
+    fn make_async_engine(project_name: &str) -> (SearchEngine, Arc<Mutex<Connection>>, i64) {
+        crate::db::ensure_vec_extension();
+        let c = Connection::open_in_memory().unwrap();
+        crate::db::apply_pragmas(&c).unwrap();
+        crate::db::create_vec0_table(&c).unwrap();
+        let migrations = &[
+            include_str!("db/migrations/V1__initial_projects.sql"),
+            include_str!("db/migrations/V2__documents.sql"),
+            include_str!("db/migrations/V3__chunks_fts.sql"),
+            include_str!("db/migrations/V5__graph.sql"),
+            include_str!("db/migrations/V6__view_counts.sql"),
+            include_str!("db/migrations/V7__plugins.sql"),
+            include_str!("db/migrations/V8__workspace.sql"),
+            include_str!("db/migrations/V9__workspace_content.sql"),
+        ];
+        for sql in migrations {
+            c.execute_batch(sql).unwrap();
+        }
+        c.execute(
+            "INSERT INTO projects(name, display_name, path, created_at, updated_at) \
+             VALUES (?1, ?1, '/tmp', unixepoch(), unixepoch())",
+            [project_name],
+        ).unwrap();
+        let project_id: i64 = c
+            .query_row("SELECT id FROM projects WHERE name = ?1", [project_name], |r| r.get(0))
+            .unwrap();
+
+        let conn = Arc::new(Mutex::new(c));
+        let embedder: Arc<dyn EmbeddingProvider> = Arc::new(crate::embedding::MockEmbedder::new(384));
+        let engine = SearchEngine::with_embedder(Arc::clone(&conn), embedder);
+        (engine, conn, project_id)
+    }
+
     // ── TDD: async SearchEngine with embedder ───────────────────────────
 
     #[test]
@@ -693,41 +736,10 @@ mod tests {
 
     #[tokio::test]
     async fn index_document_stores_embedding() {
-        let db = TestDb::new();
-        let pid = insert_project(&db, "emb-test", "/tmp");
-
-        let conn = Arc::new(Mutex::new({
-            // Move the connection out of TestDb
-            // We need to create a fresh one since TestDb owns it
-            crate::db::ensure_vec_extension();
-            let c = Connection::open_in_memory().unwrap();
-            crate::db::apply_pragmas(&c).unwrap();
-            crate::db::create_vec0_table(&c).unwrap();
-            let migrations = &[
-                include_str!("db/migrations/V1__initial_projects.sql"),
-                include_str!("db/migrations/V2__documents.sql"),
-                include_str!("db/migrations/V3__chunks_fts.sql"),
-                include_str!("db/migrations/V5__graph.sql"),
-                include_str!("db/migrations/V6__view_counts.sql"),
-                include_str!("db/migrations/V7__plugins.sql"),
-                include_str!("db/migrations/V8__workspace.sql"),
-                include_str!("db/migrations/V9__workspace_content.sql"),
-            ];
-            for sql in migrations {
-                c.execute_batch(sql).unwrap();
-            }
-            c.execute(
-                "INSERT INTO projects(name, display_name, path, created_at, updated_at) VALUES ('emb-test', 'emb-test', '/tmp', unixepoch(), unixepoch())",
-                [],
-            ).unwrap();
-            c
-        }));
-
-        let embedder: Arc<dyn EmbeddingProvider> = Arc::new(crate::embedding::MockEmbedder::new(384));
-        let engine = SearchEngine::with_embedder(conn.clone(), embedder);
+        let (engine, conn, pid) = make_async_engine("emb-test");
 
         engine
-            .index_document_async(1, "doc1", "Test", "hello world")
+            .index_document_async(pid, "doc1", "Test", "hello world")
             .await
             .unwrap();
 
@@ -741,35 +753,11 @@ mod tests {
 
     #[tokio::test]
     async fn vector_search_returns_results() {
-        crate::db::ensure_vec_extension();
-        let c = Connection::open_in_memory().unwrap();
-        crate::db::apply_pragmas(&c).unwrap();
-        crate::db::create_vec0_table(&c).unwrap();
-        let migrations = &[
-            include_str!("db/migrations/V1__initial_projects.sql"),
-            include_str!("db/migrations/V2__documents.sql"),
-            include_str!("db/migrations/V3__chunks_fts.sql"),
-            include_str!("db/migrations/V5__graph.sql"),
-            include_str!("db/migrations/V6__view_counts.sql"),
-            include_str!("db/migrations/V7__plugins.sql"),
-            include_str!("db/migrations/V8__workspace.sql"),
-            include_str!("db/migrations/V9__workspace_content.sql"),
-        ];
-        for sql in migrations {
-            c.execute_batch(sql).unwrap();
-        }
-        c.execute(
-            "INSERT INTO projects(name, display_name, path, created_at, updated_at) VALUES ('vtest', 'vtest', '/tmp', unixepoch(), unixepoch())",
-            [],
-        ).unwrap();
-
-        let conn = Arc::new(Mutex::new(c));
-        let embedder: Arc<dyn EmbeddingProvider> = Arc::new(crate::embedding::MockEmbedder::new(384));
-        let engine = SearchEngine::with_embedder(conn.clone(), embedder);
+        let (engine, _conn, pid) = make_async_engine("vtest");
 
         // Index two documents
-        engine.index_document_async(1, "d1", "Doc One", "content one").await.unwrap();
-        engine.index_document_async(1, "d2", "Doc Two", "content two").await.unwrap();
+        engine.index_document_async(pid, "d1", "Doc One", "content one").await.unwrap();
+        engine.index_document_async(pid, "d2", "Doc Two", "content two").await.unwrap();
 
         // Vector search
         let query = SearchQuery {
@@ -784,33 +772,9 @@ mod tests {
 
     #[tokio::test]
     async fn hybrid_search_merges_fts_and_vector() {
-        crate::db::ensure_vec_extension();
-        let c = Connection::open_in_memory().unwrap();
-        crate::db::apply_pragmas(&c).unwrap();
-        crate::db::create_vec0_table(&c).unwrap();
-        let migrations = &[
-            include_str!("db/migrations/V1__initial_projects.sql"),
-            include_str!("db/migrations/V2__documents.sql"),
-            include_str!("db/migrations/V3__chunks_fts.sql"),
-            include_str!("db/migrations/V5__graph.sql"),
-            include_str!("db/migrations/V6__view_counts.sql"),
-            include_str!("db/migrations/V7__plugins.sql"),
-            include_str!("db/migrations/V8__workspace.sql"),
-            include_str!("db/migrations/V9__workspace_content.sql"),
-        ];
-        for sql in migrations {
-            c.execute_batch(sql).unwrap();
-        }
-        c.execute(
-            "INSERT INTO projects(name, display_name, path, created_at, updated_at) VALUES ('htest', 'htest', '/tmp', unixepoch(), unixepoch())",
-            [],
-        ).unwrap();
+        let (engine, _conn, pid) = make_async_engine("htest");
 
-        let conn = Arc::new(Mutex::new(c));
-        let embedder: Arc<dyn EmbeddingProvider> = Arc::new(crate::embedding::MockEmbedder::new(384));
-        let engine = SearchEngine::with_embedder(conn, embedder);
-
-        engine.index_document_async(1, "h1", "Rust Guide", "rust programming language").await.unwrap();
+        engine.index_document_async(pid, "h1", "Rust Guide", "rust programming language").await.unwrap();
 
         let query = SearchQuery::new("rust programming");
         let hits = engine.search_async(&query).await.unwrap();

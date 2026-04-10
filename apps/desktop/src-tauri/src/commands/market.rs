@@ -459,6 +459,8 @@ pub async fn plugin_validate_config(
                 return Err("base_url and api_token are required".to_string());
             }
 
+            validate_base_url(&base_url)?;
+
             let client = reqwest::Client::new();
             let url = format!(
                 "{}/wiki/rest/api/space?limit=1",
@@ -508,10 +510,60 @@ pub async fn plugin_open_url(url: String) -> Result<(), String> {
     if !url.starts_with("https://") && !url.starts_with("http://") {
         return Err("only http/https URLs are allowed".into());
     }
+    validate_base_url(&url)?;
     std::process::Command::new("open")
         .arg(&url)
         .spawn()
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn validate_base_url(url: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| format!("잘못된 URL: {}", e))?;
+
+    if parsed.scheme() != "https" {
+        return Err("HTTPS URL만 허용됩니다 (SSRF 방지)".to_string());
+    }
+
+    let host = parsed.host_str().ok_or_else(|| "URL에 호스트가 없습니다".to_string())?;
+
+    let lower = host.to_ascii_lowercase();
+    if lower == "localhost" || lower == "0.0.0.0" {
+        return Err(format!("허용되지 않는 호스트: {}", host));
+    }
+
+    // Private IP range rejection
+    // host_str() returns brackets for IPv6 (e.g. "[fe80::1]"), strip them for parsing
+    let bare = lower.strip_prefix('[').and_then(|s| s.strip_suffix(']')).unwrap_or(&lower);
+    if let Ok(addr) = bare.parse::<std::net::IpAddr>() {
+        let blocked = match addr {
+            std::net::IpAddr::V4(v4) => {
+                let octets = v4.octets();
+                octets[0] == 127
+                    || octets[0] == 10
+                    || (octets[0] == 172 && (16..=31).contains(&octets[1]))
+                    || (octets[0] == 192 && octets[1] == 168)
+                    || octets[0] == 0
+            }
+            std::net::IpAddr::V6(v6) => {
+                v6.is_loopback()
+                    || (v6.segments()[0] & 0xffc0) == 0xfe80  // link-local
+                    || (v6.segments()[0] & 0xfe00) == 0xfc00  // unique-local
+                    || v6.to_ipv4_mapped().map_or(false, |v4| {
+                        let o = v4.octets();
+                        o[0] == 127
+                            || o[0] == 10
+                            || (o[0] == 172 && (16..=31).contains(&o[1]))
+                            || (o[0] == 192 && o[1] == 168)
+                            || o[0] == 0
+                    })
+            }
+        };
+        if blocked {
+            return Err(format!("사설 IP 주소는 허용되지 않습니다: {}", host));
+        }
+    }
+
     Ok(())
 }
 
@@ -581,6 +633,56 @@ mod tests {
             .collect();
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0]["event_type"], "plugin_error");
+    }
+
+    // --- validate_base_url tests ---
+
+    #[test]
+    fn test_validate_config_rejects_http_scheme() {
+        let result = super::validate_base_url("http://evil.com");
+        assert!(result.is_err(), "http:// scheme should be rejected");
+        let msg = result.unwrap_err();
+        assert!(msg.contains("HTTPS"), "error should mention HTTPS: {}", msg);
+    }
+
+    #[test]
+    fn test_validate_config_rejects_private_ip() {
+        for ip in &["https://192.168.1.1", "https://10.0.0.1", "https://172.16.0.1", "https://127.0.0.1"] {
+            let result = super::validate_base_url(ip);
+            assert!(result.is_err(), "{} should be rejected as private IP", ip);
+        }
+    }
+
+    #[test]
+    fn test_validate_config_rejects_localhost() {
+        for host in &["https://localhost", "https://localhost:8080", "https://0.0.0.0"] {
+            let result = super::validate_base_url(host);
+            assert!(result.is_err(), "{} should be rejected", host);
+        }
+    }
+
+    #[test]
+    fn test_validate_config_accepts_valid_https() {
+        let result = super::validate_base_url("https://mycompany.atlassian.net");
+        assert!(result.is_ok(), "valid https URL should be accepted: {:?}", result);
+    }
+
+    #[test]
+    fn test_validate_rejects_ipv4_mapped_private() {
+        let result = super::validate_base_url("https://[::ffff:192.168.1.1]");
+        assert!(result.is_err(), "IPv4-mapped private address should be rejected");
+    }
+
+    #[test]
+    fn test_validate_rejects_link_local_ipv6() {
+        let result = super::validate_base_url("https://[fe80::1]");
+        assert!(result.is_err(), "link-local IPv6 should be rejected");
+    }
+
+    #[tokio::test]
+    async fn test_plugin_open_url_rejects_private_ip() {
+        let result = super::plugin_open_url("https://192.168.1.1/path".into()).await;
+        assert!(result.is_err(), "plugin_open_url should reject private IPs");
     }
 }
 

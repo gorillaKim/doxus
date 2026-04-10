@@ -9,6 +9,8 @@ pub struct PluginManifest {
     pub abi_version: u32,
     pub http_domains: Vec<String>,
     pub kv_namespaces: Vec<String>,
+    #[serde(default)]
+    pub secrets: Vec<String>,
 }
 
 impl PluginManifest {
@@ -43,6 +45,7 @@ mod tests {
             abi_version: 1,
             http_domains: domains.into_iter().map(String::from).collect(),
             kv_namespaces: vec![],
+            secrets: vec![],
         }
     }
 

@@ -25,6 +25,31 @@ async fn main() -> Result<()> {
     }
 
     let conn = doxus_core::db::open(&db_path)?;
+
+    // Attempt to initialize OnnxEmbedder; fall back gracefully if model is absent.
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let model_path = std::path::PathBuf::from(&home)
+        .join(".doxus/models/all-MiniLM-L6-v2/model.onnx");
+    // TODO: Pass embedder to McpServer once it accepts an EmbeddingProvider.
+    // Currently McpServer::new() only takes a Connection; vector search requires
+    // extending the constructor (tracked for Phase 1).
+    match doxus_core::embedding::OnnxEmbedder::new(&model_path) {
+        Ok(_embedder) => {
+            tracing::info!(
+                "OnnxEmbedder loaded from {} but McpServer does not yet accept an embedder; \
+                 running in FTS-only mode. Vector search will be enabled once McpServer is extended.",
+                model_path.display()
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                "OnnxEmbedder unavailable ({}); vector search disabled. \
+                 Run scripts/download-model.sh to enable.",
+                e
+            );
+        }
+    }
+
     let server = McpServer::new(conn);
 
     let stdin = std::io::stdin();
