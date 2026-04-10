@@ -109,6 +109,8 @@ pub struct FetchChangesOpts {
     pub since: i64,
     pub cursor: Option<Cursor>,
     pub page_size: usize,
+    /// IDs previously known to the caller; plugin uses this to detect deletions.
+    pub known_ids: Vec<SourceDocId>,
 }
 
 #[derive(Debug)]
@@ -129,6 +131,128 @@ pub struct Capabilities {
     pub incremental_sync: bool,
     pub oauth: bool,
     pub native_search: bool,
+}
+
+// ── SSRF protection ───────────────────────────────────────────────────────────
+
+/// Validates that a base URL is safe to use as a plugin endpoint.
+///
+/// Blocks:
+/// - Non-HTTP(S) schemes
+/// - HTTP (only HTTPS allowed)
+/// - Loopback: 127.0.0.0/8, ::1
+/// - RFC 1918 private: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+/// - Link-local / AWS metadata: 169.254.0.0/16, fe80::/10
+/// - IPv6 unique-local: fc00::/7
+/// - Hostnames: localhost, *.local
+pub fn validate_base_url(url: &str) -> Result<(), PluginError> {
+    // Require HTTPS scheme
+    if !url.starts_with("https://") {
+        return Err(PluginError::PermissionDenied(
+            "base_url must use HTTPS".into(),
+        ));
+    }
+
+    // Extract host (strip port if present)
+    let after_scheme = url.trim_start_matches("https://");
+    let authority = after_scheme.split('/').next().unwrap_or("");
+    // Handle IPv6 bracket notation: [::1] or [::1]:port
+    let host = if authority.starts_with('[') {
+        // bracketed IPv6 — extract content between [ and ]
+        authority
+            .trim_start_matches('[')
+            .split(']')
+            .next()
+            .unwrap_or("")
+    } else if authority.matches(':').count() >= 2 {
+        // bare IPv6 (no brackets, no path yet) — use the whole authority
+        authority
+    } else {
+        // hostname or IPv4 — strip port
+        authority.split(':').next().unwrap_or("")
+    }
+    .trim();
+
+    if host.is_empty() {
+        return Err(PluginError::PermissionDenied(
+            "base_url host is empty".into(),
+        ));
+    }
+
+    // Block hostname-based private addresses
+    if host.eq_ignore_ascii_case("localhost")
+        || host.ends_with(".local")
+        || host.eq_ignore_ascii_case(".local")
+    {
+        return Err(PluginError::PermissionDenied(format!(
+            "base_url host is not allowed: {host}"
+        )));
+    }
+
+    // Try to parse as IP address
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        if is_ip_blocked(ip) {
+            return Err(PluginError::PermissionDenied(format!(
+                "base_url IP address is not allowed: {host}"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn is_ip_blocked(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => is_ipv4_blocked(v4),
+        IpAddr::V6(v6) => is_ipv6_blocked(v6),
+    }
+}
+
+fn is_ipv4_blocked(ip: std::net::Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    // 127.0.0.0/8 — loopback
+    if octets[0] == 127 {
+        return true;
+    }
+    // 10.0.0.0/8 — RFC 1918
+    if octets[0] == 10 {
+        return true;
+    }
+    // 172.16.0.0/12 — RFC 1918 (172.16.x.x – 172.31.x.x)
+    if octets[0] == 172 && (octets[1] >= 16 && octets[1] <= 31) {
+        return true;
+    }
+    // 192.168.0.0/16 — RFC 1918
+    if octets[0] == 192 && octets[1] == 168 {
+        return true;
+    }
+    // 169.254.0.0/16 — link-local / AWS metadata
+    if octets[0] == 169 && octets[1] == 254 {
+        return true;
+    }
+    // 0.0.0.0
+    if octets == [0, 0, 0, 0] {
+        return true;
+    }
+    false
+}
+
+fn is_ipv6_blocked(ip: std::net::Ipv6Addr) -> bool {
+    let segments = ip.segments();
+    // ::1 — loopback
+    if ip == std::net::Ipv6Addr::LOCALHOST {
+        return true;
+    }
+    // fc00::/7 — unique-local (fc00:: and fd00::)
+    if (segments[0] & 0xfe00) == 0xfc00 {
+        return true;
+    }
+    // fe80::/10 — link-local
+    if (segments[0] & 0xffc0) == 0xfe80 {
+        return true;
+    }
+    false
 }
 
 // ── DocSource trait ───────────────────────────────────────────────────────────
@@ -272,5 +396,144 @@ mod tests {
     #[test]
     fn doc_source_is_object_safe() {
         let _: Option<Box<dyn DocSource>> = None;
+    }
+
+    // ── validate_base_url tests ───────────────────────────────────────────────
+
+    #[test]
+    fn validate_base_url_accepts_public_https() {
+        assert!(validate_base_url("https://api.github.com").is_ok());
+        assert!(validate_base_url("https://mycompany.atlassian.net").is_ok());
+        assert!(validate_base_url("https://example.com/base").is_ok());
+    }
+
+    #[test]
+    fn validate_base_url_rejects_http() {
+        let err = validate_base_url("http://example.com").unwrap_err();
+        assert!(matches!(err, PluginError::PermissionDenied(_)));
+    }
+
+    #[test]
+    fn validate_base_url_rejects_non_http_schemes() {
+        assert!(matches!(
+            validate_base_url("ftp://example.com"),
+            Err(PluginError::PermissionDenied(_))
+        ));
+        assert!(matches!(
+            validate_base_url("file:///etc/passwd"),
+            Err(PluginError::PermissionDenied(_))
+        ));
+    }
+
+    #[test]
+    fn validate_base_url_rejects_localhost() {
+        assert!(matches!(
+            validate_base_url("https://localhost/api"),
+            Err(PluginError::PermissionDenied(_))
+        ));
+        assert!(matches!(
+            validate_base_url("https://localhost:8080/api"),
+            Err(PluginError::PermissionDenied(_))
+        ));
+    }
+
+    #[test]
+    fn validate_base_url_rejects_dot_local() {
+        assert!(matches!(
+            validate_base_url("https://myhost.local/api"),
+            Err(PluginError::PermissionDenied(_))
+        ));
+    }
+
+    #[test]
+    fn validate_base_url_rejects_loopback_ipv4() {
+        assert!(matches!(
+            validate_base_url("https://127.0.0.1/api"),
+            Err(PluginError::PermissionDenied(_))
+        ));
+        assert!(matches!(
+            validate_base_url("https://127.255.255.255/api"),
+            Err(PluginError::PermissionDenied(_))
+        ));
+    }
+
+    #[test]
+    fn validate_base_url_rejects_rfc1918_10_slash_8() {
+        assert!(matches!(
+            validate_base_url("https://10.0.0.1/api"),
+            Err(PluginError::PermissionDenied(_))
+        ));
+        assert!(matches!(
+            validate_base_url("https://10.255.255.255/api"),
+            Err(PluginError::PermissionDenied(_))
+        ));
+    }
+
+    #[test]
+    fn validate_base_url_rejects_rfc1918_172_16_slash_12() {
+        assert!(matches!(
+            validate_base_url("https://172.16.0.1/api"),
+            Err(PluginError::PermissionDenied(_))
+        ));
+        assert!(matches!(
+            validate_base_url("https://172.31.255.255/api"),
+            Err(PluginError::PermissionDenied(_))
+        ));
+        // 172.15.x.x is NOT in the range — should be allowed
+        assert!(validate_base_url("https://172.15.0.1/api").is_ok());
+        // 172.32.x.x is NOT in the range — should be allowed
+        assert!(validate_base_url("https://172.32.0.1/api").is_ok());
+    }
+
+    #[test]
+    fn validate_base_url_rejects_rfc1918_192_168_slash_16() {
+        assert!(matches!(
+            validate_base_url("https://192.168.0.1/api"),
+            Err(PluginError::PermissionDenied(_))
+        ));
+        assert!(matches!(
+            validate_base_url("https://192.168.255.255/api"),
+            Err(PluginError::PermissionDenied(_))
+        ));
+    }
+
+    #[test]
+    fn validate_base_url_rejects_link_local_aws_metadata() {
+        assert!(matches!(
+            validate_base_url("https://169.254.169.254/latest/meta-data"),
+            Err(PluginError::PermissionDenied(_))
+        ));
+        assert!(matches!(
+            validate_base_url("https://169.254.0.1/api"),
+            Err(PluginError::PermissionDenied(_))
+        ));
+    }
+
+    #[test]
+    fn validate_base_url_rejects_ipv6_loopback() {
+        assert!(matches!(
+            validate_base_url("https://::1/api"),
+            Err(PluginError::PermissionDenied(_))
+        ));
+    }
+
+    #[test]
+    fn validate_base_url_rejects_ipv6_unique_local() {
+        assert!(matches!(
+            validate_base_url("https://fc00::1/api"),
+            Err(PluginError::PermissionDenied(_))
+        ));
+        assert!(matches!(
+            validate_base_url("https://fd12:3456:789a::1/api"),
+            Err(PluginError::PermissionDenied(_))
+        ));
+    }
+
+    #[test]
+    fn validate_base_url_rejects_ipv6_link_local() {
+        assert!(matches!(
+            validate_base_url("https://fe80::1/api"),
+            Err(PluginError::PermissionDenied(_))
+        ));
     }
 }

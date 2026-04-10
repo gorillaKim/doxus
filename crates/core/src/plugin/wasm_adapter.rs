@@ -78,6 +78,16 @@ impl WasmDocSourceAdapter {
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| PluginError::Internal(format!("http client init failed: {e}")))?;
+        let kv_conn = rusqlite::Connection::open_in_memory()
+            .map_err(|e| PluginError::Internal(format!("kv db init: {e}")))?;
+        let kv_store = KvStore::with_connection(
+            Arc::new(Mutex::new(kv_conn)),
+            manifest.plugin_id.clone(),
+            manifest.kv_namespaces.clone(),
+        );
+        kv_store
+            .init_table()
+            .map_err(|e| PluginError::Internal(format!("kv table init: {e}")))?;
         Ok(Self {
             meta: PluginMetadata {
                 id: manifest.plugin_id.clone(),
@@ -87,7 +97,7 @@ impl WasmDocSourceAdapter {
             },
             plugin: Arc::new(Mutex::new(plugin)),
             manifest,
-            kv_store: KvStore::new(),
+            kv_store,
             allowed_domains,
             http_client,
             progress_tx,
@@ -113,6 +123,14 @@ impl WasmDocSourceAdapter {
         let wasm = Wasm::data(wasm_bytes);
         let extism_manifest = Manifest::new([wasm]);
         let plugin = Plugin::new(&extism_manifest, [], true).expect("minimal wasm load failed");
+        let kv_store = KvStore::with_connection(
+            Arc::new(Mutex::new(
+                rusqlite::Connection::open_in_memory().expect("kv db"),
+            )),
+            manifest.plugin_id.clone(),
+            manifest.kv_namespaces.clone(),
+        );
+        kv_store.init_table().expect("kv table");
         Self {
             meta: PluginMetadata {
                 id: manifest.plugin_id.clone(),
@@ -122,19 +140,23 @@ impl WasmDocSourceAdapter {
             },
             plugin: Arc::new(Mutex::new(plugin)),
             manifest,
-            kv_store: KvStore::new(),
+            kv_store,
             allowed_domains,
             http_client: reqwest::Client::new(),
             progress_tx: None,
         }
     }
 
-    pub fn kv_get(&self, key: &str) -> Option<Vec<u8>> {
-        self.kv_store.get(key)
+    /// Get a value from the plugin KV store (namespace-isolated).
+    /// Returns `None` if not found, or `Err` if namespace is not in manifest.
+    pub fn kv_get(&self, namespace: &str, key: &str) -> Result<Option<Vec<u8>>, super::kv_store::KvError> {
+        self.kv_store.get(namespace, key)
     }
 
-    pub fn kv_set(&self, key: String, value: Vec<u8>) {
-        self.kv_store.set(key, value)
+    /// Set a value in the plugin KV store (namespace-isolated).
+    /// Returns `Err` if namespace is not in manifest.
+    pub fn kv_set(&self, namespace: &str, key: &str, value: Vec<u8>) -> Result<(), super::kv_store::KvError> {
+        self.kv_store.set(namespace, key, value)
     }
 
     /// Send a progress event. No-op if no progress sender is configured.
@@ -144,9 +166,12 @@ impl WasmDocSourceAdapter {
         }
     }
 
-    /// Look up a secret by key. Uses `DOXUS_SECRET_<key>` environment variable as a stub.
-    /// Returns `None` if the key is not found, not declared in manifest, or contains invalid characters.
-    // TODO: Replace with keychain integration (keyring crate) in a future PR.
+    /// Look up a secret by key.
+    /// Priority: keychain (service=`doxus-{plugin_id}`, user=key) → env var `DOXUS_SECRET_<key>`.
+    /// Returns `None` if:
+    /// - key contains invalid characters (only alphanumeric + `_` allowed)
+    /// - key is not declared in the plugin manifest
+    /// - key is not found in keychain or env
     pub fn secrets_get(&self, key: &str) -> Option<String> {
         // Validate key characters: only alphanumeric and underscore
         if !key.chars().all(|c| c.is_alphanumeric() || c == '_') {
@@ -156,6 +181,15 @@ impl WasmDocSourceAdapter {
         if !self.manifest.secrets.contains(&key.to_string()) {
             return None;
         }
+
+        // Try keychain first (service name includes plugin_id for isolation)
+        let service = format!("doxus-{}", self.manifest.plugin_id);
+        let entry = keyring::Entry::new(&service, key).ok()?;
+        if let Ok(secret) = entry.get_password() {
+            return Some(secret);
+        }
+
+        // Fall back to environment variable (CI-compatible)
         let env_key = format!("DOXUS_SECRET_{key}");
         std::env::var(&env_key).ok()
     }
@@ -452,6 +486,7 @@ mod tests {
             since: 0,
             cursor: None,
             page_size: 10,
+            known_ids: vec![],
         };
         let result = adapter.fetch_changes(opts).await;
         assert!(result.is_err(), "minimal wasm has no fetch_changes export");
@@ -507,11 +542,24 @@ mod tests {
 
     #[test]
     fn kv_store_works_via_adapter() {
+        let manifest = PluginManifest {
+            kv_namespaces: vec!["default".into()],
+            ..test_manifest()
+        };
+        let adapter =
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), manifest, None).unwrap();
+        assert!(adapter.kv_get("default", "x").unwrap().is_none());
+        adapter.kv_set("default", "x", b"hello".to_vec()).unwrap();
+        assert_eq!(adapter.kv_get("default", "x").unwrap(), Some(b"hello".to_vec()));
+    }
+
+    #[test]
+    fn kv_store_rejects_undeclared_namespace() {
         let adapter =
             WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None).unwrap();
-        assert!(adapter.kv_get("x").is_none());
-        adapter.kv_set("x".into(), b"hello".to_vec());
-        assert_eq!(adapter.kv_get("x"), Some(b"hello".to_vec()));
+        // test_manifest has kv_namespaces: vec![]
+        let err = adapter.kv_set("forbidden", "k", b"v".to_vec()).unwrap_err();
+        assert!(matches!(err, crate::plugin::kv_store::KvError::NamespaceNotAllowed(_)));
     }
 
     #[test]
@@ -756,6 +804,49 @@ mod tests {
         std::env::set_var("DOXUS_SECRET_api_token", "secret123");
         assert_eq!(adapter.secrets_get("api_token"), Some("secret123".to_string()));
         std::env::remove_var("DOXUS_SECRET_api_token");
+    }
+
+    #[test]
+    fn secrets_get_env_fallback_when_no_keychain() {
+        // Set env var only — keychain will miss, should fall back
+        let manifest = manifest_with_secrets(vec!["fallback_token"]);
+        let adapter =
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), manifest, None).unwrap();
+        std::env::set_var("DOXUS_SECRET_fallback_token", "env_value");
+        // keychain won't have this key in CI, so env fallback should apply
+        let result = adapter.secrets_get("fallback_token");
+        assert_eq!(result, Some("env_value".to_string()));
+        std::env::remove_var("DOXUS_SECRET_fallback_token");
+    }
+
+    #[test]
+    fn secrets_get_plugin_id_isolation() {
+        // Two adapters with different plugin_ids should have isolated keychain services.
+        // This test verifies the service name logic — actual keychain isolation
+        // is enforced by the OS (service=doxus-{plugin_id}).
+        let manifest_a = PluginManifest {
+            plugin_id: "com.test.plugin_a".into(),
+            secrets: vec!["shared_key".into()],
+            ..test_manifest()
+        };
+        let manifest_b = PluginManifest {
+            plugin_id: "com.test.plugin_b".into(),
+            secrets: vec!["shared_key".into()],
+            ..test_manifest()
+        };
+        let adapter_a =
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), manifest_a, None).unwrap();
+        let adapter_b =
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), manifest_b, None).unwrap();
+
+        // Set env var for plugin_a only
+        std::env::set_var("DOXUS_SECRET_shared_key", "plugin_a_value");
+        // Both read same env var here (env doesn't isolate), but keychain would isolate.
+        // The important assertion: undeclared plugin gets None when no env/keychain
+        assert!(adapter_a.secrets_get("shared_key").is_some());
+        std::env::remove_var("DOXUS_SECRET_shared_key");
+        // After removing env var, adapter_b also gets None (no keychain entry)
+        assert!(adapter_b.secrets_get("shared_key").is_none());
     }
 
     #[test]

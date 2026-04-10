@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use doxus_plugin_sdk::{
-    Capabilities, ChangeSet, ContentType, DocSource, DocumentStream, FetchAllOpts,
-    FetchChangesOpts, HealthStatus, PluginConfig, PluginError, PluginKind, PluginMetadata,
-    PluginSecrets, RawDocument, SecretValue, SourceDocId,
+    validate_base_url, Capabilities, ChangeSet, ContentType, DocSource, DocumentStream,
+    FetchAllOpts, FetchChangesOpts, HealthStatus, PluginConfig, PluginError, PluginKind,
+    PluginMetadata, PluginSecrets, RawDocument, SecretValue, SourceDocId,
 };
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -11,6 +11,14 @@ use std::collections::HashMap;
 
 #[derive(Deserialize)]
 struct ConfluencePageList {
+    results: Vec<ConfluencePage>,
+    start: i64,
+    limit: i64,
+    size: i64,
+}
+
+#[derive(Deserialize)]
+struct ConfluenceCqlResult {
     results: Vec<ConfluencePage>,
     start: i64,
     limit: i64,
@@ -119,6 +127,69 @@ impl Default for ConfluencePlugin {
     }
 }
 
+impl ConfluencePlugin {
+    /// Configure plugin fields directly, bypassing SSRF validation.
+    /// Intended for testing with local HTTP mock servers (e.g. wiremock).
+    /// Do not use in production paths.
+    /// Fetch all page IDs currently in the space (used for deletion detection).
+    /// Paginates until all pages are collected.
+    async fn fetch_all_space_ids(
+        &self,
+        base_url: &str,
+        api_token: &str,
+        space_key: &str,
+    ) -> Result<std::collections::HashSet<String>, PluginError> {
+        let mut ids = std::collections::HashSet::new();
+        let mut start: i64 = 0;
+        let limit: i64 = 200;
+        loop {
+            let cql = format!("space = \"{space_key}\" AND type = page ORDER BY id ASC");
+            let resp = self
+                .client
+                .get(&format!("{base_url}/rest/api/content/search"))
+                .query(&[
+                    ("cql", cql.as_str()),
+                    ("start", &start.to_string()),
+                    ("limit", &limit.to_string()),
+                ])
+                .header("Authorization", format!("Bearer {api_token}"))
+                .send()
+                .await
+                .map_err(|e| PluginError::NetworkError(e.to_string()))?;
+
+            if !resp.status().is_success() {
+                return Err(PluginError::NetworkError(format!(
+                    "HTTP {}",
+                    resp.status()
+                )));
+            }
+
+            let result: ConfluenceCqlResult = resp
+                .json()
+                .await
+                .map_err(|e| PluginError::Internal(e.to_string()))?;
+
+            let count = result.results.len() as i64;
+            for page in result.results {
+                ids.insert(page.id);
+            }
+
+            if count < limit {
+                break;
+            }
+            start += limit;
+        }
+        Ok(ids)
+    }
+
+    #[doc(hidden)]
+    pub fn set_test_config(&mut self, base_url: String, space_key: String, api_token: String) {
+        self.base_url = Some(base_url);
+        self.space_key = Some(space_key);
+        self.api_token = Some(api_token);
+    }
+}
+
 #[async_trait]
 impl DocSource for ConfluencePlugin {
     fn metadata(&self) -> &PluginMetadata {
@@ -127,7 +198,7 @@ impl DocSource for ConfluencePlugin {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
-            incremental_sync: false, // fetch_changes not yet implemented
+            incremental_sync: true,
             oauth: false,
             native_search: false,
         }
@@ -152,11 +223,18 @@ impl DocSource for ConfluencePlugin {
         config: PluginConfig,
         secrets: PluginSecrets,
     ) -> Result<(), PluginError> {
-        self.base_url = config
+        let raw_base_url = config
             .fields
             .get("base_url")
             .and_then(|v| v.as_str())
-            .map(|s| s.trim_end_matches('/').to_string());
+            .unwrap_or("")
+            .trim_end_matches('/');
+        validate_base_url(raw_base_url)?;
+        self.base_url = if raw_base_url.is_empty() {
+            None
+        } else {
+            Some(raw_base_url.to_string())
+        };
         self.space_key = config
             .fields
             .get("space_key")
@@ -243,11 +321,88 @@ impl DocSource for ConfluencePlugin {
         })
     }
 
-    async fn fetch_changes(&self, _opts: FetchChangesOpts) -> Result<ChangeSet, PluginError> {
+    async fn fetch_changes(&self, opts: FetchChangesOpts) -> Result<ChangeSet, PluginError> {
+        let base_url = self.base_url()?;
+        let api_token = self.api_token()?;
+        let space_key = self.space_key()?;
+
+        // Convert Unix timestamp (seconds) to ISO 8601 date string for CQL
+        let since_dt = chrono::DateTime::from_timestamp(opts.since, 0)
+            .unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH);
+        let since_str = since_dt.format("%Y-%m-%dT%H:%M:%S").to_string();
+
+        let start: i64 = opts
+            .cursor
+            .as_deref()
+            .and_then(|c| c.parse().ok())
+            .unwrap_or(0);
+        let limit = opts.page_size as i64;
+
+        let cql = format!(
+            "space = \"{space_key}\" AND lastModified >= \"{since_str}\" ORDER BY lastModified ASC"
+        );
+
+        let url = format!("{base_url}/rest/api/content/search");
+        let resp = self
+            .client
+            .get(&url)
+            .query(&[
+                ("cql", cql.as_str()),
+                ("expand", "body.storage"),
+                ("start", &start.to_string()),
+                ("limit", &limit.to_string()),
+            ])
+            .header("Authorization", format!("Bearer {api_token}"))
+            .send()
+            .await
+            .map_err(|e| PluginError::NetworkError(e.to_string()))?;
+
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(PluginError::AuthRequired);
+        }
+        if !resp.status().is_success() {
+            return Err(PluginError::NetworkError(format!(
+                "HTTP {}",
+                resp.status()
+            )));
+        }
+
+        let cql_result: ConfluenceCqlResult = resp
+            .json()
+            .await
+            .map_err(|e| PluginError::Internal(e.to_string()))?;
+
+        let next_cursor = if cql_result.size >= cql_result.limit {
+            Some((cql_result.start + cql_result.limit).to_string())
+        } else {
+            None
+        };
+
+        let updated: Result<Vec<_>, _> = cql_result
+            .results
+            .into_iter()
+            .map(|p| self.page_to_doc(p))
+            .collect();
+
+        // Detect deletions only when pagination is complete (final page) and
+        // known_ids were supplied.  We query the full space to get *all* current
+        // page IDs and compute the set difference — comparing only against the
+        // CQL change-result would cause false positives for unmodified documents.
+        let deleted_ids = if next_cursor.is_none() && !opts.known_ids.is_empty() {
+            let all_current_ids =
+                self.fetch_all_space_ids(base_url, api_token, space_key).await?;
+            opts.known_ids
+                .into_iter()
+                .filter(|id| !all_current_ids.contains(&id.0))
+                .collect()
+        } else {
+            vec![]
+        };
+
         Ok(ChangeSet {
-            updated: vec![],
-            deleted_ids: vec![],
-            next_cursor: None,
+            updated: updated?,
+            deleted_ids,
+            next_cursor,
         })
     }
 
@@ -327,50 +482,21 @@ impl DocSource for ConfluencePlugin {
     }
 }
 
-fn validate_base_url(url: &str) -> Result<(), PluginError> {
-    if !url.starts_with("https://") {
-        return Err(PluginError::ConfigInvalid(
-            "base_url must use HTTPS".into(),
-        ));
-    }
-    let host = url
-        .trim_start_matches("https://")
-        .split('/')
-        .next()
-        .unwrap_or("")
-        .split(':')
-        .next()
-        .unwrap_or("");
-    let blocked = ["localhost", "127.0.0.1", "::1", "0.0.0.0", "169.254.169.254"];
-    if blocked.contains(&host) || host.ends_with(".local") || host.is_empty() {
-        return Err(PluginError::ConfigInvalid(format!(
-            "base_url host is not allowed: {host}"
-        )));
-    }
-    Ok(())
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use doxus_plugin_sdk::{FetchAllOpts, PluginConfig, PluginSecrets};
+    use doxus_plugin_sdk::{FetchAllOpts, PluginConfig};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    async fn make_plugin(server: &MockServer) -> ConfluencePlugin {
+    fn make_plugin(server: &MockServer) -> ConfluencePlugin {
+        // Set fields directly to bypass SSRF validation (wiremock uses HTTP localhost).
+        // Fetch-behavior tests are orthogonal to SSRF; SSRF is tested via validate_config/initialize.
         let mut plugin = ConfluencePlugin::new();
-        let mut config = PluginConfig::default();
-        config
-            .fields
-            .insert("base_url".into(), serde_json::json!(server.uri()));
-        config
-            .fields
-            .insert("space_key".into(), serde_json::json!("TEST"));
-        let mut secrets = PluginSecrets::default();
-        secrets
-            .fields
-            .insert("api_token".into(), SecretValue::Text("test-token".into()));
-        plugin.initialize(config, secrets).await.unwrap();
+        plugin.base_url = Some(server.uri().trim_end_matches('/').to_string());
+        plugin.space_key = Some("TEST".to_string());
+        plugin.api_token = Some("test-token".to_string());
         plugin
     }
 
@@ -411,7 +537,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let plugin = make_plugin(&server).await;
+        let plugin = make_plugin(&server);
         let stream = plugin
             .fetch_all(FetchAllOpts {
                 cursor: None,
@@ -441,7 +567,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let plugin = make_plugin(&server).await;
+        let plugin = make_plugin(&server);
         let p1 = plugin
             .fetch_all(FetchAllOpts {
                 cursor: None,
@@ -464,6 +590,137 @@ mod tests {
         assert_eq!(p2.documents[0].title.as_deref(), Some("B"));
     }
 
+    // ── fetch_changes deletion detection tests ────────────────────────────────
+
+    fn make_fetch_changes_opts(
+        server: &MockServer,
+        known_ids: Vec<&str>,
+        since: i64,
+    ) -> (ConfluencePlugin, doxus_plugin_sdk::FetchChangesOpts) {
+        let plugin = make_plugin(server);
+        let opts = doxus_plugin_sdk::FetchChangesOpts {
+            since,
+            cursor: None,
+            page_size: 50,
+            known_ids: known_ids
+                .into_iter()
+                .map(|s| SourceDocId(s.to_string()))
+                .collect(),
+        };
+        (plugin, opts)
+    }
+
+    /// Regression: unmodified documents must NOT be reported as deleted.
+    /// The CQL `lastModified >= since` result only contains recently changed pages;
+    /// a page absent from that result is not necessarily deleted.
+    #[tokio::test]
+    async fn fetch_changes_does_not_false_positive_unmodified_docs_as_deleted() {
+        let server = MockServer::start().await;
+
+        // CQL change query returns only doc "101" (recently modified)
+        let changes_body = serde_json::json!({
+            "results": [
+                {"id": "101", "title": "Modified Page", "_links": {"webui": "/wiki/101"}, "body": null}
+            ],
+            "start": 0, "limit": 50, "size": 1
+        });
+        Mock::given(method("GET"))
+            .and(path("/rest/api/content/search"))
+            .and(wiremock::matchers::query_param_contains("cql", "lastModified"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&changes_body))
+            .mount(&server)
+            .await;
+
+        // Full-space query returns BOTH "101" and "102" (both still exist)
+        let all_body = serde_json::json!({
+            "results": [
+                {"id": "101", "title": "Modified Page", "_links": {"webui": ""}, "body": null},
+                {"id": "102", "title": "Unmodified Page", "_links": {"webui": ""}, "body": null}
+            ],
+            "start": 0, "limit": 200, "size": 2
+        });
+        Mock::given(method("GET"))
+            .and(path("/rest/api/content/search"))
+            .and(wiremock::matchers::query_param_contains("cql", "type = page"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&all_body))
+            .mount(&server)
+            .await;
+
+        let (plugin, opts) = make_fetch_changes_opts(&server, vec!["101", "102"], 0);
+        let changeset = plugin.fetch_changes(opts).await.unwrap();
+
+        // "102" is unmodified but still exists — must NOT appear in deleted_ids
+        assert!(
+            changeset.deleted_ids.is_empty(),
+            "unmodified doc '102' must not be false-positively reported as deleted, got: {:?}",
+            changeset.deleted_ids
+        );
+        assert_eq!(changeset.updated.len(), 1);
+    }
+
+    /// A document in known_ids that is absent from the full-space query IS truly deleted.
+    #[tokio::test]
+    async fn fetch_changes_detects_truly_deleted_doc() {
+        let server = MockServer::start().await;
+
+        // CQL change query returns doc "101"
+        let changes_body = serde_json::json!({
+            "results": [
+                {"id": "101", "title": "Modified Page", "_links": {"webui": ""}, "body": null}
+            ],
+            "start": 0, "limit": 50, "size": 1
+        });
+        Mock::given(method("GET"))
+            .and(path("/rest/api/content/search"))
+            .and(wiremock::matchers::query_param_contains("cql", "lastModified"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&changes_body))
+            .mount(&server)
+            .await;
+
+        // Full-space query only returns "101" — "999" is gone
+        let all_body = serde_json::json!({
+            "results": [
+                {"id": "101", "title": "Modified Page", "_links": {"webui": ""}, "body": null}
+            ],
+            "start": 0, "limit": 200, "size": 1
+        });
+        Mock::given(method("GET"))
+            .and(path("/rest/api/content/search"))
+            .and(wiremock::matchers::query_param_contains("cql", "type = page"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&all_body))
+            .mount(&server)
+            .await;
+
+        let (plugin, opts) = make_fetch_changes_opts(&server, vec!["101", "999"], 0);
+        let changeset = plugin.fetch_changes(opts).await.unwrap();
+
+        assert_eq!(changeset.deleted_ids.len(), 1);
+        assert_eq!(changeset.deleted_ids[0].0, "999");
+    }
+
+    /// When known_ids is empty, deletion detection is skipped (no extra API call).
+    #[tokio::test]
+    async fn fetch_changes_skips_deletion_when_no_known_ids() {
+        let server = MockServer::start().await;
+
+        let changes_body = serde_json::json!({
+            "results": [],
+            "start": 0, "limit": 50, "size": 0
+        });
+        Mock::given(method("GET"))
+            .and(path("/rest/api/content/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&changes_body))
+            .mount(&server)
+            .await;
+
+        let (plugin, opts) = make_fetch_changes_opts(&server, vec![], 0);
+        let changeset = plugin.fetch_changes(opts).await.unwrap();
+
+        assert!(changeset.deleted_ids.is_empty());
+        // Only 1 request should have been made (no full-space query)
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
     #[tokio::test]
     async fn health_check_healthy_on_200() {
         let server = MockServer::start().await;
@@ -476,7 +733,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let plugin = make_plugin(&server).await;
+        let plugin = make_plugin(&server);
         let status = plugin.health_check().await;
         assert!(status.healthy);
     }
@@ -490,7 +747,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let plugin = make_plugin(&server).await;
+        let plugin = make_plugin(&server);
         let status = plugin.health_check().await;
         assert!(!status.healthy);
     }

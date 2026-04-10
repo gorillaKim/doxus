@@ -2,9 +2,13 @@
 //!
 //! Exposes doxus_* tools for AI agent integration.
 
+pub mod sync_loop;
+
+use doxus_core::embedding::EmbeddingProvider;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::sync::Arc;
 
 // ── MCP protocol types ────────────────────────────────────────────────────────
 
@@ -51,11 +55,12 @@ impl McpResponse {
 
 pub struct McpServer {
     conn: rusqlite::Connection,
+    embedder: Option<Arc<dyn EmbeddingProvider>>,
 }
 
 impl McpServer {
-    pub fn new(conn: rusqlite::Connection) -> Self {
-        Self { conn }
+    pub fn new(conn: rusqlite::Connection, embedder: Option<Arc<dyn EmbeddingProvider>>) -> Self {
+        Self { conn, embedder }
     }
 
     pub fn dispatch(&self, method: &str, id: Value, params: Option<&Value>) -> McpResponse {
@@ -252,25 +257,87 @@ impl McpServer {
     }
 
     fn tool_index_project(&self, id: Value, args: &Value) -> McpResponse {
-        let name = match args["project"].as_str() {
+        use doxus_plugin_obsidian::ObsidianPlugin;
+        use doxus_plugin_sdk::{DocSource, FetchAllOpts, PluginConfig, PluginSecrets};
+        use doxus_core::search::SyncSearchEngine;
+        use std::collections::HashMap;
+
+        let name = match args["project"].as_str().or_else(|| args["name"].as_str()) {
             Some(n) => n,
             None => return McpResponse::err(id, -32602, "missing required arg: project"),
         };
 
-        let status: Result<String, _> = self.conn.query_row(
-            "SELECT status FROM projects WHERE name=?1",
+        let row: Result<(i64, String), _> = self.conn.query_row(
+            "SELECT id, path FROM projects WHERE name=?1",
             params![name],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         );
 
-        match status {
-            Err(_) => McpResponse::err(id, -32602, format!("project '{name}' not found")),
-            Ok(s) => McpResponse::text(
-                id,
-                format!(
-                    "Project '{name}' (status: {s})\nIndexing must be triggered via CLI:\n  doxus index {name}"
-                ),
-            ),
+        let (project_id, path) = match row {
+            Err(_) => return McpResponse::err(id, -32602, format!("project '{name}' not found")),
+            Ok(r) => r,
+        };
+
+        let mut plugin = ObsidianPlugin::new();
+        let mut fields = HashMap::new();
+        fields.insert("path".to_string(), serde_json::Value::String(path));
+        let config = PluginConfig { fields };
+        let secrets = PluginSecrets { fields: HashMap::new() };
+
+        let run_async = async move {
+            plugin.initialize(config, secrets).await?;
+            let stream = plugin
+                .fetch_all(FetchAllOpts { cursor: None, page_size: 1000 })
+                .await?;
+            Ok::<_, doxus_plugin_sdk::PluginError>(stream.documents)
+        };
+
+        let docs = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => match tokio::task::block_in_place(|| handle.block_on(run_async)) {
+                Ok(d) => d,
+                Err(e) => return McpResponse::err(id, -32603, format!("fetch error: {e}")),
+            },
+            Err(_) => {
+                match tokio::runtime::Runtime::new()
+                    .map_err(|e| format!("runtime error: {e}"))
+                    .and_then(|rt| rt.block_on(run_async).map_err(|e| e.to_string()))
+                {
+                    Ok(d) => d,
+                    Err(e) => return McpResponse::err(id, -32603, e),
+                }
+            }
+        };
+
+        // Index all documents inside a single transaction — rollback on any error.
+        let result: Result<usize, String> = (|| {
+            self.conn
+                .execute_batch("BEGIN")
+                .map_err(|e| format!("begin transaction: {e}"))?;
+
+            let engine = SyncSearchEngine::from_conn(&self.conn);
+            let mut indexed = 0usize;
+
+            for doc in &docs {
+                let title = doc.title.as_deref().unwrap_or("");
+                if let Err(e) = engine.index_document(project_id, &doc.id.0, title, &doc.content) {
+                    let _ = self.conn.execute_batch("ROLLBACK");
+                    return Err(format!("indexing error for '{}': {e}", doc.id.0));
+                }
+                indexed += 1;
+            }
+
+            self.conn
+                .execute_batch("COMMIT")
+                .map_err(|e| format!("commit transaction: {e}"))?;
+
+            Ok(indexed)
+        })();
+
+        match result {
+            Ok(indexed) => {
+                McpResponse::text(id, format!("Project '{name}' indexed: {indexed} documents."))
+            }
+            Err(e) => McpResponse::err(id, -32603, format!("index failed (rolled back): {e}")),
         }
     }
 
@@ -303,6 +370,13 @@ impl McpServer {
                 }
             }
         }
+
+        use doxus_core::search::SearchMode;
+        q.mode = if self.embedder.is_some() {
+            SearchMode::Hybrid
+        } else {
+            SearchMode::Fts
+        };
 
         let engine = SearchEngine::new(&self.conn);
         match engine.search(&q) {
@@ -1824,7 +1898,7 @@ mod tests {
         let conn = Connection::open_in_memory().expect("in-memory db");
         doxus_core::db::apply_pragmas(&conn).expect("pragmas");
         doxus_core::db::migrate(&conn).expect("migrate");
-        McpServer::new(conn)
+        McpServer::new(conn, None)
     }
 
     fn insert_project(server: &McpServer, name: &str, path: &str) -> i64 {
@@ -2450,5 +2524,137 @@ mod tests {
             &json!({"project": "ghost"}),
         );
         assert!(resp.error.is_some());
+    }
+
+    #[test]
+    fn test_index_project_indexes_documents() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let md_path = dir.path().join("hello.md");
+        fs::write(&md_path, "# Hello World\nThis is a test document.").unwrap();
+
+        let server = test_server();
+        let vault_path = dir.path().to_string_lossy().to_string();
+        server
+            .conn
+            .execute(
+                "INSERT INTO projects(name, display_name, path, created_at, updated_at)
+                 VALUES ('testvault', 'testvault', ?1, unixepoch(), unixepoch())",
+                params![vault_path],
+            )
+            .unwrap();
+
+        let resp = server.dispatch_tool(
+            "doxus_index_project",
+            json!(1),
+            &json!({"project": "testvault"}),
+        );
+        assert!(resp.error.is_none(), "expected no error, got {:?}", resp.error);
+        let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
+        assert!(text.contains("testvault"));
+        assert!(text.contains("1 documents"), "expected 1 document indexed, got: {text}");
+
+        // Verify the document is now searchable
+        let search_resp = server.dispatch_tool(
+            "doxus_search",
+            json!(2),
+            &json!({"query": "Hello World", "project": "testvault"}),
+        );
+        assert!(search_resp.error.is_none(), "search error: {:?}", search_resp.error);
+        let search_text = search_resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
+        assert!(search_text.contains("Hello World") || search_text.contains("hello"), "search result missing doc: {search_text}");
+    }
+
+    #[test]
+    fn test_index_project_by_name_arg() {
+        // Ensure "name" arg works in addition to "project" arg
+        let server = test_server();
+        insert_project(&server, "namearg", "/tmp/nonexistent_vault");
+        let resp = server.dispatch_tool(
+            "doxus_index_project",
+            json!(1),
+            &json!({"name": "namearg"}),
+        );
+        assert!(resp.error.is_none(), "expected no error, got {:?}", resp.error);
+        let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
+        assert!(text.contains("namearg"));
+    }
+
+    // ── H3: indexing runs in a single transaction ─────────────────────────────
+
+    #[test]
+    fn test_index_project_success_is_atomic() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("a.md"), "# A\ncontent a").unwrap();
+        fs::write(dir.path().join("b.md"), "# B\ncontent b").unwrap();
+        fs::write(dir.path().join("c.md"), "# C\ncontent c").unwrap();
+
+        let server = test_server();
+        let vault_path = dir.path().to_string_lossy().to_string();
+        server
+            .conn
+            .execute(
+                "INSERT INTO projects(name, display_name, path, created_at, updated_at)
+                 VALUES ('txvault', 'txvault', ?1, unixepoch(), unixepoch())",
+                params![vault_path],
+            )
+            .unwrap();
+
+        let resp = server.dispatch_tool(
+            "doxus_index_project",
+            json!(1),
+            &json!({"project": "txvault"}),
+        );
+        assert!(resp.error.is_none(), "expected no error: {:?}", resp.error);
+
+        // All 3 documents must be present — nothing partial
+        let count: i64 = server
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM documents WHERE project_id =
+                 (SELECT id FROM projects WHERE name='txvault')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 3, "expected 3 documents, got {count}");
+    }
+
+    #[test]
+    fn test_index_project_nonexistent_vault_leaves_no_partial_data() {
+        // A vault path that doesn't exist: fetch_all returns 0 docs → 0 indexed, no error
+        let server = test_server();
+        server
+            .conn
+            .execute(
+                "INSERT INTO projects(name, display_name, path, created_at, updated_at)
+                 VALUES ('emptyvault', 'emptyvault', '/tmp/__doxus_nonexistent__', unixepoch(), unixepoch())",
+                [],
+            )
+            .unwrap();
+
+        let resp = server.dispatch_tool(
+            "doxus_index_project",
+            json!(1),
+            &json!({"project": "emptyvault"}),
+        );
+        // Either succeeds with 0 docs or returns an error — either way no partial data
+        let count: i64 = server
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM documents WHERE project_id =
+                 (SELECT id FROM projects WHERE name='emptyvault')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "expected 0 documents after failed/empty index, got {count}");
+        // suppress unused resp warning
+        let _ = resp;
     }
 }

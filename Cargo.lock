@@ -753,8 +753,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c673075a2e0e5f4a1dde27ce9dee1ea4558c7ffe648f576438a20ca1d2acc4b0"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
  "serde",
+ "wasm-bindgen",
  "windows-link 0.2.1",
 ]
 
@@ -1692,11 +1694,14 @@ name = "doxus-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "doxus-core",
+ "doxus-plugin-obsidian",
  "doxus-plugin-sdk",
  "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1707,6 +1712,7 @@ name = "doxus-plugin-confluence"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "doxus-plugin-sdk",
  "reqwest 0.12.28",
  "serde",
@@ -1724,6 +1730,7 @@ name = "doxus-plugin-github"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "doxus-plugin-sdk",
  "reqwest 0.12.28",
  "serde",

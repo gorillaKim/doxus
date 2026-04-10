@@ -7,9 +7,14 @@ edition.workspace = true
 name = "doxus-mcp"
 path = "src/main.rs"
 
+[dev-dependencies]
+async-trait = { workspace = true }
+tempfile = { workspace = true }
+
 [dependencies]
 doxus-core = { path = "../core" }
 doxus-plugin-sdk = { path = "../plugin-sdk" }
+doxus-plugin-obsidian = { path = "../plugins/obsidian" }
 rusqlite = { workspace = true }
 tokio = { workspace = true }
 anyhow = { workspace = true }

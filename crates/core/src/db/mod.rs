@@ -111,6 +111,7 @@ static MIGRATIONS: &[(&str, &str)] = &[
     ("V7__plugins",            include_str!("migrations/V7__plugins.sql")),
     ("V8__workspace",          include_str!("migrations/V8__workspace.sql")),
     ("V9__workspace_content",  include_str!("migrations/V9__workspace_content.sql")),
+    ("V10__plugin_kv",         include_str!("migrations/V10__plugin_kv.sql")),
 ];
 
 // ── Test helper ──────────────────────────────────────────────────────────────

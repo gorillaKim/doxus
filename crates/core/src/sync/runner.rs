@@ -37,6 +37,7 @@ impl<S: DocSource + Send + Sync> SyncRunner<S> {
                 since: 0,
                 cursor: instance.sync_cursor.clone(),
                 page_size: 100,
+                known_ids: vec![],
             };
 
             match self.source.fetch_changes(opts).await {

@@ -1,6 +1,7 @@
 pub mod kv_store;
 pub mod manager;
 pub mod manifest;
+pub mod registry;
 pub mod wasm_adapter;
 
 pub use manager::PluginManager;
