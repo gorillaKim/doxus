@@ -74,23 +74,23 @@ pub fn detect_cli() -> CliKind {
 
 ### 도구 명명 규칙
 
-모든 도구는 `docnx_` prefix:
+모든 도구는 `doxus_` prefix:
 
 ```
-docnx_search            # 하이브리드 검색
-docnx_get_document      # 문서 전문 조회
-docnx_get_section       # 특정 섹션만 조회 (토큰 절약)
-docnx_list_projects     # 프로젝트 목록
-docnx_add_project       # 프로젝트 추가
-docnx_remove_project    # 프로젝트 제거
-docnx_get_backlinks     # 역방향 링크
-docnx_get_links         # 정방향 링크
-docnx_find_related      # 관련 문서 추천 (RRF)
-docnx_find_path         # 문서 간 최단 경로
-docnx_get_cluster       # 멀티홉 그래프 탐색
-docnx_index_project     # 프로젝트 인덱싱 시작
-docnx_sync_project      # 변경분 동기화
-docnx_status            # 서버 상태
+doxus_search            # 하이브리드 검색
+doxus_get_document      # 문서 전문 조회
+doxus_get_section       # 특정 섹션만 조회 (토큰 절약)
+doxus_list_projects     # 프로젝트 목록
+doxus_add_project       # 프로젝트 추가
+doxus_remove_project    # 프로젝트 제거
+doxus_get_backlinks     # 역방향 링크
+doxus_get_links         # 정방향 링크
+doxus_find_related      # 관련 문서 추천 (RRF)
+doxus_find_path         # 문서 간 최단 경로
+doxus_get_cluster       # 멀티홉 그래프 탐색
+doxus_index_project     # 프로젝트 인덱싱 시작
+doxus_sync_project      # 변경분 동기화
+doxus_status            # 서버 상태
 # ... 총 33개
 ```
 
@@ -107,14 +107,14 @@ docnx_status            # 서버 상태
 ```json
 {
   "allowed_tools": [
-    "docnx_search",
-    "docnx_get_document",
-    "docnx_get_section",
-    "docnx_list_projects",
-    "docnx_get_backlinks",
-    "docnx_find_related"
+    "doxus_search",
+    "doxus_get_document",
+    "doxus_get_section",
+    "doxus_list_projects",
+    "doxus_get_backlinks",
+    "doxus_find_related"
   ]
 }
 ```
 
-쓰기/수정 도구(`docnx_add_project`, `docnx_index_project` 등)는 기본 허용 목록에서 제외.
+쓰기/수정 도구(`doxus_add_project`, `doxus_index_project` 등)는 기본 허용 목록에서 제외.

@@ -29,7 +29,7 @@ obsidian-nexus의 검색 엔진을 계승하되, 플러그인 시스템으로 �
    - RRF(Reciprocal Rank Fusion)로 최종 랭킹 합산
 
 5. **에이전트 친화성**
-   - doxus-mcp: 33개 `docnx_*` 도구를 MCP 프로토콜로 노출
+   - doxus-mcp: 33개 `doxus_*` 도구를 MCP 프로토콜로 노출
    - Claude Code / Gemini CLI 자동 감지 후 적절한 브릿지 사용
    - Node.js sidecar로 AI 에이전트 실행 (JSONL 프로토콜)
 

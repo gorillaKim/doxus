@@ -28,7 +28,15 @@
       "Edit(*)",
       "MultiEdit(*)",
       "Glob(*)",
-      "Grep(*)"
+      "Grep(*)",
+      "Bash(pkill -f \"cargo tauri dev\")",
+      "Bash(/usr/bin/perl -e 'alarm 5; exec @ARGV' /Users/madup/gorillaProject/doxus/target/debug/doxus-mcp)",
+      "Bash(pkill -f \"cargo.*tauri\")",
+      "Bash(codesign --sign - --force --preserve-metadata=entitlements /Users/madup/gorillaProject/doxus/target/debug/doxus-mcp)",
+      "Bash(codesign -dv /Users/madup/gorillaProject/doxus/target/debug/doxus-mcp)"
+    ],
+    "additionalDirectories": [
+      "/Users/madup/.doxus/agents/librarian"
     ]
   }
 }
