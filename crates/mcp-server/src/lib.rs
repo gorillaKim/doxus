@@ -50,7 +50,7 @@ impl McpResponse {
 // ── McpServer ─────────────────────────────────────────────────────────────────
 
 pub struct McpServer {
-    pub conn: rusqlite::Connection,
+    conn: rusqlite::Connection,
 }
 
 impl McpServer {

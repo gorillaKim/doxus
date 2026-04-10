@@ -42,6 +42,7 @@ pub struct WasmDocSourceAdapter {
     manifest: PluginManifest,
     kv_store: KvStore,
     allowed_domains: Vec<String>,
+    http_client: reqwest::Client,
 }
 
 impl WasmDocSourceAdapter {
@@ -63,6 +64,10 @@ impl WasmDocSourceAdapter {
             .map_err(|e| PluginError::Internal(format!("wasm load failed: {e}")))?;
 
         let allowed_domains = manifest.http_domains.clone();
+        let http_client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| PluginError::Internal(format!("http client init failed: {e}")))?;
         Ok(Self {
             meta: PluginMetadata {
                 id: manifest.plugin_id.clone(),
@@ -74,6 +79,7 @@ impl WasmDocSourceAdapter {
             manifest,
             kv_store: KvStore::new(),
             allowed_domains,
+            http_client,
         })
     }
 
@@ -106,6 +112,7 @@ impl WasmDocSourceAdapter {
             manifest,
             kv_store: KvStore::new(),
             allowed_domains,
+            http_client: reqwest::Client::new(),
         }
     }
 
@@ -137,11 +144,12 @@ impl WasmDocSourceAdapter {
         }
 
         let method = req.method.as_deref().unwrap_or("GET").to_uppercase();
-        let client = reqwest::Client::new();
+        let client = &self.http_client;
         let mut builder = match method.as_str() {
             "GET" => client.get(url.as_str()),
             "POST" => client.post(url.as_str()),
             "PUT" => client.put(url.as_str()),
+            "PATCH" => client.patch(url.as_str()),
             "DELETE" => client.delete(url.as_str()),
             m => return Err(WasmError::HostFn(format!("unsupported method: {m}"))),
         };
@@ -555,12 +563,37 @@ mod tests {
             WasmDocSourceAdapter::new_with_domains(vec!["example.com".into()]);
         let req = HttpRequest {
             url: "http://example.com/api".into(),
-            method: Some("PATCH".into()),
+            method: Some("TRACE".into()),
             headers: None,
             body: None,
         };
         let result = adapter.http_request(&req).await;
         assert!(matches!(result, Err(WasmError::HostFn(_))));
+    }
+
+    #[tokio::test]
+    async fn http_request_patch_method_supported() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("patched"))
+            .mount(&server)
+            .await;
+
+        let host = url::Url::parse(&server.uri())
+            .unwrap()
+            .host_str()
+            .unwrap()
+            .to_string();
+        let adapter = WasmDocSourceAdapter::new_with_domains(vec![host]);
+        let req = HttpRequest {
+            url: format!("{}/resource", server.uri()),
+            method: Some("PATCH".into()),
+            headers: None,
+            body: Some("update".into()),
+        };
+        let resp = adapter.http_request(&req).await.unwrap();
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.body, "patched");
     }
 
     #[test]

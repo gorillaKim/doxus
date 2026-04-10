@@ -69,6 +69,10 @@ static VEC_INIT: Once = Once::new();
 /// Register the sqlite-vec extension process-wide (idempotent).
 pub fn ensure_vec_extension() {
     VEC_INIT.call_once(|| unsafe {
+        // SAFETY: sqlite3_vec_init is a valid C function pointer with the exact
+        // signature expected by sqlite3_auto_extension. The transmute converts
+        // from a typed fn pointer to the opaque fn() that sqlite3_auto_extension
+        // requires.
         rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
             sqlite_vec::sqlite3_vec_init as *const (),
         )));

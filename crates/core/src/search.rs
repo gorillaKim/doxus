@@ -97,18 +97,33 @@ fn rrf_merge(fts_hits: Vec<SearchHit>, vec_hits: Vec<SearchHit>) -> Vec<SearchHi
     let mut scores: HashMap<i64, (f64, SearchHit)> = HashMap::new();
 
     for (rank, hit) in fts_hits.into_iter().enumerate() {
-        let entry = scores.entry(hit.chunk_id).or_insert((0.0, hit.clone()));
-        entry.0 += rrf_score(rank + 1);
-        // Keep the richer hit data
-        if entry.1.snippet.is_empty() && !hit.snippet.is_empty() {
-            entry.1 = hit;
+        use std::collections::hash_map::Entry;
+        match scores.entry(hit.chunk_id) {
+            Entry::Vacant(v) => {
+                v.insert((rrf_score(rank + 1), hit));
+            }
+            Entry::Occupied(mut o) => {
+                let e = o.get_mut();
+                e.0 += rrf_score(rank + 1);
+                if e.1.snippet.is_empty() && !hit.snippet.is_empty() {
+                    e.1.snippet = hit.snippet;
+                }
+            }
         }
     }
     for (rank, hit) in vec_hits.into_iter().enumerate() {
-        let entry = scores.entry(hit.chunk_id).or_insert((0.0, hit.clone()));
-        entry.0 += rrf_score(rank + 1);
-        if entry.1.snippet.is_empty() && !hit.snippet.is_empty() {
-            entry.1 = hit;
+        use std::collections::hash_map::Entry;
+        match scores.entry(hit.chunk_id) {
+            Entry::Vacant(v) => {
+                v.insert((rrf_score(rank + 1), hit));
+            }
+            Entry::Occupied(mut o) => {
+                let e = o.get_mut();
+                e.0 += rrf_score(rank + 1);
+                if e.1.snippet.is_empty() && !hit.snippet.is_empty() {
+                    e.1.snippet = hit.snippet;
+                }
+            }
         }
     }
 
@@ -306,12 +321,15 @@ fn index_document_sync(
 fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchHit>, SearchError> {
     let limit = query.limit as i64;
 
-    let project_filter = if query.project_ids.is_empty() {
-        "AND p.status = 'active'".to_string()
+    let (project_filter, base_param_count) = if query.project_ids.is_empty() {
+        ("AND p.status = 'active'".to_string(), 2usize)
     } else {
-        let ids: Vec<String> = query.project_ids.iter().map(|id| id.to_string()).collect();
-        format!("AND d.project_id IN ({})", ids.join(","))
+        let placeholders: Vec<String> = (0..query.project_ids.len())
+            .map(|i| format!("?{}", i + 3))
+            .collect();
+        (format!("AND d.project_id IN ({})", placeholders.join(", ")), 2 + query.project_ids.len())
     };
+    let _ = base_param_count;
 
     let sql = format!(
         "SELECT d.id, c.id, d.title, d.file_path, c.heading_path,
@@ -328,8 +346,16 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
     );
 
     let mut stmt = conn.prepare(&sql)?;
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
+        Box::new(query.text.clone()),
+        Box::new(limit),
+    ];
+    for id in &query.project_ids {
+        params.push(Box::new(*id));
+    }
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
     let hits = stmt
-        .query_map([query.text.as_str(), &limit.to_string()], |row| {
+        .query_map(param_refs.as_slice(), |row| {
             Ok(SearchHit {
                 document_id: row.get(0)?,
                 chunk_id: row.get(1)?,
@@ -354,8 +380,10 @@ fn vector_search_sync(
     let project_filter = if project_ids.is_empty() {
         "AND p.status = 'active'".to_string()
     } else {
-        let ids: Vec<String> = project_ids.iter().map(|id| id.to_string()).collect();
-        format!("AND d.project_id IN ({})", ids.join(","))
+        let placeholders: Vec<String> = (0..project_ids.len())
+            .map(|i| format!("?{}", i + 3))
+            .collect();
+        format!("AND d.project_id IN ({})", placeholders.join(", "))
     };
 
     // vec0 KNN requires LIMIT on the virtual table query directly,
@@ -374,8 +402,16 @@ fn vector_search_sync(
     );
 
     let mut stmt = conn.prepare(&sql)?;
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
+        Box::new(emb_bytes.to_vec()),
+        Box::new(limit),
+    ];
+    for id in project_ids {
+        params.push(Box::new(*id));
+    }
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
     let hits = stmt
-        .query_map(rusqlite::params![emb_bytes, limit], |row| {
+        .query_map(param_refs.as_slice(), |row| {
             let distance: f64 = row.get(6)?;
             Ok(SearchHit {
                 chunk_id: row.get(0)?,
@@ -420,12 +456,14 @@ impl<'a> SyncSearchEngine<'a> {
     ) -> Result<Vec<Hit>, SearchError> {
         let limit = opts.limit.unwrap_or(20) as i64;
 
-        let project_filter = match &opts.project_ids {
+        let (project_filter, project_id_params): (String, Vec<i64>) = match &opts.project_ids {
             Some(ids) if !ids.is_empty() => {
-                let id_list: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
-                format!("AND d.project_id IN ({})", id_list.join(","))
+                let placeholders: Vec<String> = (0..ids.len())
+                    .map(|i| format!("?{}", i + 3))
+                    .collect();
+                (format!("AND d.project_id IN ({})", placeholders.join(", ")), ids.clone())
             }
-            _ => "AND p.status = 'active'".to_string(),
+            _ => ("AND p.status = 'active'".to_string(), vec![]),
         };
 
         let sql = format!(
@@ -443,8 +481,16 @@ impl<'a> SyncSearchEngine<'a> {
         );
 
         let mut stmt = self.conn.prepare(&sql)?;
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
+            Box::new(query.to_string()),
+            Box::new(limit),
+        ];
+        for id in &project_id_params {
+            params.push(Box::new(*id));
+        }
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
         let rows: Vec<(i64, i64, String, Option<String>, String, f64)> = stmt
-            .query_map(rusqlite::params![query, limit], |row| {
+            .query_map(param_refs.as_slice(), |row| {
                 Ok((
                     row.get(0)?,
                     row.get(1)?,
@@ -622,6 +668,28 @@ mod tests {
     }
 
     // ── TDD: async SearchEngine with embedder ───────────────────────────
+
+    #[test]
+    fn search_with_project_filter_uses_parameterized_query() {
+        // Verify that project_id filtering works correctly with parameterized binding
+        let db = TestDb::new();
+        let p1 = insert_project(&db, "alpha", "/a");
+        let p2 = insert_project(&db, "beta", "/b");
+        let p3 = insert_project(&db, "gamma", "/c");
+        let engine = SearchEngine::new(&db.conn);
+        engine.index_document(p1, "a1", "Alpha Doc", "unique foobar content").unwrap();
+        engine.index_document(p2, "b1", "Beta Doc", "unique foobar content").unwrap();
+        engine.index_document(p3, "c1", "Gamma Doc", "unique foobar content").unwrap();
+
+        // Filter to p1 and p3 only
+        let opts = SearchOpts { project_ids: Some(vec![p1, p3]), ..Default::default() };
+        let hits = engine.search_simple("foobar", &opts).unwrap();
+        assert_eq!(hits.len(), 2);
+        let ids: Vec<&str> = hits.iter().map(|h| h.source_doc_id.as_str()).collect();
+        assert!(ids.contains(&"a1"));
+        assert!(ids.contains(&"c1"));
+        assert!(!ids.contains(&"b1"));
+    }
 
     #[tokio::test]
     async fn index_document_stores_embedding() {
