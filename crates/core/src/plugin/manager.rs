@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use doxus_plugin_sdk::DocSource;
@@ -20,15 +21,30 @@ pub enum ManagerError {
     Io(#[from] std::io::Error),
 }
 
+type SourceFactory = Box<dyn Fn() -> Box<dyn DocSource + Send + Sync> + Send + Sync>;
+
 pub struct PluginManager {
     pub plugins_dir: PathBuf,
     installer: PluginInstaller,
+    factories: HashMap<String, SourceFactory>,
 }
 
 impl PluginManager {
     pub fn new(plugins_dir: PathBuf) -> Self {
         let installer = PluginInstaller::new(plugins_dir.clone());
-        Self { plugins_dir, installer }
+        Self { plugins_dir, installer, factories: HashMap::new() }
+    }
+
+    /// Register a factory function for a plugin ID.
+    /// When `get_source` is called with the same ID, the factory is invoked to
+    /// produce a fresh `DocSource` instance.
+    /// Use this to register in-process plugins at the binary entry point — core
+    /// has no built-in plugin knowledge.
+    pub fn register_factory<F>(&mut self, plugin_id: &str, factory: F)
+    where
+        F: Fn() -> Box<dyn DocSource + Send + Sync> + Send + Sync + 'static,
+    {
+        self.factories.insert(plugin_id.to_string(), Box::new(factory));
     }
 
     /// Verifies the ED25519 signature before installing.
@@ -72,16 +88,13 @@ impl PluginManager {
         self.installer.is_installed(plugin_id)
     }
 
-    /// Returns a boxed `DocSource` for the given `plugin_id`.
-    /// Currently supports only the built-in Obsidian plugin.
+    /// Returns a boxed `DocSource` for the given `plugin_id` by invoking the
+    /// registered factory. In-process plugins must be registered via
+    /// `register_factory` at the binary entry point — core has no built-in
+    /// plugin knowledge.
     /// Returns `None` for unknown or WASM-only plugins.
     pub fn get_source(&self, plugin_id: &str) -> Option<Box<dyn DocSource + Send + Sync>> {
-        match plugin_id {
-            "com.doxus.obsidian" => {
-                Some(Box::new(doxus_plugin_obsidian::ObsidianPlugin::new()))
-            }
-            _ => None,
-        }
+        self.factories.get(plugin_id).map(|f| f())
     }
 
     pub fn list_installed(&self) -> Result<Vec<String>, ManagerError> {

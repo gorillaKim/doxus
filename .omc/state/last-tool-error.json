@@ -1,7 +1,7 @@
 {
-  "tool_name": "Read",
-  "tool_input_preview": "{\"file_path\":\"/Users/madup/gorillaProject/doxus/crates/mcp-server/src/lib.rs\"}",
-  "error": "File content (35282 tokens) exceeds maximum allowed tokens (10000). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file.",
-  "timestamp": "2026-04-10T10:48:25.145Z",
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"cargo test -p doxus-core --lib marketplace::installer 2>&1\",\"timeout\":120000}",
+  "error": "Exit code 101\n   Compiling doxus-core v0.1.0 (/Users/madup/gorillaProject/doxus/crates/core)\nerror[E0433]: failed to resolve: use of unresolved module or unlinked crate `doxus_plugin_obsidian`\n  --> crates/core/src/plugin/manager.rs:97:31\n   |\n97 |                 Some(Box::new(doxus_plugin_obsidian::ObsidianPlugin::new()))\n   |                               ^^^^^^^^^^^^^^^^^^^^^ use of unresolved module or unlinked crate `doxus_plugin_obsidian`\n   |\nhelp: there is a crate or module with a simil...",
+  "timestamp": "2026-04-10T13:03:16.488Z",
   "retry_count": 1
 }

@@ -87,7 +87,7 @@ const CORPUS: &[Doc] = &[
     Doc {
         id: "mcp-protocol",
         title: "MCP 도구 프로토콜",
-        content: "MCP Model Context Protocol JSON-RPC tools/list tools/call doxus_search 에이전트 도구",
+        content: "MCP Model Context Protocol JSON-RPC tools/list tools/call doxus_search docnx 에이전트 도구",
     },
     Doc {
         id: "hybrid-search",

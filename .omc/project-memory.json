@@ -86,8 +86,8 @@
   "hotPaths": [
     {
       "path": "crates/mcp-server/src/lib.rs",
-      "accessCount": 53,
-      "lastAccessed": 1775818323323,
+      "accessCount": 61,
+      "lastAccessed": 1775826592155,
       "type": "file"
     },
     {
@@ -98,8 +98,14 @@
     },
     {
       "path": "crates/mcp-server/src/sync_loop.rs",
-      "accessCount": 19,
-      "lastAccessed": 1775818317546,
+      "accessCount": 22,
+      "lastAccessed": 1775826318290,
+      "type": "file"
+    },
+    {
+      "path": "crates/core/src/plugin/manager.rs",
+      "accessCount": 12,
+      "lastAccessed": 1775826218744,
       "type": "file"
     },
     {
@@ -109,9 +115,33 @@
       "type": "directory"
     },
     {
+      "path": "crates/core/Cargo.toml",
+      "accessCount": 7,
+      "lastAccessed": 1775826404994,
+      "type": "file"
+    },
+    {
+      "path": "crates/mcp-server/src/main.rs",
+      "accessCount": 7,
+      "lastAccessed": 1775826434925,
+      "type": "file"
+    },
+    {
       "path": "crates/agent/src/sidecar.rs",
       "accessCount": 6,
       "lastAccessed": 1775818108689,
+      "type": "file"
+    },
+    {
+      "path": "crates/mcp-server/tests/plugin_install_test.rs",
+      "accessCount": 6,
+      "lastAccessed": 1775826680463,
+      "type": "file"
+    },
+    {
+      "path": "crates/core/src/marketplace/installer.rs",
+      "accessCount": 6,
+      "lastAccessed": 1775826718028,
       "type": "file"
     },
     {
@@ -119,12 +149,6 @@
       "accessCount": 5,
       "lastAccessed": 1775818108638,
       "type": "directory"
-    },
-    {
-      "path": "crates/core/src/plugin/manager.rs",
-      "accessCount": 4,
-      "lastAccessed": 1775818105594,
-      "type": "file"
     },
     {
       "path": "docs/context/doxus-implementation-roadmap.md",
@@ -149,12 +173,6 @@
       "accessCount": 3,
       "lastAccessed": 1775816967711,
       "type": "directory"
-    },
-    {
-      "path": "crates/mcp-server/src/main.rs",
-      "accessCount": 3,
-      "lastAccessed": 1775817417422,
-      "type": "file"
     },
     {
       "path": "crates/core/src/sync/db.rs",
@@ -190,12 +208,6 @@
       "path": "crates/core/src/sync/runner.rs",
       "accessCount": 2,
       "lastAccessed": 1775817174561,
-      "type": "file"
-    },
-    {
-      "path": "crates/core/Cargo.toml",
-      "accessCount": 2,
-      "lastAccessed": 1775817295998,
       "type": "file"
     },
     {
@@ -299,6 +311,24 @@
       "accessCount": 1,
       "lastAccessed": 1775818128950,
       "type": "directory"
+    },
+    {
+      "path": "crates/core/tests/plugin_manager_source.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775826162466,
+      "type": "file"
+    },
+    {
+      "path": "crates/core/tests/migration_v11.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775826367546,
+      "type": "file"
+    },
+    {
+      "path": "crates/core/tests/search_quality.rs",
+      "accessCount": 1,
+      "lastAccessed": 1775826554110,
+      "type": "file"
     }
   ],
   "userDirectives": []

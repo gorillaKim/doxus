@@ -336,7 +336,11 @@ mod tests {
         };
 
         let plugins_dir = TempDir::new().unwrap();
-        let plugin_manager = Arc::new(PluginManager::new(plugins_dir.path().to_path_buf()));
+        let mut pm = PluginManager::new(plugins_dir.path().to_path_buf());
+        pm.register_factory("com.doxus.obsidian", || {
+            Box::new(doxus_plugin_obsidian::ObsidianPlugin::new())
+        });
+        let plugin_manager = Arc::new(pm);
 
         // interval_secs = 0 → always due
         let handle = spawn_sync_loop(Arc::clone(&conn), Arc::clone(&plugin_manager), 0);

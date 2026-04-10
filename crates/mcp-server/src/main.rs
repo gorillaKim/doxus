@@ -41,7 +41,11 @@ async fn main() -> Result<()> {
 
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     let plugins_dir = std::path::PathBuf::from(&home).join(".doxus/plugins");
-    let plugin_manager = std::sync::Arc::new(doxus_core::plugin::PluginManager::new(plugins_dir));
+    let mut plugin_manager = doxus_core::plugin::PluginManager::new(plugins_dir);
+    plugin_manager.register_factory("com.doxus.obsidian", || {
+        Box::new(doxus_plugin_obsidian::ObsidianPlugin::new())
+    });
+    let plugin_manager = std::sync::Arc::new(plugin_manager);
 
     let sync_handle = spawn_sync_loop(sync_conn, plugin_manager, interval_secs);
 
@@ -67,7 +71,10 @@ async fn main() -> Result<()> {
             }
         };
 
-    let server = McpServer::new(conn, embedder);
+    let plugins_dir = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".doxus/plugins");
+    let server = McpServer::new(conn, embedder, plugins_dir);
 
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();

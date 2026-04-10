@@ -56,11 +56,16 @@ impl McpResponse {
 pub struct McpServer {
     conn: rusqlite::Connection,
     embedder: Option<Arc<dyn EmbeddingProvider>>,
+    plugins_dir: std::path::PathBuf,
 }
 
 impl McpServer {
-    pub fn new(conn: rusqlite::Connection, embedder: Option<Arc<dyn EmbeddingProvider>>) -> Self {
-        Self { conn, embedder }
+    pub fn new(
+        conn: rusqlite::Connection,
+        embedder: Option<Arc<dyn EmbeddingProvider>>,
+        plugins_dir: std::path::PathBuf,
+    ) -> Self {
+        Self { conn, embedder, plugins_dir }
     }
 
     pub fn dispatch(&self, method: &str, id: Value, params: Option<&Value>) -> McpResponse {
@@ -1374,6 +1379,16 @@ impl McpServer {
         };
         let version = args["version"].as_str().unwrap_or("0.0.0");
 
+        // url is optional: if provided, download WASM; otherwise DB-only registration
+        if let Some(url) = args["url"].as_str() {
+            let installer = doxus_core::marketplace::installer::PluginInstaller::new(
+                self.plugins_dir.clone(),
+            );
+            if let Err(e) = installer.install_from_url(plugin_id, url) {
+                return McpResponse::err(id, -32603, e.to_string());
+            }
+        }
+
         let result = self.conn.execute(
             "INSERT OR IGNORE INTO plugins(id, name, version, kind, installed_at)
              VALUES (?1, ?1, ?2, 'external', unixepoch())",
@@ -2082,7 +2097,7 @@ mod tests {
         let conn = Connection::open_in_memory().expect("in-memory db");
         doxus_core::db::apply_pragmas(&conn).expect("pragmas");
         doxus_core::db::migrate(&conn).expect("migrate");
-        McpServer::new(conn, None)
+        McpServer::new(conn, None, std::path::PathBuf::from("/tmp/doxus-test-plugins"))
     }
 
     fn insert_project(server: &McpServer, name: &str, path: &str) -> i64 {
