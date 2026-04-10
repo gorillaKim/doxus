@@ -27,6 +27,17 @@ rand = "0.8"
 handlebars = "6"
 keyring = { version = "3", features = ["apple-native", "sync-secret-service"] }
 
+[features]
+test-helpers = []
+
+[[test]]
+name = "search_integration"
+required-features = ["test-helpers"]
+
+[[test]]
+name = "search_quality"
+required-features = ["test-helpers"]
+
 [dev-dependencies]
 tokio-test = { workspace = true }
 approx = "0.5"

@@ -82,17 +82,18 @@ static MIGRATIONS: &[(&str, &str)] = &[
     ("V6__view_counts",        include_str!("migrations/V6__view_counts.sql")),
     ("V7__plugins",            include_str!("migrations/V7__plugins.sql")),
     ("V8__workspace",          include_str!("migrations/V8__workspace.sql")),
+    ("V9__workspace_content",  include_str!("migrations/V9__workspace_content.sql")),
 ];
 
 // ── Test helper ──────────────────────────────────────────────────────────────
 
 /// In-memory SQLite DB with all migrations applied. Used in tests.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-helpers"))]
 pub struct TestDb {
     pub conn: Connection,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-helpers"))]
 impl TestDb {
     pub fn new() -> Self {
         let conn = Connection::open_in_memory().expect("in-memory db");
