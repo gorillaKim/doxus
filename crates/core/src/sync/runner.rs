@@ -1,7 +1,8 @@
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use doxus_plugin_sdk::{DocSource, FetchChangesOpts};
 
+use crate::conflict::{record_conflict, resolve_conflict, ConflictResolution};
 use super::db::SyncDb;
 use super::scheduler::{SyncError, SyncScheduler};
 
@@ -43,12 +44,54 @@ impl<S: DocSource + Send + Sync> SyncRunner<S> {
             match self.source.fetch_changes(opts).await {
                 Ok(changeset) => {
                     let new_cursor = changeset.next_cursor.clone();
+                    let mut applied = 0usize;
+
+                    for doc in &changeset.updated {
+                        // Look up existing content_hash for this document.
+                        let existing_hash: Option<String> = conn
+                            .query_row(
+                                "SELECT content_hash FROM documents \
+                                 WHERE project_id = ?1 AND source_doc_id = ?2",
+                                rusqlite::params![instance.project_id, doc.id.0],
+                                |r| r.get(0),
+                            )
+                            .optional()
+                            .map_err(|e| SyncError::Db(e))?;
+
+                        match existing_hash {
+                            Some(ref local_hash) => {
+                                match resolve_conflict(local_hash, &doc.content) {
+                                    ConflictResolution::Skip => {
+                                        // Content unchanged — skip and continue
+                                    }
+                                    ConflictResolution::UseRemote => {
+                                        // Record conflict before overwriting
+                                        record_conflict(conn, instance.project_id, &doc.id.0)
+                                            .map_err(|e| match e {
+                                                crate::db::DbError::Sqlite(inner) => {
+                                                    SyncError::Db(inner)
+                                                }
+                                                crate::db::DbError::Migration { reason, .. } => {
+                                                    SyncError::Plugin(reason)
+                                                }
+                                            })?;
+                                        applied += 1;
+                                    }
+                                }
+                            }
+                            None => {
+                                // New document — no conflict
+                                applied += 1;
+                            }
+                        }
+                    }
+
                     sync_db
                         .mark_synced(instance.id, new_cursor.as_deref())
                         .map_err(SyncError::Db)?;
                     results.push(SyncResult {
                         instance_id: instance.id,
-                        documents_updated: changeset.updated.len(),
+                        documents_updated: applied,
                         new_cursor,
                     });
                 }

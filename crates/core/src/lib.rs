@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod conflict;
 pub mod secrets;
 pub mod db;
 pub mod embedding;

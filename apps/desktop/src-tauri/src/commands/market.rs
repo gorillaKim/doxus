@@ -212,9 +212,33 @@ pub async fn get_plugin_logs(
 pub async fn market_install_plugin(
     state: tauri::State<'_, crate::AppState>,
     plugin_id: String,
+    registry_url: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    // Verify trust anchor: plugin must exist in registry and have a non-empty public_key_hex.
+    let url = registry_url
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "https://registry.doxus.io".to_string());
+    let client = doxus_core::marketplace::registry::RegistryClient::new(&url)
+        .map_err(|e| e.to_string())?;
+    let entry = client
+        .fetch_entry(&plugin_id)
+        .await
+        .map_err(|e| format!("registry lookup failed: {e}"))?
+        .ok_or_else(|| format!("plugin '{}' not found in registry — installation rejected", plugin_id))?;
+    if entry.public_key_hex.is_empty() {
+        return Err(format!(
+            "plugin '{}' has no trust anchor (public_key_hex is empty) — installation rejected",
+            plugin_id
+        ));
+    }
+
+    // Validate plugin_id to prevent path traversal attacks.
+    if plugin_id.contains('/') || plugin_id.contains('\\') || plugin_id.contains("..") {
+        return Err("invalid plugin_id: contains path separators".into());
+    }
+
     // Write a placeholder .wasm file so list_installed() picks it up on next load.
-    // Real WASM download happens in Phase 4 registry implementation.
+    // Real WASM download + signature verification happens in Phase 4 registry implementation.
     let plugins_dir = &state.plugins_dir;
     std::fs::create_dir_all(plugins_dir).map_err(|e| e.to_string())?;
     let wasm_path = plugins_dir.join(format!("{}.wasm", plugin_id));
@@ -684,6 +708,19 @@ mod tests {
         let result = super::plugin_open_url("https://192.168.1.1/path".into()).await;
         assert!(result.is_err(), "plugin_open_url should reject private IPs");
     }
+}
+
+#[tauri::command]
+pub async fn market_fetch_registry(
+    _state: tauri::State<'_, crate::AppState>,
+    registry_url: Option<String>,
+) -> Result<Vec<doxus_core::marketplace::registry::RegistryEntry>, String> {
+    let url = registry_url
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "https://registry.doxus.io".to_string());
+    let client = doxus_core::marketplace::registry::RegistryClient::new(&url)
+        .map_err(|e| e.to_string())?;
+    client.fetch_entries().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]

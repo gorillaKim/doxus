@@ -64,6 +64,7 @@ fn main() {
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             doxus_desktop_lib::commands::market::market_list_installed,
+            doxus_desktop_lib::commands::market::market_fetch_registry,
             doxus_desktop_lib::commands::market::get_workspaces,
             doxus_desktop_lib::commands::market::get_system_status,
             doxus_desktop_lib::commands::market::get_plugin_logs,
@@ -90,11 +91,14 @@ fn main() {
             doxus_desktop_lib::commands::workspace::list_workspace_documents,
             doxus_desktop_lib::commands::workspace::create_workspace_document,
             doxus_desktop_lib::commands::workspace::update_workspace_document,
+            doxus_desktop_lib::commands::workspace::delete_workspace_document,
             doxus_desktop_lib::commands::agent::chat_start_session,
             doxus_desktop_lib::commands::agent::chat_send_message,
             doxus_desktop_lib::commands::agent::chat_cancel,
             doxus_desktop_lib::commands::agent::agent_status,
             doxus_desktop_lib::commands::agent::detect_cli_path,
+            doxus_desktop_lib::commands::settings::save_settings,
+            doxus_desktop_lib::commands::settings::load_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

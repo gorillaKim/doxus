@@ -24,42 +24,25 @@ interface Plugin {
   auth_schema?: ConfigField[];
 }
 
-const MOCK_PLUGINS: Plugin[] = [
-  {
-    id: 'com.doxus.confluence',
-    name: 'Confluence',
-    version: '1.0.0',
-    trust: 'official',
-    description: 'Confluence Cloud/Server REST API 연동',
-    installed: false,
-    auth_type: 'oauth',
-    auth_schema: [
-      { key: 'client_id', label: 'Client ID', type: 'text', required: true, placeholder: 'your-atlassian-app-client-id' },
-    ],
-  },
-  {
-    id: 'com.doxus.github',
-    name: 'GitHub',
-    version: '1.0.0',
-    trust: 'official',
-    description: 'GitHub Issues, Wiki, Discussions 연동',
-    installed: true,
-    auth_type: 'api_token',
-    auth_schema: [
-      { key: 'token', label: 'Personal Access Token', type: 'password', required: false, placeholder: 'ghp_••••••••' },
-    ],
-  },
-  {
-    id: 'com.doxus.obsidian',
-    name: 'Obsidian',
-    version: '1.0.0',
-    trust: 'official',
-    description: 'Obsidian 볼트 연동 (기본 내장)',
-    installed: true,
-    auth_type: 'none',
-    auth_schema: [],
-  },
-];
+interface RegistryEntry {
+  plugin_id: string;
+  version: string;
+  display_name: string;
+  download_url: string;
+  checksum_sha256: string;
+  public_key_hex: string;
+}
+
+function registryEntryToPlugin(entry: RegistryEntry, installedIds: Set<string>): Plugin {
+  return {
+    id: entry.plugin_id,
+    name: entry.display_name,
+    version: entry.version,
+    trust: 'verified' as TrustLevel,
+    description: `${entry.display_name} (${entry.plugin_id})`,
+    installed: installedIds.has(entry.plugin_id),
+  };
+}
 
 type FilterKey = 'all' | TrustLevel;
 
@@ -298,6 +281,7 @@ function PluginSettingsModal({ plugin, onClose, onAuthChange }: { plugin: Plugin
 export default function MarketPage() {
   const [plugins, setPlugins] = useState<Plugin[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<FilterKey>('all');
   const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
@@ -305,16 +289,24 @@ export default function MarketPage() {
   const { authStates, fetchAuthStatus, setConfigured } = usePluginStore();
 
   useEffect(() => {
-    invoke('market_list_installed')
+    let installedIds = new Set<string>();
+
+    invoke<{ plugins?: Array<{ id: string }> } | Array<{ id: string }>>('market_list_installed')
       .then((res) => {
-        const arr = Array.isArray(res) ? res : (res as { plugins?: Plugin[] })?.plugins ?? null;
-        const list: Plugin[] = Array.isArray(arr) ? arr : MOCK_PLUGINS;
-        setPlugins(list);
-        // 설치된 플러그인 인증 상태 일괄 조회
-        list.filter((p) => p.installed).forEach((p) => fetchAuthStatus(p.id));
+        const arr = Array.isArray(res) ? res : (res as { plugins?: Array<{ id: string }> })?.plugins ?? [];
+        installedIds = new Set(arr.map((p) => p.id));
       })
-      .catch(() => setPlugins(MOCK_PLUGINS))
-      .finally(() => setIsLoading(false));
+      .catch(() => { /* installed state stays empty */ })
+      .finally(() => {
+        invoke<RegistryEntry[]>('market_fetch_registry')
+          .then((entries) => {
+            const list = entries.map((e) => registryEntryToPlugin(e, installedIds));
+            setPlugins(list);
+            list.filter((p) => p.installed).forEach((p) => fetchAuthStatus(p.id));
+          })
+          .catch((e) => setError(String(e)))
+          .finally(() => setIsLoading(false));
+      });
   }, [fetchAuthStatus]);
 
   const filtered = useMemo(() => {
@@ -393,6 +385,13 @@ export default function MarketPage() {
           ))}
         </div>
       </div>
+
+      {/* 오류 배너 */}
+      {error && (
+        <div className="px-3 py-2 rounded-lg bg-red-950 border border-red-800 text-red-400 text-sm">
+          레지스트리 로드 실패: {error}
+        </div>
+      )}
 
       {/* 플러그인 목록 */}
       <div className="flex-1 overflow-auto">

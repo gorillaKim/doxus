@@ -21,6 +21,7 @@ doxus-plugin-sdk = { path = "../plugin-sdk" }
 url = "2"
 reqwest = { workspace = true }
 sha2 = "0.10"
+semver = "1"
 hex = "0.4"
 sqlite-vec = { workspace = true }
 zerocopy = { workspace = true }
@@ -47,6 +48,10 @@ required-features = ["test-helpers"]
 
 [[test]]
 name = "plugin_manager_source"
+required-features = ["test-helpers"]
+
+[[test]]
+name = "conflict_resolution_test"
 required-features = ["test-helpers"]
 
 [dev-dependencies]

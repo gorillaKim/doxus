@@ -12,6 +12,7 @@ async-trait = { workspace = true }
 tempfile = { workspace = true }
 mockito = "1"
 sha2 = "0.10"
+tokio = { version = "1", features = ["full", "test-util"] }
 
 [dependencies]
 doxus-core = { path = "../core" }
@@ -25,3 +26,4 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 dirs = "5"
+rand = "0.8"

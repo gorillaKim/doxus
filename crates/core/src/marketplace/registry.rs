@@ -1,3 +1,49 @@
+use semver::{Version, VersionReq};
+
+/// Returns true if `candidate` satisfies the semver `requirement`.
+///
+/// `requirement` may be an exact version (`"1.0.0"`) or a range (`"^1.2.0"`, `"~1.2.0"`).
+pub fn matches_version(requirement: &str, candidate: &str) -> Result<bool, RegistryError> {
+    // If requirement starts with a digit, treat it as an exact match (prefix with `=`).
+    let normalized = if requirement.starts_with(|c: char| c.is_ascii_digit()) {
+        format!("={requirement}")
+    } else {
+        requirement.to_string()
+    };
+    let req = VersionReq::parse(&normalized)
+        .map_err(|e| RegistryError::Parse(format!("invalid version requirement '{requirement}': {e}")))?;
+    let ver = Version::parse(candidate)
+        .map_err(|e| RegistryError::Parse(format!("invalid version '{candidate}': {e}")))?;
+    Ok(req.matches(&ver))
+}
+
+/// Returns the entry with the highest version that satisfies `requirement`, or `None`.
+///
+/// Uses the same bare-version normalization as [`matches_version`]: a
+/// requirement that starts with a digit is treated as an exact match (`=X.Y.Z`).
+pub fn find_best_match<'a>(
+    entries: &'a [RegistryEntry],
+    requirement: &str,
+) -> Result<Option<&'a RegistryEntry>, RegistryError> {
+    let normalized = if requirement.starts_with(|c: char| c.is_ascii_digit()) {
+        format!("={requirement}")
+    } else {
+        requirement.to_string()
+    };
+    let req = VersionReq::parse(&normalized)
+        .map_err(|e| RegistryError::Parse(format!("invalid version requirement '{requirement}': {e}")))?;
+    Ok(entries
+        .iter()
+        .filter_map(|e| {
+            Version::parse(&e.version)
+                .ok()
+                .filter(|v| req.matches(v))
+                .map(|v| (v, e))
+        })
+        .max_by(|(a, _), (b, _)| a.cmp(b))
+        .map(|(_, e)| e))
+}
+
 /// A single entry in the plugin registry.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct RegistryEntry {

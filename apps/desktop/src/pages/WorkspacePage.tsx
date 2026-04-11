@@ -1,12 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-
-interface WorkspaceDocument {
-  id: number;
-  title: string;
-  created_at: number;
-  content_preview?: string;
-}
+import { useWorkspaceStore, WorkspaceDocument } from '../stores/useWorkspaceStore';
 
 interface Template {
   id: string;
@@ -149,32 +143,34 @@ interface EditingDoc {
 }
 
 export default function WorkspacePage() {
+  const { documents, isLoading, fetchDocuments, addDocument, removeDocument, updateDocument } =
+    useWorkspaceStore();
+
   const [activeTab, setActiveTab] = useState<TabKey>('documents');
-  const [documents, setDocuments] = useState<WorkspaceDocument[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [preselectedTemplate, setPreselectedTemplate] = useState<string | null>(null);
   const [editingDoc, setEditingDoc] = useState<EditingDoc | null>(null);
 
-  const fetchDocuments = () => {
-    invoke<WorkspaceDocument[]>('list_workspace_documents')
-      .then(setDocuments)
-      .catch(() => setDocuments([]));
-  };
-
   useEffect(() => {
-    invoke<WorkspaceDocument[]>('list_workspace_documents')
-      .then(setDocuments)
-      .catch(() => setDocuments([]))
-      .finally(() => setIsLoading(false));
-  }, []);
+    fetchDocuments();
+  }, [fetchDocuments]);
 
   const handleCreated = (doc: WorkspaceDocument) => {
-    setDocuments((prev) => [doc, ...prev]);
+    addDocument(doc);
     setShowModal(false);
     setPreselectedTemplate(null);
     setActiveTab('documents');
+  };
+
+  const handleDelete = async (id: number) => {
+    try {
+      await invoke('delete_workspace_document', { id });
+      removeDocument(id);
+      if (expandedId === id) setExpandedId(null);
+    } catch (e) {
+      console.error('delete failed', e);
+    }
   };
 
   const openModalWithTemplate = (templateId: string) => {
@@ -262,10 +258,22 @@ export default function WorkspacePage() {
                     </button>
                     <div className="flex items-center gap-2 shrink-0">
                       <button
-                        onClick={() => setEditingDoc({ id: doc.id, title: doc.title, content: doc.content_preview ?? '' })}
+                        onClick={() =>
+                          setEditingDoc({
+                            id: doc.id,
+                            title: doc.title,
+                            content: doc.content_preview ?? '',
+                          })
+                        }
                         className="text-gray-500 hover:text-indigo-400 text-xs px-2 py-1 rounded border border-gray-700 hover:border-indigo-500 transition-colors"
                       >
                         수정
+                      </button>
+                      <button
+                        onClick={() => handleDelete(doc.id)}
+                        className="text-gray-500 hover:text-red-400 text-xs px-2 py-1 rounded border border-gray-700 hover:border-red-500 transition-colors"
+                      >
+                        삭제
                       </button>
                       <span className="text-gray-600 text-xs">
                         {expandedId === doc.id ? '▲' : '▼'}
@@ -333,18 +341,32 @@ export default function WorkspacePage() {
             <div className="flex items-center justify-between">
               <input
                 value={editingDoc.title}
-                onChange={(e) => setEditingDoc((prev) => prev ? { ...prev, title: e.target.value } : null)}
+                onChange={(e) =>
+                  setEditingDoc((prev) => (prev ? { ...prev, title: e.target.value } : null))
+                }
                 className="text-base font-semibold text-gray-100 bg-transparent border-b border-gray-700 focus:outline-none focus:border-indigo-500 flex-1"
               />
-              <button onClick={() => setEditingDoc(null)} className="text-gray-500 hover:text-gray-300 ml-4">✕</button>
+              <button
+                onClick={() => setEditingDoc(null)}
+                className="text-gray-500 hover:text-gray-300 ml-4"
+              >
+                ✕
+              </button>
             </div>
             <textarea
               value={editingDoc.content}
-              onChange={(e) => setEditingDoc((prev) => prev ? { ...prev, content: e.target.value } : null)}
+              onChange={(e) =>
+                setEditingDoc((prev) => (prev ? { ...prev, content: e.target.value } : null))
+              }
               className="bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-indigo-500 resize-none h-64 font-mono"
             />
             <div className="flex gap-2 justify-end">
-              <button onClick={() => setEditingDoc(null)} className="px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200">취소</button>
+              <button
+                onClick={() => setEditingDoc(null)}
+                className="px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200"
+              >
+                취소
+              </button>
               <button
                 onClick={async () => {
                   if (!editingDoc) return;
@@ -354,8 +376,11 @@ export default function WorkspacePage() {
                       title: editingDoc.title,
                       content: editingDoc.content,
                     });
+                    updateDocument(editingDoc.id, {
+                      title: editingDoc.title,
+                      content_preview: editingDoc.content.slice(0, 100) || undefined,
+                    });
                     setEditingDoc(null);
-                    fetchDocuments();
                   } catch (e) {
                     console.error(e);
                   }

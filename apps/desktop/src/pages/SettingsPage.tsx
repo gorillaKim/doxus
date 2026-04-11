@@ -1,6 +1,12 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
+interface AppSettings {
+  embedding_model: 'onnx' | 'ollama';
+  language: 'ko' | 'en';
+  theme: 'light' | 'dark' | 'system';
+}
+
 interface SystemStatus {
   app: { version: string; status: string };
   database: { path: string; exists: boolean; status: string };
@@ -85,6 +91,15 @@ function StatusCard({
 export default function SettingsPage() {
   const [sysStatus, setSysStatus] = useState<SystemStatus | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+
+  // App settings state
+  const [appSettings, setAppSettings] = useState<AppSettings>({
+    embedding_model: 'onnx',
+    language: 'ko',
+    theme: 'system',
+  });
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsResult, setSettingsResult] = useState<string | null>(null);
   const [dbTestResult, setDbTestResult] = useState<string | null>(null);
   const [dbTestLoading, setDbTestLoading] = useState(false);
   const [mcpTestResult, setMcpTestResult] = useState<string | null>(null);
@@ -97,6 +112,10 @@ export default function SettingsPage() {
   const [geminiTestLoading, setGeminiTestLoading] = useState(false);
 
   useEffect(() => {
+    invoke<AppSettings>('load_settings')
+      .then(setAppSettings)
+      .catch(() => { /* use defaults */ });
+
     invoke<SystemStatus>('get_system_status')
       .then(setSysStatus)
       .catch(() => {
@@ -119,6 +138,19 @@ export default function SettingsPage() {
       .then((res) => setGeminiStatus(res.status as 'ok' | 'warn' | 'unknown'))
       .catch(() => setGeminiStatus('warn'));
   }, []);
+
+  const handleSaveSettings = async () => {
+    setSettingsSaving(true);
+    setSettingsResult(null);
+    try {
+      await invoke('save_settings', { settings: appSettings });
+      setSettingsResult('✓ 저장됨');
+    } catch (e) {
+      setSettingsResult(`✗ ${String(e)}`);
+    } finally {
+      setSettingsSaving(false);
+    }
+  };
 
   const handleRefresh = async () => {
     setIsLoading(true);
@@ -268,6 +300,59 @@ export default function SettingsPage() {
             />
           </div>
         ) : null}
+      </section>
+
+      {/* 앱 설정 */}
+      <section className="flex flex-col gap-3">
+        <h2 className="text-xs font-semibold text-gray-500 uppercase tracking-wider">앱 설정</h2>
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 flex flex-col gap-4">
+          <div className="flex items-center justify-between gap-4">
+            <label className="text-sm text-gray-400 shrink-0">임베딩 모델</label>
+            <select
+              value={appSettings.embedding_model}
+              onChange={(e) => setAppSettings({ ...appSettings, embedding_model: e.target.value as AppSettings['embedding_model'] })}
+              className="bg-gray-800 border border-gray-700 text-gray-300 text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:border-gray-500"
+            >
+              <option value="onnx">ONNX (내장, 기본값)</option>
+              <option value="ollama">Ollama (외부 서버)</option>
+            </select>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <label className="text-sm text-gray-400 shrink-0">언어</label>
+            <select
+              value={appSettings.language}
+              onChange={(e) => setAppSettings({ ...appSettings, language: e.target.value as AppSettings['language'] })}
+              className="bg-gray-800 border border-gray-700 text-gray-300 text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:border-gray-500"
+            >
+              <option value="ko">한국어</option>
+              <option value="en">English</option>
+            </select>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <label className="text-sm text-gray-400 shrink-0">테마</label>
+            <select
+              value={appSettings.theme}
+              onChange={(e) => setAppSettings({ ...appSettings, theme: e.target.value as AppSettings['theme'] })}
+              className="bg-gray-800 border border-gray-700 text-gray-300 text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:border-gray-500"
+            >
+              <option value="system">시스템</option>
+              <option value="light">라이트</option>
+              <option value="dark">다크</option>
+            </select>
+          </div>
+          <div className="flex items-center gap-3 pt-1">
+            <button
+              onClick={handleSaveSettings}
+              disabled={settingsSaving}
+              className="px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-colors disabled:opacity-50"
+            >
+              {settingsSaving ? '저장 중...' : '설정 저장'}
+            </button>
+            {settingsResult && (
+              <span className="text-xs text-gray-400">{settingsResult}</span>
+            )}
+          </div>
+        </div>
       </section>
 
       {/* 앱 정보 */}

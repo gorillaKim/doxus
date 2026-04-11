@@ -9,6 +9,8 @@ use doxus_plugin_sdk::{
 };
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
 // ── Confluence API response shapes ────────────────────────────────────────────
 
@@ -61,7 +63,7 @@ pub struct ConfluencePlugin {
     api_token: Option<String>,
     space_key: Option<String>,
     oauth_config: Option<OAuthConfig>,
-    oauth_token: Option<OAuthToken>,
+    oauth_token: Arc<RwLock<Option<OAuthToken>>>,
     /// Pending state value generated during oauth_start, used to validate oauth_exchange.
     oauth_pending_state: std::sync::Mutex<Option<String>>,
     /// OAuth callback server started during oauth_start.
@@ -82,7 +84,7 @@ impl ConfluencePlugin {
             api_token: None,
             space_key: None,
             oauth_config: None,
-            oauth_token: None,
+            oauth_token: Arc::new(RwLock::new(None)),
             oauth_pending_state: std::sync::Mutex::new(None),
             oauth_server: std::sync::Mutex::new(None),
             client: reqwest::Client::builder()
@@ -200,6 +202,61 @@ impl ConfluencePlugin {
         self.base_url = Some(base_url);
         self.space_key = Some(space_key);
         self.api_token = Some(api_token);
+    }
+
+    /// Configure OAuth for testing without going through `initialize`.
+    /// Sets the oauth_config and (optionally) an initial oauth_token.
+    #[doc(hidden)]
+    pub fn set_test_oauth_config(
+        &mut self,
+        config: OAuthConfig,
+        token: Option<OAuthToken>,
+    ) {
+        self.oauth_config = Some(config);
+        // Replace the shared lock with a new one containing the supplied token.
+        self.oauth_token = Arc::new(RwLock::new(token));
+    }
+
+    /// Ensures the OAuth token is valid, refreshing it if expired.
+    /// Returns immediately (Ok) when api_token auth is in use (no oauth_config).
+    async fn ensure_valid_token(&self) -> Result<(), PluginError> {
+        // If no OAuth config, this plugin uses api_token auth — skip.
+        let oauth_config = match &self.oauth_config {
+            Some(c) => c.clone(),
+            None => return Ok(()),
+        };
+
+        // Fast path: read lock — token present and not expired.
+        {
+            let guard = self.oauth_token.read().await;
+            match &*guard {
+                Some(tok) if !tok.is_expired() => return Ok(()),
+                _ => {} // fall through to refresh
+            }
+        }
+
+        // Slow path: write lock with double-checked locking to prevent thundering herd.
+        let mut guard = self.oauth_token.write().await;
+        // Re-check inside write lock.
+        match &*guard {
+            Some(tok) if !tok.is_expired() => return Ok(()),
+            _ => {}
+        }
+
+        // Need to refresh. Extract refresh_token before calling async method.
+        let refresh_tok = guard
+            .as_ref()
+            .and_then(|t| t.refresh_token.clone())
+            .ok_or(PluginError::AuthRequired)?;
+
+        let flow = OAuthFlow::new(oauth_config);
+        let new_token = flow
+            .refresh_token(&refresh_tok)
+            .await
+            .map_err(|e| PluginError::Internal(e.to_string()))?;
+
+        *guard = Some(new_token);
+        Ok(())
     }
 
     /// Wait for the OAuth callback that was set up during `oauth_start`.
@@ -376,11 +433,12 @@ impl DocSource for ConfluencePlugin {
             .exchange_code(code, state, &expected)
             .await
             .map_err(|e| PluginError::Internal(e.to_string()))?;
-        self.oauth_token = Some(token);
+        *self.oauth_token.write().await = Some(token);
         Ok(())
     }
 
     async fn fetch_all(&self, opts: FetchAllOpts) -> Result<DocumentStream, PluginError> {
+        self.ensure_valid_token().await?;
         let base_url = self.base_url()?;
         let api_token = self.api_token()?;
         let space_key = self.space_key()?;
@@ -443,6 +501,7 @@ impl DocSource for ConfluencePlugin {
     }
 
     async fn fetch_changes(&self, opts: FetchChangesOpts) -> Result<ChangeSet, PluginError> {
+        self.ensure_valid_token().await?;
         let base_url = self.base_url()?;
         let api_token = self.api_token()?;
         let space_key = self.space_key()?;
@@ -528,6 +587,7 @@ impl DocSource for ConfluencePlugin {
     }
 
     async fn fetch_document(&self, id: &SourceDocId) -> Result<RawDocument, PluginError> {
+        self.ensure_valid_token().await?;
         let base_url = self.base_url()?;
         let api_token = self.api_token()?;
 
@@ -929,9 +989,10 @@ mod tests {
             .expect("state param in auth URL");
         plugin.oauth_exchange("auth-code", state).await.unwrap();
 
-        assert!(plugin.oauth_token.is_some(), "token should be stored after exchange");
+        let token_guard = plugin.oauth_token.read().await;
+        assert!(token_guard.is_some(), "token should be stored after exchange");
         assert_eq!(
-            plugin.oauth_token.as_ref().unwrap().access_token,
+            token_guard.as_ref().unwrap().access_token,
             "test-access-token"
         );
     }

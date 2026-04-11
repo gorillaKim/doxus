@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useProjectStore } from '../stores/useProjectStore';
 import { useSearchStore } from '../stores/useSearchStore';
 
@@ -19,6 +20,7 @@ export default function DashboardPage() {
   const { queryHistory } = useSearchStore();
   const [totalDocs, setTotalDocs] = useState<number | null>(null);
   const [topDocs, setTopDocs] = useState<{ document_id: number; title: string; file_path: string; count: number }[]>([]);
+  const [lastSync, setLastSync] = useState<string>('—');
 
   useEffect(() => {
     invoke<{ total_documents: number }>('search_engine_status')
@@ -27,6 +29,26 @@ export default function DashboardPage() {
     invoke<{ documents: { document_id: number; title: string; file_path: string; count: number }[] }>('get_top_documents', { limit: 5 })
       .then(res => setTopDocs(res.documents))
       .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const unlisteners: Promise<UnlistenFn>[] = [
+      listen('sync:progress', () => {
+        setLastSync('동기화 중…');
+      }),
+      listen('sync:complete', () => {
+        setLastSync(new Date().toLocaleTimeString('ko-KR'));
+        invoke<{ total_documents: number }>('search_engine_status')
+          .then(res => setTotalDocs(res.total_documents))
+          .catch(() => {});
+      }),
+      listen('sync:error', () => {
+        setLastSync('오류 발생');
+      }),
+    ];
+    return () => {
+      unlisteners.forEach(p => p.then(fn => fn()));
+    };
   }, []);
 
   const today = new Date().toLocaleDateString('ko-KR', {
@@ -48,7 +70,7 @@ export default function DashboardPage() {
       <div className="grid grid-cols-3 gap-4">
         <StatCard label="프로젝트" value={projects.length} />
         <StatCard label="인덱싱된 문서" value={totalDocs !== null ? totalDocs : '—'} />
-        <StatCard label="마지막 동기화" value="—" />
+        <StatCard label="마지막 동기화" value={lastSync} />
       </div>
 
       {/* 최근 검색 */}

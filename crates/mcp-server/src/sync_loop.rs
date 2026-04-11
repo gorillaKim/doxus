@@ -5,14 +5,184 @@
 //! The loop terminates when the shutdown sender is dropped or a `true` value is
 //! sent through the watch channel.
 
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use doxus_core::plugin::PluginManager;
 use doxus_core::sync::{SyncDb, SyncScheduler};
-use doxus_plugin_sdk::{FetchChangesOpts, PluginConfig, PluginSecrets};
+use doxus_plugin_sdk::{FetchChangesOpts, PluginConfig, PluginError, PluginSecrets};
+use rand::Rng;
 use rusqlite::Connection;
 use tokio::sync::watch;
+
+// ── Retry policy ─────────────────────────────────────────────────────────────
+
+/// Configuration for exponential-backoff retry behaviour.
+pub struct RetryPolicy {
+    /// Maximum number of retries (attempts = max_retries + 1).
+    pub max_retries: u32,
+    /// Base delay for the first retry interval.
+    pub base_delay: Duration,
+    /// Hard upper bound on any single sleep duration (before jitter).
+    pub max_delay: Duration,
+}
+
+/// Retry `f` up to `policy.max_retries` additional times on error, sleeping
+/// with exponential backoff + jitter between attempts.
+///
+/// Delay formula: `min(base * 2^attempt, max_delay) + rand(0 .. base * 0.1)`
+pub async fn retry_with_backoff<F, Fut, T, E>(policy: &RetryPolicy, f: F) -> Result<T, E>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+{
+    let mut last_err;
+    match f().await {
+        Ok(v) => return Ok(v),
+        Err(e) => last_err = e,
+    }
+
+    for attempt in 0..policy.max_retries {
+        // base * 2^attempt, capped at max_delay
+        let exp = policy.base_delay.saturating_mul(2u32.pow(attempt));
+        let capped = exp.min(policy.max_delay);
+        // jitter: uniform [0, base * 0.1)
+        let jitter_nanos = {
+            let max_jitter = (policy.base_delay.as_nanos() / 10).max(1) as u64;
+            rand::thread_rng().gen_range(0..max_jitter)
+        };
+        let sleep = capped + Duration::from_nanos(jitter_nanos);
+        tokio::time::sleep(sleep).await;
+
+        match f().await {
+            Ok(v) => return Ok(v),
+            Err(e) => last_err = e,
+        }
+    }
+
+    Err(last_err)
+}
+
+// ── Rate limit handling ───────────────────────────────────────────────────────
+
+/// Action returned by [`handle_rate_limited`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum RateLimitAction {
+    /// The wait completed normally — caller should retry.
+    Retry,
+    /// A shutdown signal arrived during the wait — caller should stop.
+    Shutdown,
+}
+
+/// Maximum number of seconds to wait when rate-limited (prevents unbounded sleeps).
+const MAX_RATE_LIMIT_WAIT_SECS: u64 = 300;
+
+/// Sleep for `retry_after_secs` (capped at [`MAX_RATE_LIMIT_WAIT_SECS`]), but
+/// cancel immediately if a shutdown signal arrives.
+/// Returns [`RateLimitAction`] so the caller can decide what to do.
+pub async fn handle_rate_limited(
+    retry_after_secs: u64,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) -> RateLimitAction {
+    let retry_after_secs = retry_after_secs.min(MAX_RATE_LIMIT_WAIT_SECS);
+    tokio::select! {
+        _ = tokio::time::sleep(Duration::from_secs(retry_after_secs)) => {
+            RateLimitAction::Retry
+        }
+        result = shutdown_rx.changed() => {
+            if result.is_err() || *shutdown_rx.borrow() {
+                RateLimitAction::Shutdown
+            } else {
+                RateLimitAction::Retry
+            }
+        }
+    }
+}
+
+/// Like [`retry_with_backoff`] but understands [`PluginError::RateLimited`].
+///
+/// * `RateLimited` — waits the requested duration (or cancels on shutdown),
+///   then retries **without** consuming a retry counter slot.
+/// * Any other error — uses the normal exponential-backoff retry logic.
+/// * Returns `Err(PluginError)` once retries are exhausted or the loop is shut
+///   down.
+pub async fn retry_with_backoff_rate_aware<F, Fut, T>(
+    policy: &RetryPolicy,
+    shutdown_rx: &mut watch::Receiver<bool>,
+    f: F,
+) -> Result<T, PluginError>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<T, PluginError>>,
+{
+    let mut failure_count: u32 = 0;
+
+    loop {
+        match f().await {
+            Ok(v) => return Ok(v),
+            Err(PluginError::RateLimited { retry_after_secs }) => {
+                tracing::warn!(retry_after_secs, "rate limited — waiting before retry");
+                match handle_rate_limited(retry_after_secs, shutdown_rx).await {
+                    RateLimitAction::Retry => continue,
+                    RateLimitAction::Shutdown => {
+                        return Err(PluginError::Internal("shutdown during rate limit wait".into()));
+                    }
+                }
+            }
+            Err(e) => {
+                if failure_count >= policy.max_retries {
+                    return Err(e);
+                }
+                let exp = policy.base_delay.saturating_mul(2u32.pow(failure_count));
+                let capped = exp.min(policy.max_delay);
+                let jitter_nanos = {
+                    let max_jitter = (policy.base_delay.as_nanos() / 10).max(1) as u64;
+                    rand::thread_rng().gen_range(0..max_jitter)
+                };
+                tokio::time::sleep(capped + Duration::from_nanos(jitter_nanos)).await;
+                failure_count += 1;
+            }
+        }
+    }
+}
+
+// ── Event sink abstraction ────────────────────────────────────────────────────
+
+/// Events emitted by the sync loop to interested observers (e.g. Tauri UI).
+#[derive(Debug, Clone)]
+pub enum SyncEvent {
+    /// Sync started for a source instance.
+    Progress {
+        instance_id: i64,
+        plugin_id: String,
+    },
+    /// Sync completed successfully.
+    Complete {
+        instance_id: i64,
+        updated: usize,
+    },
+    /// Sync failed after all retries.
+    Error {
+        instance_id: i64,
+        message: String,
+    },
+}
+
+/// Abstraction over "somewhere to send sync events".
+///
+/// The production implementation (`TauriEventSink`) wraps `tauri::AppHandle`.
+/// Tests use a `RecordingEventSink`.  CLI mode uses [`NoopEventSink`].
+pub trait EventSink: Send + Sync + 'static {
+    fn emit(&self, event: SyncEvent);
+}
+
+/// No-op sink for CLI mode (no Tauri runtime available).
+pub struct NoopEventSink;
+
+impl EventSink for NoopEventSink {
+    fn emit(&self, _event: SyncEvent) {}
+}
 
 /// Handle returned by [`spawn_sync_loop`].  Drop or send `true` to stop the loop.
 pub struct SyncLoopHandle {
@@ -41,6 +211,20 @@ pub fn spawn_sync_loop(
     plugin_manager: Arc<PluginManager>,
     interval_secs: u64,
 ) -> SyncLoopHandle {
+    spawn_sync_loop_with_sink(conn, plugin_manager, interval_secs, NoopEventSink)
+}
+
+/// Spawn the background sync loop with an [`EventSink`] for UI notifications.
+///
+/// Identical to [`spawn_sync_loop`] but emits [`SyncEvent`]s through `sink`
+/// so that callers (e.g. Tauri desktop) can forward them as frontend events.
+/// Pass [`NoopEventSink`] when running in CLI mode.
+pub fn spawn_sync_loop_with_sink<S: EventSink>(
+    conn: Arc<Mutex<Connection>>,
+    plugin_manager: Arc<PluginManager>,
+    interval_secs: u64,
+    sink: S,
+) -> SyncLoopHandle {
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let sleep_duration = Duration::from_secs(interval_secs.max(1));
 
@@ -48,7 +232,6 @@ pub fn spawn_sync_loop(
         let scheduler = SyncScheduler::new(interval_secs);
 
         loop {
-            // Collect due instances under the lock, then release it before async work.
             let due = {
                 let guard = match conn.lock() {
                     Ok(g) => g,
@@ -72,9 +255,13 @@ pub fn spawn_sync_loop(
             } else {
                 tracing::info!(count = due.len(), "sync_loop: {} instance(s) due for sync", due.len());
                 for inst in due {
+                    sink.emit(SyncEvent::Progress {
+                        instance_id: inst.id,
+                        plugin_id: inst.plugin_id.clone(),
+                    });
+
                     match plugin_manager.get_source(&inst.plugin_id) {
                         Some(mut source) => {
-                            // Parse config_json and initialize the plugin before fetching.
                             let config_fields: std::collections::HashMap<String, serde_json::Value> =
                                 match serde_json::from_str(&inst.config_json) {
                                     Ok(f) => f,
@@ -85,6 +272,10 @@ pub fn spawn_sync_loop(
                                             error = %e,
                                             "sync_loop: malformed config_json, skipping instance"
                                         );
+                                        sink.emit(SyncEvent::Error {
+                                            instance_id: inst.id,
+                                            message: format!("malformed config_json: {e}"),
+                                        });
                                         continue;
                                     }
                                 };
@@ -95,19 +286,33 @@ pub fn spawn_sync_loop(
                                     error = %e,
                                     "sync_loop: failed to initialize plugin, skipping"
                                 );
+                                sink.emit(SyncEvent::Error {
+                                    instance_id: inst.id,
+                                    message: format!("initialize failed: {e}"),
+                                });
                                 continue;
                             }
-                            let opts = FetchChangesOpts {
-                                since: 0,
-                                cursor: inst.sync_cursor.clone(),
-                                page_size: 100,
-                                known_ids: vec![],
+                            let retry_policy = RetryPolicy {
+                                max_retries: 3,
+                                base_delay: Duration::from_secs(1),
+                                max_delay: Duration::from_secs(30),
                             };
-                            match source.fetch_changes(opts).await {
+                            let cursor = inst.sync_cursor.clone();
+                            let fetch_result = retry_with_backoff(&retry_policy, || {
+                                let cursor = cursor.clone();
+                                let opts = FetchChangesOpts {
+                                    since: 0,
+                                    cursor,
+                                    page_size: 100,
+                                    known_ids: vec![],
+                                };
+                                source.fetch_changes(opts)
+                            })
+                            .await;
+                            match fetch_result {
                                 Ok(changeset) => {
                                     let updated = changeset.updated.len();
                                     let new_cursor = changeset.next_cursor;
-                                    // Write back last_synced + cursor under the lock.
                                     match conn.lock() {
                                         Ok(guard) => {
                                             let sync_db = SyncDb::new(&*guard);
@@ -133,13 +338,21 @@ pub fn spawn_sync_loop(
                                         updated,
                                         "sync_loop: sync completed"
                                     );
+                                    sink.emit(SyncEvent::Complete {
+                                        instance_id: inst.id,
+                                        updated,
+                                    });
                                 }
                                 Err(e) => {
-                                    tracing::warn!(
+                                    tracing::error!(
                                         instance_id = inst.id,
                                         error = %e,
-                                        "sync_loop: sync failed"
+                                        "sync_loop: sync failed after retries"
                                     );
+                                    sink.emit(SyncEvent::Error {
+                                        instance_id: inst.id,
+                                        message: e.to_string(),
+                                    });
                                 }
                             }
                         }
@@ -153,7 +366,6 @@ pub fn spawn_sync_loop(
                 }
             }
 
-            // Wait for next tick or shutdown signal.
             tokio::select! {
                 _ = tokio::time::sleep(sleep_duration) => {}
                 result = shutdown_rx.changed() => {

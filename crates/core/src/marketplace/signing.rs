@@ -1,5 +1,7 @@
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
+use std::path::Path;
 
 use doxus_plugin_sdk::PluginMetadata;
 
@@ -19,6 +21,63 @@ pub enum SigningError {
     ChecksumMismatch,
     #[error("hex decode error: {0}")]
     HexDecode(String),
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("invalid key bytes")]
+    InvalidKey,
+}
+
+/// Generate a new ed25519 keypair using OS randomness.
+pub fn generate_keypair() -> (SigningKey, VerifyingKey) {
+    let signing_key = SigningKey::generate(&mut OsRng);
+    let verifying_key = signing_key.verifying_key();
+    (signing_key, verifying_key)
+}
+
+/// Sign a WASM plugin, returning a `SignedPlugin` ready for verification.
+pub fn sign_plugin(
+    wasm_bytes: &[u8],
+    manifest: &PluginMetadata,
+    signing_key: &SigningKey,
+) -> SignedPlugin {
+    let signature = signing_key.sign(wasm_bytes);
+    SignedPlugin {
+        manifest: manifest.clone(),
+        wasm_bytes: wasm_bytes.to_vec(),
+        signature: signature.to_bytes(),
+        public_key: signing_key.verifying_key().to_bytes(),
+    }
+}
+
+/// Persist a signing key as raw 32-byte seed to `path`.
+///
+/// On Unix the file is created with mode 0o600 (owner read/write only)
+/// to prevent private key exposure.
+pub fn save_keypair(path: &Path, signing_key: &SigningKey) -> Result<(), SigningError> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        file.write_all(&signing_key.to_bytes())?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, signing_key.to_bytes())?;
+    }
+    Ok(())
+}
+
+/// Load a signing key from a raw 32-byte seed file at `path`.
+pub fn load_keypair(path: &Path) -> Result<SigningKey, SigningError> {
+    let bytes = std::fs::read(path)?;
+    let seed: [u8; 32] = bytes.try_into().map_err(|_| SigningError::InvalidKey)?;
+    Ok(SigningKey::from_bytes(&seed))
 }
 
 pub fn sha256_hex(data: &[u8]) -> String {
@@ -34,6 +93,21 @@ pub fn verify_plugin(plugin: &SignedPlugin) -> Result<(), SigningError> {
     verifying_key
         .verify(&plugin.wasm_bytes, &signature)
         .map_err(|_| SigningError::InvalidSignature)
+}
+
+/// Verify a plugin signature against a **trusted** registry public key.
+///
+/// Unlike [`verify_plugin`], this function rejects the plugin if its embedded
+/// `public_key` does not match `trusted_public_key` — preventing a malicious
+/// plugin from substituting its own key.
+pub fn verify_plugin_with_anchor(
+    plugin: &SignedPlugin,
+    trusted_public_key: &[u8; 32],
+) -> Result<(), SigningError> {
+    if &plugin.public_key != trusted_public_key {
+        return Err(SigningError::InvalidSignature);
+    }
+    verify_plugin(plugin)
 }
 
 #[cfg(test)]
