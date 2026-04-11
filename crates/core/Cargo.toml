@@ -27,6 +27,7 @@ zerocopy = { workspace = true }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand = "0.8"
 handlebars = "6"
+toml = "0.8"
 keyring = { version = "3", features = ["apple-native", "sync-secret-service"] }
 
 [features]
@@ -53,3 +54,4 @@ tokio-test = { workspace = true }
 approx = "0.5"
 tempfile = "3"
 wiremock = { workspace = true }
+mockito = "1"

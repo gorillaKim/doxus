@@ -80,6 +80,29 @@ impl DocSource for MockPlugin {
     }
 }
 
+// ── WASM fixture helpers ──────────────────────────────────────────────────────
+
+/// Minimal valid WebAssembly module (8 bytes: magic + version).
+const MINIMAL_WASM: &[u8] = b"\x00asm\x01\x00\x00\x00";
+
+fn write_wasm_fixture(dir: &std::path::Path, plugin_id: &str) {
+    std::fs::write(dir.join(format!("{plugin_id}.wasm")), MINIMAL_WASM).unwrap();
+}
+
+fn write_manifest_fixture(dir: &std::path::Path, plugin_id: &str) {
+    let toml = format!(
+        r#"plugin_id = "{plugin_id}"
+display_name = "Test Minimal"
+version = "0.1.0"
+abi_version = 1
+http_domains = []
+kv_namespaces = []
+secrets = []
+"#
+    );
+    std::fs::write(dir.join(format!("{plugin_id}.manifest.toml")), toml).unwrap();
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 fn make_manager() -> (PluginManager, TempDir) {
@@ -124,4 +147,45 @@ fn test_get_source_metadata_id_matches() {
     let (mgr2, _tmp2) = make_manager();
     let source2 = mgr2.get_source("com.doxus.github").unwrap();
     assert_eq!(source2.metadata().id, "com.doxus.github");
+}
+
+#[test]
+fn get_source_loads_wasm_from_disk() {
+    let tmp = TempDir::new().unwrap();
+    write_wasm_fixture(tmp.path(), "com.test.minimal");
+    write_manifest_fixture(tmp.path(), "com.test.minimal");
+
+    let mgr = PluginManager::new(tmp.path().to_path_buf());
+    let source = mgr.get_source("com.test.minimal");
+    assert!(source.is_some(), "expected Some when .wasm + .manifest.toml present");
+    assert_eq!(source.unwrap().metadata().id, "com.test.minimal");
+}
+
+#[test]
+fn get_source_returns_none_without_manifest() {
+    let tmp = TempDir::new().unwrap();
+    write_wasm_fixture(tmp.path(), "com.test.minimal");
+    // no manifest file written
+
+    let mgr = PluginManager::new(tmp.path().to_path_buf());
+    let source = mgr.get_source("com.test.minimal");
+    assert!(source.is_none(), "expected None when .manifest.toml is missing");
+}
+
+#[test]
+fn get_source_factory_takes_precedence_over_wasm() {
+    let tmp = TempDir::new().unwrap();
+    write_wasm_fixture(tmp.path(), "com.doxus.confluence");
+    write_manifest_fixture(tmp.path(), "com.doxus.confluence");
+
+    let mut mgr = PluginManager::new(tmp.path().to_path_buf());
+    mgr.register_factory("com.doxus.confluence", || {
+        Box::new(MockPlugin::new("com.doxus.confluence")) as Box<dyn DocSource + Send + Sync>
+    });
+
+    let source = mgr.get_source("com.doxus.confluence").unwrap();
+    // MockPlugin's kind is External; WasmDocSourceAdapter's kind is also External,
+    // but we verify via the metadata name which MockPlugin sets to the id string.
+    assert_eq!(source.metadata().name, "com.doxus.confluence",
+        "factory-provided plugin should be returned, not WASM adapter");
 }

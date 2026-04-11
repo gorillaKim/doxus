@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 use doxus_plugin_sdk::DocSource;
 
+use super::manifest::PluginManifest;
+use super::wasm_adapter::WasmDocSourceAdapter;
 use crate::marketplace::{
     installer::{InstallerError, PluginInstaller},
     registry::RegistryEntry,
@@ -88,13 +90,51 @@ impl PluginManager {
         self.installer.is_installed(plugin_id)
     }
 
-    /// Returns a boxed `DocSource` for the given `plugin_id` by invoking the
-    /// registered factory. In-process plugins must be registered via
-    /// `register_factory` at the binary entry point — core has no built-in
-    /// plugin knowledge.
-    /// Returns `None` for unknown or WASM-only plugins.
+    /// Returns a boxed `DocSource` for the given `plugin_id`.
+    /// First checks registered factories (in-process plugins).
+    /// If no factory is registered, looks for `{plugin_id}.wasm` and
+    /// `{plugin_id}.manifest.toml` in `plugins_dir` and loads them via
+    /// `WasmDocSourceAdapter`. Returns `None` if neither is found or loading
+    /// fails (failure is logged via `tracing::warn`).
     pub fn get_source(&self, plugin_id: &str) -> Option<Box<dyn DocSource + Send + Sync>> {
-        self.factories.get(plugin_id).map(|f| f())
+        // Reject plugin_id containing path traversal chars
+        if plugin_id.contains('/') || plugin_id.contains('\\') || plugin_id.contains("..") {
+            tracing::warn!("get_source: invalid plugin_id '{plugin_id}'");
+            return None;
+        }
+
+        if let Some(factory) = self.factories.get(plugin_id) {
+            return Some(factory());
+        }
+
+        let wasm_path = self.plugins_dir.join(format!("{plugin_id}.wasm"));
+        let manifest_path = self.plugins_dir.join(format!("{plugin_id}.manifest.toml"));
+        if wasm_path.exists() && manifest_path.exists() {
+            let manifest = match PluginManifest::from_file(&manifest_path) {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::warn!("failed to load manifest for {plugin_id}: {e}");
+                    return None;
+                }
+            };
+            let bytes = match std::fs::read(&wasm_path) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!("failed to read WASM for {plugin_id}: {e}");
+                    return None;
+                }
+            };
+            let adapter = match WasmDocSourceAdapter::from_bytes(bytes, manifest, None) {
+                Ok(a) => a,
+                Err(e) => {
+                    tracing::warn!("failed to create WASM adapter for {plugin_id}: {e}");
+                    return None;
+                }
+            };
+            return Some(Box::new(adapter));
+        }
+
+        None
     }
 
     pub fn list_installed(&self) -> Result<Vec<String>, ManagerError> {

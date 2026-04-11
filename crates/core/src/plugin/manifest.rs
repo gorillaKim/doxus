@@ -1,6 +1,14 @@
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+#[derive(Debug, thiserror::Error)]
+pub enum ManifestError {
+    #[error("io error: {0}")]
+    Io(String),
+    #[error("parse error: {0}")]
+    Parse(String),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PluginManifest {
     pub plugin_id: String,
@@ -14,6 +22,12 @@ pub struct PluginManifest {
 }
 
 impl PluginManifest {
+    pub fn from_file(path: &std::path::Path) -> Result<Self, ManifestError> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| ManifestError::Io(e.to_string()))?;
+        toml::from_str(&content).map_err(|e| ManifestError::Parse(e.to_string()))
+    }
+
     pub fn is_domain_allowed(&self, url: &str) -> bool {
         if self.http_domains.is_empty() {
             return false;

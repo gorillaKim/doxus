@@ -31,6 +31,10 @@ fn make_server(conn: Connection, plugins_dir: PathBuf) -> McpServer {
     McpServer::new(conn, None, plugins_dir)
 }
 
+fn make_server_with_file_scheme(conn: Connection, plugins_dir: PathBuf) -> McpServer {
+    McpServer::new_with_file_scheme(conn, None, plugins_dir)
+}
+
 // --- test 1: url 파라미터 없으면 DB-only 등록 성공 ---
 
 #[test]
@@ -51,7 +55,6 @@ fn test_plugin_install_without_url_registers_in_db() {
 
 #[test]
 fn test_plugin_install_with_local_file_url_saves_wasm() {
-    std::env::set_var("DOXUS_ALLOW_FILE_INSTALL", "1");
     let (conn, tmp) = setup_db();
     let plugins_dir = tmp.path().join("plugins");
 
@@ -64,7 +67,7 @@ fn test_plugin_install_with_local_file_url_saves_wasm() {
     // Use file:// URL so test doesn't need network
     let url = format!("file://{}", wasm_src.display());
 
-    let server = make_server(conn, plugins_dir.clone());
+    let server = make_server_with_file_scheme(conn, plugins_dir.clone());
     let resp = server.dispatch_tool(
         "doxus_plugin_install",
         json!(1),
@@ -82,7 +85,6 @@ fn test_plugin_install_with_local_file_url_saves_wasm() {
 
 #[test]
 fn test_plugin_install_db_record_created() {
-    std::env::set_var("DOXUS_ALLOW_FILE_INSTALL", "1");
     let (_conn, tmp) = setup_db();
     let plugins_dir = tmp.path().join("plugins");
 
@@ -109,7 +111,7 @@ fn test_plugin_install_db_record_created() {
     )
     .unwrap();
 
-    let server = make_server(conn2, plugins_dir);
+    let server = make_server_with_file_scheme(conn2, plugins_dir);
     let resp = server.dispatch_tool(
         "doxus_plugin_install",
         json!(1),
@@ -136,6 +138,88 @@ fn test_plugin_install_db_record_created() {
         )
         .unwrap();
     assert_eq!(version, "2.0.0");
+}
+
+// --- test: registry_url arg로 설치 시 checksum 자동 전달 ---
+
+#[test]
+fn test_plugin_install_from_registry_fetches_checksum() {
+    let wasm_bytes = b"\x00asm\x01\x00\x00\x00";
+    // compute expected sha256 for the wasm bytes
+    use std::fmt::Write as _;
+    let hash = {
+        use std::collections::hash_map::DefaultHasher;
+        // Use sha2 via doxus_core signing helper indirectly — just build checksum manually
+        // We'll set checksum to match what the server returns so install succeeds
+        // The actual sha256 will be verified by installer; we need to compute it here.
+        // Use the same approach as installer tests: serve correct bytes with matching checksum.
+        sha256_of(wasm_bytes)
+    };
+
+    let mut server = mockito::Server::new();
+    let registry_json = format!(
+        r#"[{{"plugin_id":"com.test.registry","version":"1.0.0","display_name":"Test","download_url":"{url}/plugin.wasm","checksum_sha256":"{hash}","public_key_hex":"deadbeef"}}]"#,
+        url = server.url(),
+        hash = hash,
+    );
+    let _registry_mock = server
+        .mock("GET", "/plugins.json")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(&registry_json)
+        .create();
+    let _wasm_mock = server
+        .mock("GET", "/plugin.wasm")
+        .with_status(200)
+        .with_body(wasm_bytes.as_ref())
+        .create();
+
+    let (conn, tmp) = setup_db();
+    let plugins_dir = tmp.path().join("plugins");
+    let server_url = server.url();
+    // Use file-scheme server to allow http:// mockito URL in tests
+    let server = make_server_with_file_scheme(conn, plugins_dir.clone());
+    let resp = server.dispatch_tool(
+        "doxus_plugin_install",
+        serde_json::json!(1),
+        &serde_json::json!({ "id": "com.test.registry", "registry_url": server_url }),
+    );
+
+    assert!(resp.error.is_none(), "registry install should succeed: {:?}", resp.error);
+    assert!(
+        plugins_dir.join("com.test.registry.wasm").exists(),
+        "wasm file should be saved in plugins_dir"
+    );
+}
+
+#[test]
+fn test_plugin_install_from_registry_rejects_missing_plugin() {
+    let mut server = mockito::Server::new();
+    let registry_json = r#"[{"plugin_id":"com.other.plugin","version":"1.0.0","display_name":"Other","download_url":"https://example.com/other.wasm","checksum_sha256":"abc","public_key_hex":"deadbeef"}]"#;
+    let _registry_mock = server
+        .mock("GET", "/plugins.json")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(registry_json)
+        .create();
+
+    let (conn, tmp) = setup_db();
+    let server_url = server.url();
+    let server = make_server(conn, tmp.path().join("plugins"));
+    let resp = server.dispatch_tool(
+        "doxus_plugin_install",
+        serde_json::json!(1),
+        &serde_json::json!({ "id": "com.test.plugin", "registry_url": server_url }),
+    );
+
+    assert!(resp.error.is_some(), "missing plugin in registry should return error");
+}
+
+fn sha256_of(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    format!("{:x}", hasher.finalize())
 }
 
 // --- test 4: http/https 외 scheme은 거부 ---

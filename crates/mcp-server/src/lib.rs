@@ -57,6 +57,7 @@ pub struct McpServer {
     conn: rusqlite::Connection,
     embedder: Option<Arc<dyn EmbeddingProvider>>,
     plugins_dir: std::path::PathBuf,
+    allow_file_scheme: bool,
 }
 
 impl McpServer {
@@ -65,7 +66,15 @@ impl McpServer {
         embedder: Option<Arc<dyn EmbeddingProvider>>,
         plugins_dir: std::path::PathBuf,
     ) -> Self {
-        Self { conn, embedder, plugins_dir }
+        Self { conn, embedder, plugins_dir, allow_file_scheme: false }
+    }
+
+    pub fn new_with_file_scheme(
+        conn: rusqlite::Connection,
+        embedder: Option<Arc<dyn EmbeddingProvider>>,
+        plugins_dir: std::path::PathBuf,
+    ) -> Self {
+        Self { conn, embedder, plugins_dir, allow_file_scheme: true }
     }
 
     pub fn dispatch(&self, method: &str, id: Value, params: Option<&Value>) -> McpResponse {
@@ -1130,8 +1139,7 @@ impl McpServer {
             return McpResponse::text(id, json!({"path": null, "hops": null, "message": "document_links table not populated; run indexing first"}).to_string());
         }
 
-        let sql = format!(
-            "WITH RECURSIVE path(doc_id, trail, depth) AS (
+        let sql = "WITH RECURSIVE path(doc_id, trail, depth) AS (
                SELECT d.id, d.source_doc_id, 0
                FROM documents d WHERE d.source_doc_id = ?1
                UNION ALL
@@ -1139,14 +1147,15 @@ impl McpServer {
                FROM path
                JOIN document_links dl ON dl.source_id = path.doc_id
                JOIN documents d2 ON d2.id = dl.target_id
-               WHERE path.depth < ?3 AND path.trail NOT LIKE '%' || d2.source_doc_id || '%'
+               WHERE path.depth < ?3 AND '->' || path.trail || '->' NOT LIKE '%->' || d2.source_doc_id || '->%'
              )
              SELECT trail, depth FROM path WHERE doc_id = (SELECT id FROM documents WHERE source_doc_id = ?2 LIMIT 1)
-             ORDER BY depth LIMIT 1"
-        );
+             ORDER BY depth LIMIT 1";
+        // Note: the '->' delimiter pattern assumes source_doc_id values do not contain '->', '%', or '_'.
+        // If IDs with special chars are needed, switch to a JSON array or a separate visited-set table.
 
         let result: Result<(String, i64), _> = self.conn.query_row(
-            &sql, params![from, to, max_hops as i64], |r| Ok((r.get(0)?, r.get(1)?))
+            sql, params![from, to, max_hops as i64], |r| Ok((r.get(0)?, r.get(1)?))
         );
 
         match result {
@@ -1380,11 +1389,42 @@ impl McpServer {
         let version = args["version"].as_str().unwrap_or("0.0.0");
 
         // url is optional: if provided, download WASM; otherwise DB-only registration
-        if let Some(url) = args["url"].as_str() {
-            let installer = doxus_core::marketplace::installer::PluginInstaller::new(
-                self.plugins_dir.clone(),
-            );
-            if let Err(e) = installer.install_from_url(plugin_id, url) {
+        if let Some(registry_url) = args["registry_url"].as_str() {
+            if !self.allow_file_scheme && !registry_url.starts_with("https://") {
+                return McpResponse::err(id, -32602, "registry_url must use https://");
+            }
+            // Registry path: fetch entry to get download_url + checksum automatically
+            let client = match doxus_core::marketplace::registry::RegistryClient::new(registry_url) {
+                Ok(c) => c,
+                Err(e) => return McpResponse::err(id, -32603, e.to_string()),
+            };
+            let entry = match tokio::runtime::Handle::try_current()
+                .map(|h| tokio::task::block_in_place(|| h.block_on(client.fetch_entry(plugin_id))))
+                .unwrap_or_else(|_| {
+                    tokio::runtime::Runtime::new()
+                        .map_err(|e| doxus_core::marketplace::registry::RegistryError::Network(e.to_string()))
+                        .and_then(|rt| rt.block_on(client.fetch_entry(plugin_id)))
+                }) {
+                Ok(Some(e)) => e,
+                Ok(None) => return McpResponse::err(id, -32603, format!("plugin '{plugin_id}' not found in registry")),
+                Err(e) => return McpResponse::err(id, -32603, e.to_string()),
+            };
+            let installer = doxus_core::marketplace::installer::PluginInstaller::new(self.plugins_dir.clone());
+            if let Err(e) = installer.install_from_url(plugin_id, &entry.download_url, Some(&entry.checksum_sha256)) {
+                return McpResponse::err(id, -32603, e.to_string());
+            }
+        } else if let Some(url) = args["url"].as_str() {
+            let installer = if self.allow_file_scheme {
+                doxus_core::marketplace::installer::PluginInstaller::new_with_file_scheme(
+                    self.plugins_dir.clone(),
+                )
+            } else {
+                doxus_core::marketplace::installer::PluginInstaller::new(
+                    self.plugins_dir.clone(),
+                )
+            };
+            let expected_sha256 = args["sha256"].as_str();
+            if let Err(e) = installer.install_from_url(plugin_id, url, expected_sha256) {
                 return McpResponse::err(id, -32603, e.to_string());
             }
         }
@@ -1413,8 +1453,8 @@ impl McpServer {
         }
 
         // Attempt to delete .wasm file from plugins directory
-        if let Some(home) = dirs::home_dir() {
-            let plugins_dir = home.join(".doxus/plugins");
+        {
+            let plugins_dir = self.plugins_dir.clone();
             let wasm_path = plugins_dir.join(format!("{plugin_id}.wasm"));
             // Canonicalize parent to verify path stays within plugins_dir
             if let Ok(canonical) = wasm_path.canonicalize().or_else(|_| {

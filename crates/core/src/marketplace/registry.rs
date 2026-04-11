@@ -27,6 +27,7 @@ impl RegistryClient {
     pub fn new(base_url: impl Into<String>) -> Result<Self, RegistryError> {
         let client = reqwest::ClientBuilder::new()
             .user_agent("doxus-registry-client/0.1.0")
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| RegistryError::Network(format!("failed to build HTTP client: {e}")))?;
         Ok(Self {
@@ -51,6 +52,15 @@ impl RegistryClient {
             .await
             .map_err(|e| RegistryError::Network(e.to_string()))?;
         Self::parse_entries(&text)
+    }
+
+    /// Fetch a single registry entry by plugin_id.
+    pub async fn fetch_entry(
+        &self,
+        plugin_id: &str,
+    ) -> Result<Option<RegistryEntry>, RegistryError> {
+        let entries = self.fetch_entries().await?;
+        Ok(entries.into_iter().find(|e| e.plugin_id == plugin_id))
     }
 
     pub fn parse_entries(json: &str) -> Result<Vec<RegistryEntry>, RegistryError> {

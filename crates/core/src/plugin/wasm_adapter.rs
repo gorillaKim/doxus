@@ -850,6 +850,18 @@ mod tests {
     }
 
     #[test]
+    fn test_secrets_get_rejects_invalid_key_chars() {
+        // Hyphens are not allowed — only alphanumeric + underscore
+        let manifest = manifest_with_secrets(vec!["my_secret"]);
+        let adapter =
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), manifest, None).unwrap();
+        assert!(
+            adapter.secrets_get("my-secret").is_none(),
+            "key with hyphen should be rejected"
+        );
+    }
+
+    #[test]
     fn content_transform_strips_html_tags() {
         let raw = "<p>Hello <b>world</b></p>";
         let result = WasmDocSourceAdapter::content_transform(raw);
