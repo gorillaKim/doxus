@@ -801,6 +801,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn secrets_get_reads_env_var() {
         let manifest = manifest_with_secrets(vec!["test_token"]);
         let adapter =
@@ -812,6 +813,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_secrets_get_rejects_undeclared_key() {
         let manifest = manifest_with_secrets(vec!["allowed_key"]);
         let adapter =
@@ -830,6 +832,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_secrets_get_returns_declared_key() {
         let manifest = manifest_with_secrets(vec!["api_token"]);
         let adapter =
@@ -840,6 +843,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn secrets_get_env_fallback_when_no_keychain() {
         // Set env var only — keychain will miss, should fall back
         let manifest = manifest_with_secrets(vec!["fallback_token"]);
@@ -853,6 +857,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn secrets_get_plugin_id_isolation() {
         // Two adapters with different plugin_ids should have isolated keychain services.
         // This test verifies the service name logic — actual keychain isolation

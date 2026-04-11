@@ -401,6 +401,7 @@ impl DocSource for ConfluencePlugin {
                 ("type", "page"),
                 ("start", &start.to_string()),
                 ("limit", &limit.to_string()),
+                ("expand", "body.storage"),
             ])
             .header("Authorization", format!("Bearer {api_token}"))
             .send()
