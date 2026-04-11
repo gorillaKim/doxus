@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+pub(crate) const SUPPORTED_ABI_VERSION: u32 = 1;
+
 use doxus_plugin_sdk::DocSource;
 
 use super::manifest::PluginManifest;
@@ -117,6 +119,13 @@ impl PluginManager {
                     return None;
                 }
             };
+            if manifest.abi_version != SUPPORTED_ABI_VERSION {
+                tracing::warn!(
+                    "get_source: plugin '{}' requires ABI v{}, supported v{}",
+                    plugin_id, manifest.abi_version, SUPPORTED_ABI_VERSION
+                );
+                return None;
+            }
             let bytes = match std::fs::read(&wasm_path) {
                 Ok(b) => b,
                 Err(e) => {
@@ -124,7 +133,7 @@ impl PluginManager {
                     return None;
                 }
             };
-            let adapter = match WasmDocSourceAdapter::from_bytes(bytes, manifest, None) {
+            let adapter = match WasmDocSourceAdapter::from_bytes(bytes, manifest, None, None) {
                 Ok(a) => a,
                 Err(e) => {
                     tracing::warn!("failed to create WASM adapter for {plugin_id}: {e}");

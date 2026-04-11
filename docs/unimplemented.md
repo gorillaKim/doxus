@@ -52,12 +52,10 @@ updated: 2026-04-10
 | ~~WASM 플러그인 실제 로드~~ | `crates/core/src/plugin/manager.rs` | Extism 런타임 로드 완료, `get_source()` 구현 + path traversal 방어 | (완료 2026-04-10) |
 | 플러그인 ABI 버전 검증 | `crates/core/src/plugin/manager.rs` | 매니페스트에 abi_version 정의되나 런타임 검증 없음 | 50 |
 
-### P2: Phase 3 (Agent + Confluence)
+### P2: Phase 3 (Confluence)
 
 | 항목 | 파일 | 현재 상태 | 예상 LOC |
 |------|------|----------|----------|
-| Agent 도구 실행 브릿지 | `crates/agent/src/sidecar.rs` | JSONL I/O 완료, doxus_* 도구 호출 미연결 | 150 |
-| Agent 세션 상태 머신 | `crates/agent/src/` | start/message/result/close 트래킹 없음 | 200 |
 | Confluence OAuth 콜백 핸들러 | `crates/plugins/confluence/src/lib.rs` | `oauth_start` 완료, HTTP 콜백 서버 미구현 | 100 |
 | Confluence 토큰 자동 갱신 | `crates/core/src/auth.rs` | `is_expired()` 존재, 자동 갱신 로직 없음 | 80 |
 
@@ -85,9 +83,16 @@ updated: 2026-04-10
 |------|------|----------|----------|
 | SettingsPage 설정 영속화 | `apps/desktop/src/pages/SettingsPage.tsx` | UI만 존재, 저장 로직 없음 | 100 |
 | WorkspacePage 기능 구현 | `apps/desktop/src/pages/WorkspacePage.tsx` | TODO 플레이스홀더 | 200 |
-| ChatDrawer 에이전트 연결 | `apps/desktop/src/components/layout/ChatDrawer.tsx` | `agent_session_start` IPC 미구현 | 150 |
 | DashboardPage 실시간 업데이트 | `apps/desktop/src/pages/DashboardPage.tsx` | 정적 통계만 표시 | 80 |
 | `plugin_get_auth_status` IPC | `apps/desktop/src-tauri/` | 프론트엔드에서 호출하나 백엔드 stub | 50 |
+
+### P6: 최후 처리 (Agent)
+
+| 항목 | 파일 | 현재 상태 | 예상 LOC |
+|------|------|----------|----------|
+| Agent 도구 실행 브릿지 | `crates/agent/src/sidecar.rs` | JSONL I/O 완료, doxus_* 도구 호출 미연결 | 150 |
+| Agent 세션 상태 머신 | `crates/agent/src/` | start/message/result/close 트래킹 없음 | 200 |
+| ChatDrawer 에이전트 연결 | `apps/desktop/src/components/layout/ChatDrawer.tsx` | `agent_session_start` IPC 미구현 | 150 |
 
 ## MCP 도구 stub 목록
 
@@ -103,10 +108,11 @@ updated: 2026-04-10
 |-------|--------------|------------|
 | P0 (즉시) | 0 | 0 |
 | P1 (플러그인) | 3 | 230 |
-| P2 (Agent) | 4 | 530 |
+| P2 (Confluence) | 2 | 180 |
 | P3 (마켓) | 5 | 580 |
 | P4 (동기화) | 3 | 270 |
-| P5 (Desktop) | 5 | 580 |
+| P5 (Desktop UI) | 4 | 430 |
+| P6 (Agent — 최후) | 3 | 500 |
 | **합계** | **20** | **~2,190** |
 
 **총 예상 작업량:** ~4-6주 집중 개발 (풀타임 1인 기준)

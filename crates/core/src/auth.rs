@@ -82,6 +82,47 @@ impl SecretStore for MemorySecretStore {
     }
 }
 
+/// Keychain-backed implementation using the `keyring` crate (production default).
+pub struct KeyringSecretStore;
+
+impl KeyringSecretStore {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for KeyringSecretStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SecretStore for KeyringSecretStore {
+    fn get(&self, service: &str, account: &str) -> Result<String, AuthError> {
+        let entry = keyring::Entry::new(service, account)
+            .map_err(|e| AuthError::Keychain(e.to_string()))?;
+        entry
+            .get_password()
+            .map_err(|e| AuthError::NotFound(format!("{service}:{account} — {e}")))
+    }
+
+    fn set(&self, service: &str, account: &str, secret: &str) -> Result<(), AuthError> {
+        let entry = keyring::Entry::new(service, account)
+            .map_err(|e| AuthError::Keychain(e.to_string()))?;
+        entry
+            .set_password(secret)
+            .map_err(|e| AuthError::Keychain(e.to_string()))
+    }
+
+    fn delete(&self, service: &str, account: &str) -> Result<(), AuthError> {
+        let entry = keyring::Entry::new(service, account)
+            .map_err(|e| AuthError::Keychain(e.to_string()))?;
+        entry
+            .delete_credential()
+            .map_err(|e| AuthError::Keychain(e.to_string()))
+    }
+}
+
 // ── OAuth 2.0 Types ───────────────────────────────────────────────────────────
 
 /// Configuration for an OAuth 2.0 Authorization Code flow client.

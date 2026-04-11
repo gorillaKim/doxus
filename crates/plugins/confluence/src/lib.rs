@@ -1,3 +1,5 @@
+pub mod oauth_server;
+
 use async_trait::async_trait;
 use doxus_core::auth::{OAuthConfig, OAuthFlow, OAuthToken};
 use doxus_plugin_sdk::{
@@ -62,6 +64,8 @@ pub struct ConfluencePlugin {
     oauth_token: Option<OAuthToken>,
     /// Pending state value generated during oauth_start, used to validate oauth_exchange.
     oauth_pending_state: std::sync::Mutex<Option<String>>,
+    /// OAuth callback server started during oauth_start.
+    oauth_server: std::sync::Mutex<Option<oauth_server::OAuthCallbackServer>>,
     client: reqwest::Client,
 }
 
@@ -80,6 +84,7 @@ impl ConfluencePlugin {
             oauth_config: None,
             oauth_token: None,
             oauth_pending_state: std::sync::Mutex::new(None),
+            oauth_server: std::sync::Mutex::new(None),
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
@@ -196,6 +201,30 @@ impl ConfluencePlugin {
         self.space_key = Some(space_key);
         self.api_token = Some(api_token);
     }
+
+    /// Wait for the OAuth callback that was set up during `oauth_start`.
+    /// Calls `oauth_exchange` internally with the received code and state.
+    pub async fn wait_oauth_callback(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> Result<(), PluginError> {
+        let server = self
+            .oauth_server
+            .lock()
+            .map_err(|_| PluginError::Internal("oauth_server lock poisoned".into()))?
+            .take()
+            .ok_or_else(|| PluginError::Internal("no OAuth server started; call oauth_start first".into()))?;
+
+        let expected_state = self
+            .oauth_pending_state
+            .lock()
+            .map_err(|_| PluginError::Internal("oauth_pending_state lock poisoned".into()))?
+            .clone()
+            .ok_or_else(|| PluginError::Internal("no pending OAuth state; call oauth_start first".into()))?;
+
+        let (code, state) = server.wait_for_callback(timeout, &expected_state).await?;
+        self.oauth_exchange(&code, &state).await
+    }
 }
 
 #[async_trait]
@@ -298,11 +327,25 @@ impl DocSource for ConfluencePlugin {
 
     async fn oauth_start(&self) -> Option<String> {
         let config = self.oauth_config.as_ref()?;
-        let flow = OAuthFlow::new(config.clone());
+
+        // Start callback server and build redirect_uri from the dynamically assigned port.
+        let server = oauth_server::OAuthCallbackServer::start().await.ok()?;
+        let port = server.local_addr().ok()?.port();
+        let redirect_uri = format!("http://127.0.0.1:{}/callback", port);
+
+        // Store server for later use in wait_oauth_callback.
+        if let Ok(mut guard) = self.oauth_server.lock() {
+            *guard = Some(server);
+        }
+
+        let mut config_with_redirect = config.clone();
+        config_with_redirect.redirect_uri = redirect_uri;
+
+        let flow = OAuthFlow::new(config_with_redirect);
         // Generate a cryptographically random state for CSRF protection.
         let state = {
             let mut bytes = [0u8; 16];
-            getrandom::getrandom(&mut bytes).expect("OS RNG unavailable");
+            getrandom::getrandom(&mut bytes).ok()?;
             bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
         };
         let url = flow.authorization_url(&state).ok()?;
