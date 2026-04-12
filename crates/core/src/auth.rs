@@ -2,6 +2,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+// Bring secrets::SecretStore into scope for method dispatch on CachedSecretStore
+use crate::secrets::SecretStore as _;
 
 // ── Errors ────────────────────────────────────────────────────────────────────
 
@@ -83,11 +85,17 @@ impl SecretStore for MemorySecretStore {
 }
 
 /// Keychain-backed implementation using the `keyring` crate (production default).
-pub struct KeyringSecretStore;
+/// Wraps `crate::secrets::CachedSecretStore<SystemKeychain>` so Keychain is only
+/// queried once per (service, account) per process lifetime.
+pub struct KeyringSecretStore {
+    inner: crate::secrets::CachedSecretStore<crate::secrets::SystemKeychain>,
+}
 
 impl KeyringSecretStore {
     pub fn new() -> Self {
-        Self
+        Self {
+            inner: crate::secrets::CachedSecretStore::new(crate::secrets::SystemKeychain),
+        }
     }
 }
 
@@ -99,26 +107,20 @@ impl Default for KeyringSecretStore {
 
 impl SecretStore for KeyringSecretStore {
     fn get(&self, service: &str, account: &str) -> Result<String, AuthError> {
-        let entry = keyring::Entry::new(service, account)
-            .map_err(|e| AuthError::Keychain(e.to_string()))?;
-        entry
-            .get_password()
+        self.inner
+            .get(service, account)
             .map_err(|e| AuthError::NotFound(format!("{service}:{account} — {e}")))
     }
 
     fn set(&self, service: &str, account: &str, secret: &str) -> Result<(), AuthError> {
-        let entry = keyring::Entry::new(service, account)
-            .map_err(|e| AuthError::Keychain(e.to_string()))?;
-        entry
-            .set_password(secret)
+        self.inner
+            .set(service, account, secret)
             .map_err(|e| AuthError::Keychain(e.to_string()))
     }
 
     fn delete(&self, service: &str, account: &str) -> Result<(), AuthError> {
-        let entry = keyring::Entry::new(service, account)
-            .map_err(|e| AuthError::Keychain(e.to_string()))?;
-        entry
-            .delete_credential()
+        self.inner
+            .delete(service, account)
             .map_err(|e| AuthError::Keychain(e.to_string()))
     }
 }

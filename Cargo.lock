@@ -1668,6 +1668,7 @@ version = "0.1.0"
 dependencies = [
  "approx",
  "async-trait",
+ "dirs 6.0.0",
  "doxus-plugin-sdk",
  "ed25519-dalek",
  "extism",

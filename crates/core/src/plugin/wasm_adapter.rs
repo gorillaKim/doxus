@@ -59,6 +59,37 @@ impl SecretBackend for KeyringBackend {
     }
 }
 
+/// Session-scoped cache wrapper for any `SecretBackend`.
+/// First call per (service, key) hits Keychain; subsequent calls are served from memory.
+pub(crate) struct CachedKeyringBackend<B> {
+    inner: B,
+    cache: std::sync::RwLock<std::collections::HashMap<(String, String), String>>,
+}
+
+impl<B: SecretBackend> CachedKeyringBackend<B> {
+    pub fn new(inner: B) -> Self {
+        Self {
+            inner,
+            cache: std::sync::RwLock::new(std::collections::HashMap::new()),
+        }
+    }
+}
+
+impl<B: SecretBackend + Send + Sync> SecretBackend for CachedKeyringBackend<B> {
+    fn get_secret(&self, service: &str, key: &str) -> Option<String> {
+        let cache_key = (service.to_string(), key.to_string());
+        {
+            let r = self.cache.read().unwrap();
+            if let Some(v) = r.get(&cache_key) {
+                return Some(v.clone());
+            }
+        }
+        let value = self.inner.get_secret(service, key)?;
+        self.cache.write().unwrap().insert(cache_key, value.clone());
+        Some(value)
+    }
+}
+
 #[cfg(test)]
 pub(crate) struct MemoryBackend(pub std::collections::HashMap<String, String>);
 
@@ -118,7 +149,7 @@ impl WasmDocSourceAdapter {
             .init_table()
             .map_err(|e| PluginError::Internal(format!("kv table init: {e}")))?;
         let secret_backend: Arc<dyn SecretBackend> =
-            secret_backend.unwrap_or_else(|| Arc::new(KeyringBackend));
+            secret_backend.unwrap_or_else(|| Arc::new(CachedKeyringBackend::new(KeyringBackend)));
         Ok(Self {
             meta: PluginMetadata {
                 id: manifest.plugin_id.clone(),
@@ -177,7 +208,7 @@ impl WasmDocSourceAdapter {
             allowed_domains,
             http_client: reqwest::Client::new(),
             progress_tx: None,
-            secret_backend: Arc::new(KeyringBackend),
+            secret_backend: Arc::new(CachedKeyringBackend::new(KeyringBackend)),
         }
     }
 

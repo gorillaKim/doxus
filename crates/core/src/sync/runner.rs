@@ -3,6 +3,7 @@ use rusqlite::{Connection, OptionalExtension};
 use doxus_plugin_sdk::{DocSource, FetchChangesOpts};
 
 use crate::conflict::{record_conflict, resolve_conflict, ConflictResolution};
+use crate::observability::{persist_audit, AuditEvent};
 use super::db::SyncDb;
 use super::scheduler::{SyncError, SyncScheduler};
 
@@ -34,6 +35,8 @@ impl<S: DocSource + Send + Sync> SyncRunner<S> {
         let mut results = Vec::new();
 
         for instance in due {
+            persist_audit(conn, &AuditEvent::SyncStart { source_instance_id: instance.id });
+
             let opts = FetchChangesOpts {
                 since: 0,
                 cursor: instance.sync_cursor.clone(),
@@ -89,6 +92,10 @@ impl<S: DocSource + Send + Sync> SyncRunner<S> {
                     sync_db
                         .mark_synced(instance.id, new_cursor.as_deref())
                         .map_err(SyncError::Db)?;
+                    persist_audit(conn, &AuditEvent::SyncComplete {
+                        source_instance_id: instance.id,
+                        docs_synced: applied,
+                    });
                     results.push(SyncResult {
                         instance_id: instance.id,
                         documents_updated: applied,
@@ -96,6 +103,10 @@ impl<S: DocSource + Send + Sync> SyncRunner<S> {
                     });
                 }
                 Err(e) => {
+                    persist_audit(conn, &AuditEvent::PluginError {
+                        plugin_id: self.source.metadata().id.clone(),
+                        message: e.to_string(),
+                    });
                     return Err(SyncError::Plugin(e.to_string()));
                 }
             }
@@ -341,5 +352,47 @@ mod tests {
 
         assert_eq!(results.len(), 2);
         assert_eq!(call_count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn run_once_writes_sync_start_audit_log() {
+        let db = TestDb::new();
+        insert_instance(&db.conn);
+        let source = MockSource::new(vec![], None);
+        let runner = SyncRunner::new(SyncScheduler::new(3600), source);
+        runner.run_once(&db.conn).await.unwrap();
+
+        let count: i64 = db.conn
+            .query_row("SELECT COUNT(*) FROM audit_log WHERE event_type = 'sync_start'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "sync_start should be recorded in audit_log");
+    }
+
+    #[tokio::test]
+    async fn run_once_writes_sync_complete_audit_log() {
+        let db = TestDb::new();
+        insert_instance(&db.conn);
+        let source = MockSource::new(vec![], None);
+        let runner = SyncRunner::new(SyncScheduler::new(3600), source);
+        runner.run_once(&db.conn).await.unwrap();
+
+        let count: i64 = db.conn
+            .query_row("SELECT COUNT(*) FROM audit_log WHERE event_type = 'sync_complete'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "sync_complete should be recorded in audit_log");
+    }
+
+    #[tokio::test]
+    async fn run_once_writes_plugin_error_audit_log_on_failure() {
+        let db = TestDb::new();
+        insert_instance(&db.conn);
+        let source = MockSource::failing();
+        let runner = SyncRunner::new(SyncScheduler::new(3600), source);
+        let _ = runner.run_once(&db.conn).await; // expected to fail
+
+        let count: i64 = db.conn
+            .query_row("SELECT COUNT(*) FROM audit_log WHERE event_type = 'plugin_error'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "plugin_error should be recorded in audit_log on sync failure");
     }
 }

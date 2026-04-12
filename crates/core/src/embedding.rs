@@ -59,6 +59,12 @@ impl OnnxEmbedder {
     /// If the model file is not a valid ONNX model or tokenizer.json is missing,
     /// returns a partially-initialized embedder that returns `Inference` errors on `embed()`.
     pub fn new(model_path: impl Into<std::path::PathBuf>) -> Result<Self, EmbeddingError> {
+        // Suppress ORT INFO logs — they pollute stdout
+        ort::init().commit();
+        if let Ok(env) = ort::environment::current() {
+            env.set_log_level(ort::logging::LogLevel::Error);
+        }
+
         let path = model_path.into();
         if !path.exists() {
             return Err(EmbeddingError::ModelLoad(format!(
@@ -83,9 +89,9 @@ impl OnnxEmbedder {
 
         Ok(Self {
             info: ModelInfo {
-                name: "all-MiniLM-L6-v2".to_string(),
+                name: "multilingual-e5-small".to_string(),
                 dimension: 384,
-                max_tokens: 256,
+                max_tokens: 512,
             },
             session,
             tokenizer,
@@ -306,6 +312,123 @@ impl EmbeddingProvider for OllamaEmbedder {
     }
 }
 
+/// Resolve the ONNX model path from multiple candidate locations.
+///
+/// Priority order:
+/// 1. `DOXUS_MODEL_PATH` environment variable (if file + tokenizer.json exist)
+/// 2. macOS app bundle `{exe}/../Resources/models/multilingual-e5-small.onnx`
+/// 3. `~/.doxus/models/multilingual-e5-small.onnx` (shared install path for MCP/CLI)
+/// 4. Legacy MCP path: `~/.doxus/models/multilingual-e5-small/model.onnx`
+/// 5. Dev workspace: `{exe_ancestry}/crates/core/models/multilingual-e5-small.onnx`
+///
+/// Each candidate is accepted only if both the `.onnx` file and `tokenizer.json`
+/// exist in the same directory.
+pub fn resolve_model_path() -> Option<std::path::PathBuf> {
+    let model_name = "multilingual-e5-small.onnx";
+
+    // Helper: accept path only if both model and tokenizer.json exist alongside it
+    let valid = |p: &std::path::PathBuf| -> bool {
+        if !p.exists() {
+            return false;
+        }
+        let tokenizer = p
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("tokenizer.json");
+        tokenizer.exists()
+    };
+
+    // 1. DOXUS_MODEL_PATH env var
+    if let Ok(p) = std::env::var("DOXUS_MODEL_PATH") {
+        let path = std::path::PathBuf::from(p);
+        if valid(&path) {
+            tracing::debug!("resolve_model_path: using DOXUS_MODEL_PATH {:?}", path);
+            return Some(path);
+        }
+    }
+
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+    let legacy_path = home.join(".doxus/models/multilingual-e5-small/model.onnx");
+
+    let candidates: Vec<std::path::PathBuf> = [
+        // macOS bundle: {exe}/../Resources/models/
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| {
+                exe.parent()?
+                    .parent()
+                    .map(|p| p.join("Resources/models").join(model_name))
+            }),
+        // Shared install path (MCP + CLI share this)
+        Some(home.join(".doxus/models").join(model_name)),
+        // Legacy MCP path (subdirectory layout from older versions)
+        Some(legacy_path.clone()),
+        // Dev: exe is in target/{debug,release}/, go up 3 levels to workspace root
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| {
+                exe.parent()?
+                    .parent()?
+                    .parent()
+                    .map(|root| root.join("crates/core/models").join(model_name))
+            }),
+        // Dev: relative to cwd
+        Some(std::path::PathBuf::from("crates/core/models").join(model_name)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    for candidate in &candidates {
+        if valid(candidate) {
+            if candidate == &legacy_path {
+                tracing::warn!(
+                    "resolve_model_path: using legacy model path {:?}; \
+                     move files to ~/.doxus/models/ to suppress this warning",
+                    candidate
+                );
+            } else {
+                tracing::debug!("resolve_model_path: found {:?}", candidate);
+            }
+            return Some(candidate.clone());
+        }
+    }
+
+    tracing::debug!("resolve_model_path: no model found in any candidate location");
+    None
+}
+
+impl OnnxEmbedder {
+    /// Create an embedder using the default model path resolution (see `resolve_model_path`).
+    pub fn from_default_path() -> Result<Self, EmbeddingError> {
+        let path = resolve_model_path().ok_or_else(|| {
+            EmbeddingError::ModelLoad(
+                "no model found in any default location; \
+                 place multilingual-e5-small.onnx + tokenizer.json in ~/.doxus/models/"
+                    .into(),
+            )
+        })?;
+        Self::new(path)
+    }
+}
+
+/// No-op embedding provider — returns errors on embed(), used as fallback when model is unavailable.
+pub struct NoOpEmbedder;
+
+#[async_trait::async_trait]
+impl EmbeddingProvider for NoOpEmbedder {
+    async fn embed(&self, _texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        Err(EmbeddingError::Inference("no embedder configured".into()))
+    }
+    fn dimension(&self) -> usize { 0 }
+    fn model_info(&self) -> &ModelInfo {
+        static INFO: std::sync::LazyLock<ModelInfo> = std::sync::LazyLock::new(|| {
+            ModelInfo { name: "noop".into(), dimension: 0, max_tokens: 0 }
+        });
+        &INFO
+    }
+}
+
 /// Mock embedding provider for tests — returns deterministic vectors
 pub struct MockEmbedder {
     dimension: usize,
@@ -400,7 +523,7 @@ mod tests {
         let path = dir.path().join("model.onnx");
         std::fs::write(&path, b"dummy").unwrap();
         let embedder = OnnxEmbedder::new(&path).unwrap();
-        assert_eq!(embedder.model_info().name, "all-MiniLM-L6-v2");
+        assert_eq!(embedder.model_info().name, "multilingual-e5-small");
     }
 
     #[tokio::test]
@@ -474,6 +597,70 @@ mod tests {
         let texts = ["a", "b", "c", "d", "e"];
         let result = embedder.embed(&texts).await.unwrap();
         assert_eq!(result.len(), 5);
+    }
+
+    // ── resolve_model_path TDD tests ─────────────────────────────────────────
+
+    #[test]
+    #[serial_test::serial(doxus_model_path_env)]
+    fn resolve_model_path_env_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let model = dir.path().join("model.onnx");
+        let tokenizer = dir.path().join("tokenizer.json");
+        std::fs::write(&model, b"dummy").unwrap();
+        std::fs::write(&tokenizer, b"{}").unwrap();
+
+        std::env::set_var("DOXUS_MODEL_PATH", &model);
+        let result = resolve_model_path();
+        std::env::remove_var("DOXUS_MODEL_PATH");
+
+        assert_eq!(result, Some(model));
+    }
+
+    #[test]
+    #[serial_test::serial(doxus_model_path_env)]
+    fn resolve_model_path_requires_tokenizer_colocated() {
+        let dir = tempfile::tempdir().unwrap();
+        let model = dir.path().join("model.onnx");
+        std::fs::write(&model, b"dummy").unwrap();
+        // No tokenizer.json — should NOT return this path
+
+        std::env::set_var("DOXUS_MODEL_PATH", &model);
+        let result = resolve_model_path();
+        std::env::remove_var("DOXUS_MODEL_PATH");
+
+        assert_ne!(result, Some(model));
+    }
+
+    #[test]
+    #[serial_test::serial(doxus_model_path_env)]
+    fn resolve_model_path_with_tokenizer_returns_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let model = dir.path().join("model.onnx");
+        let tokenizer = dir.path().join("tokenizer.json");
+        std::fs::write(&model, b"dummy").unwrap();
+        std::fs::write(&tokenizer, b"{}").unwrap();
+
+        std::env::set_var("DOXUS_MODEL_PATH", &model);
+        let result = resolve_model_path();
+        std::env::remove_var("DOXUS_MODEL_PATH");
+
+        assert_eq!(result, Some(model));
+    }
+
+    #[test]
+    #[serial_test::serial(doxus_model_path_env)]
+    fn from_default_path_errors_when_env_points_to_missing_file_and_no_model_installed() {
+        // Point DOXUS_MODEL_PATH at nonexistent path; if no real model exists anywhere,
+        // from_default_path must return Err (not panic).
+        std::env::set_var("DOXUS_MODEL_PATH", "/nonexistent/no-such-model.onnx");
+        let result = OnnxEmbedder::from_default_path();
+        std::env::remove_var("DOXUS_MODEL_PATH");
+        // If a real model happens to be installed on this machine it returns Ok, that's fine.
+        // We only verify: no panic, and if Err then it's ModelLoad variant.
+        if let Err(e) = result {
+            assert!(matches!(e, EmbeddingError::ModelLoad(_)), "unexpected error: {e}");
+        }
     }
 
     // ── trait object usage test ───────────────────────────────────────────────
