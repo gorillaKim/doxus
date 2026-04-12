@@ -23,7 +23,7 @@ pub fn apply_pragmas(conn: &Connection) -> SqlResult<()> {
     )
 }
 
-/// Run all migrations V1–V8 in order. Idempotent.
+/// Run all migrations V1–V12 in order. Idempotent.
 pub fn migrate(conn: &Connection) -> Result<(), DbError> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS _migrations (
@@ -112,6 +112,8 @@ static MIGRATIONS: &[(&str, &str)] = &[
     ("V8__workspace",          include_str!("migrations/V8__workspace.sql")),
     ("V9__workspace_content",  include_str!("migrations/V9__workspace_content.sql")),
     ("V10__plugin_kv",         include_str!("migrations/V10__plugin_kv.sql")),
+    ("V11__project_source",    include_str!("migrations/V11__project_source.sql")),
+    ("V12__content_cache",     include_str!("migrations/V12__content_cache.sql")),
 ];
 
 // ── Test helper ──────────────────────────────────────────────────────────────
