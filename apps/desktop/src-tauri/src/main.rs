@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use doxus_desktop_lib::AppState;
+use tauri::Emitter;
 
 fn find_sidecar_script() -> std::path::PathBuf {
     // 1. 환경변수 오버라이드 (개발/테스트용)
@@ -48,24 +49,51 @@ fn main() {
     let plugins_dir = std::path::PathBuf::from(&home).join(".doxus/plugins");
     let sidecar_script = find_sidecar_script();
     let state = AppState::new(conn, plugins_dir, sidecar_script);
+    let conn_arc = state.conn.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_oauth::init())
-        .setup(|app| {
+        .setup(move |app| {
             #[cfg(debug_assertions)]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
                 app.deep_link().register("doxus").ok();
             }
+
+            // Spawn background cache cleanup task (every 30 minutes)
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut interval =
+                    tokio::time::interval(std::time::Duration::from_secs(30 * 60));
+                interval.tick().await; // skip immediate tick (startup cleanup done in AppState::new)
+                loop {
+                    interval.tick().await;
+                    if let Ok(conn) = conn_arc.lock() {
+                        let cache = doxus_core::cache::ContentCache::new(&conn);
+                        match cache.cleanup_expired() {
+                            Ok(n) if n > 0 => {
+                                eprintln!("[cache] scheduler removed {n} expired entries");
+                                handle.emit("cache:cleanup", serde_json::json!({ "count": n })).ok();
+                            }
+                            Err(e) => eprintln!("[cache] cleanup error: {e}"),
+                            _ => {}
+                        }
+                    }
+                }
+            });
+
             Ok(())
         })
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             doxus_desktop_lib::commands::market::market_list_installed,
             doxus_desktop_lib::commands::market::market_fetch_registry,
+            doxus_desktop_lib::commands::market::market_fetch_guide,
             doxus_desktop_lib::commands::market::get_workspaces,
+            doxus_desktop_lib::commands::market::plugin_get_cache_ttl,
+            doxus_desktop_lib::commands::market::plugin_set_cache_ttl,
             doxus_desktop_lib::commands::market::get_system_status,
             doxus_desktop_lib::commands::market::get_plugin_logs,
             doxus_desktop_lib::commands::market::market_install_plugin,
@@ -82,12 +110,14 @@ fn main() {
             doxus_desktop_lib::commands::search::list_projects,
             doxus_desktop_lib::commands::search::add_project,
             doxus_desktop_lib::commands::search::toggle_project_status,
+            doxus_desktop_lib::commands::search::remove_project,
             doxus_desktop_lib::commands::search::search_engine_status,
             doxus_desktop_lib::commands::search::trigger_reindex,
             doxus_desktop_lib::commands::search::index_project,
             doxus_desktop_lib::commands::search::increment_view_count,
             doxus_desktop_lib::commands::search::get_top_documents,
             doxus_desktop_lib::commands::search::get_document_content,
+            doxus_desktop_lib::commands::search::list_all_documents,
             doxus_desktop_lib::commands::workspace::list_workspace_documents,
             doxus_desktop_lib::commands::workspace::create_workspace_document,
             doxus_desktop_lib::commands::workspace::update_workspace_document,
