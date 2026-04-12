@@ -410,10 +410,47 @@ pub async fn search_documents(
     state: tauri::State<'_, crate::AppState>,
     query: String,
     limit: Option<usize>,
+    source_types: Option<Vec<String>>,
+    project_names: Option<Vec<String>>,
 ) -> Result<serde_json::Value, String> {
     let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+
+    // source_types / project_names → project_ids 변환
+    let mut filter_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    let mut has_filter = false;
+
+    if let Some(ref types) = source_types {
+        if !types.is_empty() {
+            has_filter = true;
+            let placeholders = types.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
+            let sql = format!("SELECT id FROM projects WHERE COALESCE(source_type,'obsidian') IN ({}) AND status='active'", placeholders);
+            let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+            let params: Vec<&dyn rusqlite::ToSql> = types.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+            let ids: Vec<i64> = stmt.query_map(params.as_slice(), |r| r.get(0))
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok()).collect();
+            filter_ids.extend(ids);
+        }
+    }
+    if let Some(ref names) = project_names {
+        if !names.is_empty() {
+            has_filter = true;
+            let placeholders = names.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
+            let sql = format!("SELECT id FROM projects WHERE name IN ({}) AND status='active'", placeholders);
+            let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+            let params: Vec<&dyn rusqlite::ToSql> = names.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+            let ids: Vec<i64> = stmt.query_map(params.as_slice(), |r| r.get(0))
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok()).collect();
+            filter_ids.extend(ids);
+        }
+    }
+
     let engine = SearchEngine::new(&conn);
-    let q = SearchQuery::new(&query).with_limit(limit.unwrap_or(20));
+    let mut q = SearchQuery::new(&query).with_limit(limit.unwrap_or(20));
+    if has_filter {
+        q = q.with_projects(filter_ids.into_iter().collect());
+    }
     let hits = engine.search(&q).map_err(|e| e.to_string())?;
     // document_id 목록으로 project_name / source_type 일괄 조회
     let doc_ids: Vec<i64> = hits.iter().map(|h| h.document_id).collect();

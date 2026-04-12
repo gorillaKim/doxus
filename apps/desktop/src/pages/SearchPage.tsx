@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import rehypeRaw from 'rehype-raw';
 import remarkGfm from 'remark-gfm';
 import { invoke } from '@tauri-apps/api/core';
-import { useSearchStore, AllDocument, SearchHit } from '../stores/useSearchStore';
+import { useSearchStore, AllDocument, SearchHit, SearchFilters } from '../stores/useSearchStore';
 import { usePluginStore } from '../stores/usePluginStore';
 
 // ── 통합 문서 타입 (검색결과 or 전체목록 공통) ────────────────────────────
@@ -44,12 +44,6 @@ function allDocToEntry(doc: AllDocument): DocEntry {
 }
 
 // ── 플러그인 메타 ─────────────────────────────────────────────────────────
-
-const PLUGIN_META: Record<string, { icon: string; label: string }> = {
-  obsidian:   { icon: '🪨', label: 'Obsidian' },
-  confluence: { icon: '📄', label: 'Confluence' },
-  github:     { icon: '🐙', label: 'GitHub' },
-};
 
 function pluginIcon(sourceType: string): string {
   const short = sourceType.replace(/^com\.doxus\./, '');
@@ -300,12 +294,134 @@ function MarkdownPreview({ content }: { content: string }) {
   );
 }
 
+// ── AdvancedSearchPanel ───────────────────────────────────────────────────
+
+function AdvancedSearchPanel({
+  filters,
+  availablePlugins,
+  availableProjects,
+  onChange,
+}: {
+  filters: SearchFilters;
+  availablePlugins: { id: string; label: string; icon: string }[];
+  availableProjects: string[];
+  onChange: (f: Partial<SearchFilters>) => void;
+}) {
+  const togglePlugin = (id: string) => {
+    const next = filters.sourceTypes.includes(id)
+      ? filters.sourceTypes.filter((x) => x !== id)
+      : [...filters.sourceTypes, id];
+    onChange({ sourceTypes: next });
+  };
+  const toggleProject = (name: string) => {
+    const next = filters.projectNames.includes(name)
+      ? filters.projectNames.filter((x) => x !== name)
+      : [...filters.projectNames, name];
+    onChange({ projectNames: next });
+  };
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-xl px-4 py-3 flex flex-col gap-3 shrink-0">
+      {/* 플러그인 필터 */}
+      <div className="flex flex-col gap-1.5">
+        <span className="text-xs text-gray-500 uppercase tracking-wider">플러그인</span>
+        <div className="flex flex-wrap gap-2">
+          {availablePlugins.map((p) => {
+            const active = filters.sourceTypes.includes(p.id);
+            return (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => togglePlugin(p.id)}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs border transition-colors ${
+                  active
+                    ? 'border-indigo-500 bg-indigo-950 text-indigo-300'
+                    : 'border-gray-700 text-gray-400 hover:border-gray-500 hover:text-gray-200'
+                }`}
+              >
+                <span>{p.icon}</span>
+                <span>{p.label}</span>
+              </button>
+            );
+          })}
+          {availablePlugins.length === 0 && (
+            <span className="text-xs text-gray-600">인덱싱된 플러그인 없음</span>
+          )}
+        </div>
+      </div>
+
+      {/* 프로젝트 필터 */}
+      <div className="flex flex-col gap-1.5">
+        <span className="text-xs text-gray-500 uppercase tracking-wider">프로젝트</span>
+        <div className="flex flex-wrap gap-2">
+          {availableProjects.map((name) => {
+            const active = filters.projectNames.includes(name);
+            return (
+              <button
+                key={name}
+                type="button"
+                onClick={() => toggleProject(name)}
+                className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${
+                  active
+                    ? 'border-indigo-500 bg-indigo-950 text-indigo-300'
+                    : 'border-gray-700 text-gray-400 hover:border-gray-500 hover:text-gray-200'
+                }`}
+              >
+                {name}
+              </button>
+            );
+          })}
+          {availableProjects.length === 0 && (
+            <span className="text-xs text-gray-600">등록된 프로젝트 없음</span>
+          )}
+        </div>
+      </div>
+
+      {/* 태그 검색 */}
+      <div className="flex flex-col gap-1.5">
+        <span className="text-xs text-gray-500 uppercase tracking-wider">태그</span>
+        <input
+          type="text"
+          value={filters.tagQuery}
+          onChange={(e) => onChange({ tagQuery: e.target.value })}
+          placeholder="#태그명 입력..."
+          className="w-full px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+        />
+      </div>
+
+      {/* 활성 필터 요약 */}
+      {(filters.sourceTypes.length > 0 || filters.projectNames.length > 0 || filters.tagQuery) && (
+        <div className="flex items-center gap-2 pt-1 border-t border-gray-800">
+          <span className="text-xs text-gray-600">적용 중:</span>
+          {filters.sourceTypes.map((t) => (
+            <span key={t} className="text-xs text-indigo-400 bg-indigo-950 px-2 py-0.5 rounded-full">{t}</span>
+          ))}
+          {filters.projectNames.map((n) => (
+            <span key={n} className="text-xs text-emerald-400 bg-emerald-950 px-2 py-0.5 rounded-full">{n}</span>
+          ))}
+          {filters.tagQuery && (
+            <span className="text-xs text-yellow-400 bg-yellow-950 px-2 py-0.5 rounded-full">{filters.tagQuery}</span>
+          )}
+          <button
+            type="button"
+            onClick={() => onChange({ sourceTypes: [], projectNames: [], tagQuery: '' })}
+            className="ml-auto text-xs text-gray-600 hover:text-gray-300 transition-colors"
+          >
+            초기화
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── SearchPage ────────────────────────────────────────────────────────────
 
 export function SearchPage() {
-  const { query, hits, isLoading, error, setQuery, search, clear, allDocuments, allDocsLoading, listAllDocuments } = useSearchStore();
-  usePluginStore((s) => s.emojiMap); // emoji 변경 시 리렌더 트리거
+  const { query, filters, hits, isLoading, error, setQuery, setFilters, search, clear, allDocuments, allDocsLoading, listAllDocuments } = useSearchStore();
+  usePluginStore((s) => s.emojiMap);
   const [inputValue, setInputValue] = useState(query);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [selectedDoc, setSelectedDoc] = useState<DocEntry | null>(null);
   const [previewContent, setPreviewContent] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -313,10 +429,31 @@ export function SearchPage() {
   const [refreshToast, setRefreshToast] = useState<string | null>(null);
   const refreshToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // 초기 로드
-  useEffect(() => {
-    listAllDocuments();
-  }, [listAllDocuments]);
+  useEffect(() => { listAllDocuments(); }, [listAllDocuments]);
+
+  // allDocuments에서 플러그인/프로젝트 목록 도출
+  const availablePlugins = (() => {
+    const seen = new Set<string>();
+    return allDocuments.reduce<{ id: string; label: string; icon: string }[]>((acc, d) => {
+      const short = d.source_type.replace(/^com\.doxus\./, '');
+      if (!seen.has(short)) {
+        seen.add(short);
+        const pluginId = `com.doxus.${short}`;
+        acc.push({ id: short, label: short.charAt(0).toUpperCase() + short.slice(1), icon: usePluginStore.getState().getEmoji(pluginId) });
+      }
+      return acc;
+    }, []);
+  })();
+
+  const availableProjects = (() => {
+    const seen = new Set<string>();
+    return allDocuments.reduce<string[]>((acc, d) => {
+      if (d.project_name && !seen.has(d.project_name)) { seen.add(d.project_name); acc.push(d.project_name); }
+      return acc;
+    }, []);
+  })();
+
+  const activeFilterCount = filters.sourceTypes.length + filters.projectNames.length + (filters.tagQuery ? 1 : 0);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -399,31 +536,63 @@ export function SearchPage() {
   return (
     <div className="flex flex-col h-full gap-3">
       {/* 검색 폼 */}
-      <form onSubmit={handleSubmit} className="flex gap-2 shrink-0">
-        <input
-          type="text"
-          value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
-          placeholder="문서를 검색하세요..."
-          className="flex-1 px-3 py-2 bg-gray-900 border border-gray-800 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
-        />
-        <button
-          type="submit"
-          disabled={isLoading}
-          className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 disabled:opacity-50 text-sm font-medium transition-colors"
-        >
-          {isLoading ? '검색 중...' : '검색'}
-        </button>
-        {hits.length > 0 && (
+      <div className="flex flex-col gap-2 shrink-0">
+        <form onSubmit={handleSubmit} className="flex gap-2">
+          <input
+            type="text"
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            placeholder="문서를 검색하세요..."
+            className="flex-1 px-3 py-2 bg-gray-900 border border-gray-800 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
+          />
+          {/* 고급 검색 토글 */}
           <button
             type="button"
-            onClick={handleClear}
-            className="px-4 py-2 border border-gray-700 text-gray-400 rounded-lg hover:bg-gray-800 hover:text-gray-200 text-sm transition-colors"
+            onClick={() => setAdvancedOpen((v) => !v)}
+            className={`px-3 py-2 border rounded-lg text-sm transition-colors flex items-center gap-1.5 ${
+              advancedOpen || activeFilterCount > 0
+                ? 'border-indigo-500 bg-indigo-950 text-indigo-300'
+                : 'border-gray-700 text-gray-400 hover:border-gray-600 hover:text-gray-200'
+            }`}
+            title="고급 검색"
           >
-            초기화
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="4" y1="6" x2="20" y2="6"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="11" y1="18" x2="13" y2="18"/>
+            </svg>
+            {activeFilterCount > 0 && (
+              <span className="text-xs bg-indigo-500 text-white rounded-full w-4 h-4 flex items-center justify-center leading-none">
+                {activeFilterCount}
+              </span>
+            )}
           </button>
+          <button
+            type="submit"
+            disabled={isLoading}
+            className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 disabled:opacity-50 text-sm font-medium transition-colors"
+          >
+            {isLoading ? '검색 중...' : '검색'}
+          </button>
+          {hits.length > 0 && (
+            <button
+              type="button"
+              onClick={handleClear}
+              className="px-4 py-2 border border-gray-700 text-gray-400 rounded-lg hover:bg-gray-800 hover:text-gray-200 text-sm transition-colors"
+            >
+              초기화
+            </button>
+          )}
+        </form>
+
+        {/* 고급 검색 패널 */}
+        {advancedOpen && (
+          <AdvancedSearchPanel
+            filters={filters}
+            availablePlugins={availablePlugins}
+            availableProjects={availableProjects}
+            onChange={setFilters}
+          />
         )}
-      </form>
+      </div>
 
       {error && (
         <div className="p-3 bg-red-950 border border-red-800 rounded-lg text-red-400 text-sm shrink-0">

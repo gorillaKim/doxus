@@ -21,8 +21,15 @@ export interface AllDocument {
   source_type: string;
 }
 
+export interface SearchFilters {
+  sourceTypes: string[];   // e.g. ['obsidian', 'confluence']
+  projectNames: string[];  // e.g. ['my-vault']
+  tagQuery: string;        // '#태그' 텍스트 포함 검색
+}
+
 interface SearchState {
   query: string;
+  filters: SearchFilters;
   hits: SearchHit[];
   isLoading: boolean;
   error: string | null;
@@ -30,13 +37,17 @@ interface SearchState {
   allDocuments: AllDocument[];
   allDocsLoading: boolean;
   setQuery: (q: string) => void;
+  setFilters: (f: Partial<SearchFilters>) => void;
   search: () => Promise<void>;
   clear: () => void;
   listAllDocuments: () => Promise<void>;
 }
 
+const DEFAULT_FILTERS: SearchFilters = { sourceTypes: [], projectNames: [], tagQuery: '' };
+
 export const useSearchStore = create<SearchState>((set, get) => ({
   query: '',
+  filters: DEFAULT_FILTERS,
   hits: [],
   isLoading: false,
   error: null,
@@ -45,17 +56,24 @@ export const useSearchStore = create<SearchState>((set, get) => ({
   allDocsLoading: false,
 
   setQuery: (q) => set({ query: q }),
+  setFilters: (f) => set((s) => ({ filters: { ...s.filters, ...f } })),
 
   search: async () => {
-    const { query, queryHistory } = get();
+    const { query, filters, queryHistory } = get();
     if (!query.trim()) return;
     const trimmed = query.trim();
     const updated = [trimmed, ...queryHistory.filter((q) => q !== trimmed)].slice(0, 5);
     set({ isLoading: true, error: null, queryHistory: updated });
+    // tagQuery는 검색 텍스트에 포함
+    const effectiveQuery = filters.tagQuery.trim()
+      ? `${trimmed} ${filters.tagQuery.trim()}`
+      : trimmed;
     try {
       const result = await invoke<{ hits: SearchHit[] }>('search_documents', {
-        query,
+        query: effectiveQuery,
         limit: 20,
+        sourceTypes: filters.sourceTypes.length > 0 ? filters.sourceTypes : null,
+        projectNames: filters.projectNames.length > 0 ? filters.projectNames : null,
       });
       set({ hits: result.hits, isLoading: false });
     } catch (e) {
@@ -63,7 +81,7 @@ export const useSearchStore = create<SearchState>((set, get) => ({
     }
   },
 
-  clear: () => set({ query: '', hits: [], error: null }),
+  clear: () => set({ query: '', filters: DEFAULT_FILTERS, hits: [], error: null }),
 
   listAllDocuments: async () => {
     set({ allDocsLoading: true });
