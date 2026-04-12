@@ -6,6 +6,14 @@ import { invoke } from '@tauri-apps/api/core';
 import { useSearchStore, AllDocument, SearchHit, SearchFilters } from '../stores/useSearchStore';
 import { usePluginStore } from '../stores/usePluginStore';
 
+// ── Frontmatter strip ─────────────────────────────────────────────────────
+function stripFrontmatter(content: string): string {
+  if (!content.startsWith('---')) return content;
+  const end = content.indexOf('\n---', 3);
+  if (end === -1) return content;
+  return content.slice(end + 4).trimStart();
+}
+
 // ── 통합 문서 타입 (검색결과 or 전체목록 공통) ────────────────────────────
 
 interface DocEntry {
@@ -287,7 +295,6 @@ function DocMetaPanel({
   metadata: Record<string, unknown>;
 }) {
   const hasAny = tags.length > 0 || aliases.length > 0 || created_at || updated_at || Object.keys(metadata).length > 0;
-  if (!hasAny) return null;
 
   // metadata에서 links 제외 (내부 처리용)
   const displayMeta = Object.entries(metadata).filter(([k]) => k !== 'links');
@@ -336,6 +343,10 @@ function DocMetaPanel({
           <span className="text-gray-400">{String(val)}</span>
         </div>
       ))}
+      {/* 메타 없을 때 힌트 */}
+      {!hasAny && (
+        <span className="text-gray-600 italic">메타데이터 없음 — 재인덱싱 시 채워집니다</span>
+      )}
     </div>
   );
 }
@@ -561,7 +572,7 @@ export function SearchPage() {
         projectName: doc.project_name || undefined,
         forceRefresh,
       });
-      setPreviewContent(result.content);
+      setPreviewContent(stripFrontmatter(result.content));
       setPreviewMeta({
         tags: result.tags ?? [],
         aliases: result.aliases ?? [],
@@ -597,8 +608,8 @@ export function SearchPage() {
     if (selectedDoc) fetchPreview(selectedDoc, true);
   };
 
-  // 파일 목록 데이터 결정: 검색 후 → hits, 검색 전 → allDocuments
-  const hasSearch = hits.length > 0;
+  // 파일 목록 데이터 결정: 검색어 있음 → hits 사용, 검색어 없음 → allDocuments
+  const hasSearch = query.trim().length > 0;
 
   // 그룹화
   const groupedEntries = (() => {

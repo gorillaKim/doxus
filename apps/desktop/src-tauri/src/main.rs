@@ -4,6 +4,7 @@
 use doxus_desktop_lib::AppState;
 use tauri::Emitter;
 
+
 fn find_sidecar_script() -> std::path::PathBuf {
     // 1. 환경변수 오버라이드 (개발/테스트용)
     if let Ok(p) = std::env::var("DOXUS_SIDECAR_PATH") {
@@ -48,7 +49,14 @@ fn main() {
     let conn = doxus_core::db::open(&db_path).expect("failed to open db");
     let plugins_dir = std::path::PathBuf::from(&home).join(".doxus/plugins");
     let sidecar_script = find_sidecar_script();
-    let state = AppState::new(conn, plugins_dir, sidecar_script);
+    let embedder: std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync> =
+        doxus_core::embedding::OnnxEmbedder::from_default_path()
+            .map(|e| std::sync::Arc::new(e) as std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>)
+            .unwrap_or_else(|e| {
+                eprintln!("[embedding] ONNX load failed: {e}, falling back to no-op");
+                std::sync::Arc::new(doxus_core::embedding::NoOpEmbedder)
+            });
+    let state = AppState::new(conn, plugins_dir, sidecar_script, embedder);
     let conn_arc = state.conn.clone();
 
     tauri::Builder::default()
@@ -96,6 +104,9 @@ fn main() {
             doxus_desktop_lib::commands::market::plugin_set_cache_ttl,
             doxus_desktop_lib::commands::market::get_system_status,
             doxus_desktop_lib::commands::market::get_plugin_logs,
+            doxus_desktop_lib::commands::market::clear_audit_log,
+            doxus_desktop_lib::commands::market::get_embedding_status,
+            doxus_desktop_lib::commands::market::trigger_sync,
             doxus_desktop_lib::commands::market::market_install_plugin,
             doxus_desktop_lib::commands::market::market_uninstall_plugin,
             doxus_desktop_lib::commands::market::plugin_save_auth,
@@ -118,6 +129,9 @@ fn main() {
             doxus_desktop_lib::commands::search::get_top_documents,
             doxus_desktop_lib::commands::search::get_document_content,
             doxus_desktop_lib::commands::search::list_all_documents,
+            doxus_desktop_lib::commands::workspace::list_workspaces,
+            doxus_desktop_lib::commands::workspace::create_workspace,
+            doxus_desktop_lib::commands::workspace::delete_workspace,
             doxus_desktop_lib::commands::workspace::list_workspace_documents,
             doxus_desktop_lib::commands::workspace::create_workspace_document,
             doxus_desktop_lib::commands::workspace::update_workspace_document,

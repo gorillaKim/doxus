@@ -210,6 +210,67 @@ pub async fn get_plugin_logs(
 }
 
 #[tauri::command]
+pub async fn clear_audit_log(
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<serde_json::Value, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    let deleted: usize = conn
+        .execute("DELETE FROM audit_log", [])
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "deleted": deleted }))
+}
+
+#[tauri::command]
+pub async fn get_embedding_status(
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<serde_json::Value, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    let total_docs: i64 = conn
+        .query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))
+        .unwrap_or(0);
+    let embedded_chunks: i64 = conn
+        .query_row("SELECT COUNT(*) FROM chunk_embeddings WHERE embedding IS NOT NULL", [], |r| r.get(0))
+        .unwrap_or(0);
+    // embedder 로드 여부는 dimension으로 확인 (NoOpEmbedder = 0, OnnxEmbedder = 384)
+    let embedder_dim = state.embedder.dimension();
+    let model_loaded = embedder_dim > 0;
+    let model = if model_loaded { "ONNX (multilingual-e5-small)" } else { "미활성 (모델 로드 실패)" };
+    // 모델은 로드됐지만 아직 재인덱싱 안 된 경우와 모델 자체가 없는 경우를 구분
+    let status = if !model_loaded {
+        "inactive"
+    } else if embedded_chunks > 0 {
+        "active"
+    } else {
+        "ready"  // 모델 로드됨, 재인덱싱 필요
+    };
+    Ok(serde_json::json!({
+        "model": model,
+        "model_loaded": model_loaded,
+        "dimension": embedder_dim,
+        "total_documents": total_docs,
+        "embedded_chunks": embedded_chunks,
+        "status": status
+    }))
+}
+
+#[tauri::command]
+pub async fn trigger_sync(
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<serde_json::Value, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    // source_instances 목록 조회
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM source_instances", [], |r| r.get(0))
+        .unwrap_or(0);
+    // 실제 sync 실행은 SyncRunner가 담당 — 여기서는 last_synced를 초기화해 다음 스케줄 주기에 즉시 실행되도록 함
+    conn.execute("UPDATE source_instances SET last_synced = 0", [])
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "message": format!("{}개 소스 인스턴스의 동기화 예약됨 (다음 스케줄 주기에 실행)", count)
+    }))
+}
+
+#[tauri::command]
 pub async fn market_install_plugin(
     state: tauri::State<'_, crate::AppState>,
     plugin_id: String,

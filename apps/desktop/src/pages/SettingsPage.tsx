@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 
 interface AppSettings {
@@ -383,8 +384,118 @@ function InfoRow({ label, value, mono }: { label: string; value: string; mono?: 
   );
 }
 
+interface PluginLogEntry {
+  id: number;
+  project_id: number | null;
+  event_type: string;
+  payload: string | null;
+  occurred_at: number;
+}
+
+const EVENT_TYPE_OPTIONS = ['전체', 'index_start', 'index_complete', 'sync_start', 'sync_complete', 'plugin_error'];
+
+function PluginLogModal({ initialLogs, onClose }: { initialLogs: PluginLogEntry[]; onClose: () => void }) {
+  const [logs, setLogs] = useState<PluginLogEntry[]>(initialLogs);
+  const [filter, setFilter] = useState('전체');
+  const [clearing, setClearing] = useState(false);
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  // Tauri event push: audit:new 이벤트 수신 시 목록에 prepend
+  useEffect(() => {
+    const unlisten = listen<PluginLogEntry>('audit:new', event => {
+      setLogs(prev => [event.payload, ...prev].slice(0, 100));
+    });
+    return () => { unlisten.then(f => f()); };
+  }, []);
+
+  const filtered = filter === '전체' ? logs : logs.filter(l => l.event_type === filter);
+
+  const handleClear = async () => {
+    setClearing(true);
+    try {
+      await invoke('clear_audit_log');
+      setLogs([]);
+    } finally {
+      setClearing(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
+      <div
+        className="bg-gray-950 border border-gray-800 rounded-xl w-[720px] max-h-[75vh] flex flex-col shadow-2xl"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* 헤더 */}
+        <div className="flex items-center justify-between px-5 py-3 border-b border-gray-800">
+          <span className="text-sm font-semibold text-gray-200">플러그인 로그 ({filtered.length}건)</span>
+          <div className="flex items-center gap-2">
+            <select
+              value={filter}
+              onChange={e => setFilter(e.target.value)}
+              className="text-xs bg-gray-800 border border-gray-700 text-gray-300 rounded px-2 py-1"
+            >
+              {EVENT_TYPE_OPTIONS.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+            <button
+              onClick={handleClear}
+              disabled={clearing}
+              className="text-xs px-2 py-1 bg-red-950 hover:bg-red-900 text-red-400 border border-red-900 rounded transition-colors disabled:opacity-50"
+            >
+              초기화
+            </button>
+            <button onClick={onClose} className="text-gray-500 hover:text-gray-300 text-lg leading-none ml-1">✕</button>
+          </div>
+        </div>
+        {/* 로그 목록 */}
+        <div className="overflow-y-auto flex-1 p-4 flex flex-col gap-2">
+          {filtered.length === 0 ? (
+            <p className="text-xs text-gray-500 text-center py-8">기록된 로그가 없습니다.</p>
+          ) : (
+            filtered.map(log => {
+              const date = new Date(log.occurred_at * 1000).toLocaleString('ko-KR');
+              const isError = log.event_type.includes('error') || log.event_type.includes('fail');
+              let payloadStr = '';
+              if (log.payload) {
+                try { payloadStr = JSON.stringify(JSON.parse(log.payload), null, 2); }
+                catch { payloadStr = log.payload; }
+              }
+              return (
+                <div key={log.id} className={`rounded-lg border p-3 text-xs font-mono ${isError ? 'border-red-900 bg-red-950/30' : 'border-gray-800 bg-gray-900'}`}>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className={`font-semibold ${isError ? 'text-red-400' : 'text-emerald-400'}`}>{log.event_type}</span>
+                    {log.project_id != null && <span className="text-gray-600">project#{log.project_id}</span>}
+                    <span className="text-gray-600 ml-auto">{date}</span>
+                  </div>
+                  {payloadStr && <pre className="text-gray-400 whitespace-pre-wrap break-all">{payloadStr}</pre>}
+                </div>
+              );
+            })
+          )}
+          <div ref={bottomRef} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DevToolsSection() {
   const [devResult, setDevResult] = useState<string | null>(null);
+  const [pluginLogs, setPluginLogs] = useState<PluginLogEntry[] | null>(null);
+  const [loadingBtn, setLoadingBtn] = useState<string | null>(null);
+
+  const run = async (key: string, fn: () => Promise<void>) => {
+    setLoadingBtn(key);
+    setDevResult(null);
+    try { await fn(); } finally { setLoadingBtn(null); }
+  };
+
+  const btnClass = (key: string) =>
+    `px-3 py-1.5 text-xs rounded-lg border transition-colors flex items-center gap-1.5 ${
+      loadingBtn === key
+        ? 'bg-gray-700 border-gray-600 text-gray-400 cursor-not-allowed'
+        : 'bg-gray-800 hover:bg-gray-700 text-gray-300 border-gray-700'
+    }`;
 
   return (
     <section className="flex flex-col gap-3">
@@ -393,43 +504,60 @@ function DevToolsSection() {
         <p className="text-sm text-gray-400">로컬 개발 환경에서 사용 가능한 도구</p>
         <div className="flex flex-wrap gap-2">
           <button
-            className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg border border-gray-700 transition-colors"
-            onClick={async () => {
-              try {
-                const res = await invoke<{ indexed: number; message: string }>('trigger_reindex');
-                setDevResult(res.message);
-              } catch (e) {
-                setDevResult(`✗ ${String(e)}`);
-              }
-            }}
+            className={btnClass('reindex')}
+            disabled={loadingBtn !== null}
+            onClick={() => run('reindex', async () => {
+              const res = await invoke<{ indexed: number; message: string }>('trigger_reindex');
+              setDevResult(res.message);
+            })}
           >
+            {loadingBtn === 'reindex' && <span className="animate-spin">⟳</span>}
             DB 재인덱싱
           </button>
           <button
-            className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg border border-gray-700 transition-colors"
-            onClick={async () => {
-              try {
-                const res = await invoke<{ total_documents: number; total_projects: number }>('search_engine_status');
-                setDevResult(`문서 ${res.total_documents}개, 프로젝트 ${res.total_projects}개`);
-              } catch (e) {
-                setDevResult(`✗ ${String(e)}`);
-              }
-            }}
+            className={btnClass('status')}
+            disabled={loadingBtn !== null}
+            onClick={() => run('status', async () => {
+              const res = await invoke<{ total_documents: number; total_projects: number }>('search_engine_status');
+              setDevResult(`문서 ${res.total_documents}개, 프로젝트 ${res.total_projects}개`);
+            })}
           >
+            {loadingBtn === 'status' && <span className="animate-spin">⟳</span>}
             검색 엔진 상태
           </button>
           <button
-            className="px-3 py-1.5 text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg border border-gray-700 transition-colors"
-            onClick={async () => {
-              try {
-                const res = await invoke<{ logs: { level: string; message: string }[] }>('get_plugin_logs');
-                setDevResult(`최근 로그 ${res.logs.length}건`);
-              } catch (e) {
-                setDevResult(`✗ ${String(e)}`);
-              }
-            }}
+            className={btnClass('logs')}
+            disabled={loadingBtn !== null}
+            onClick={() => run('logs', async () => {
+              const res = await invoke<{ logs: PluginLogEntry[] }>('get_plugin_logs');
+              setPluginLogs(res.logs);
+            })}
           >
+            {loadingBtn === 'logs' && <span className="animate-spin">⟳</span>}
             플러그인 로그
+          </button>
+          <button
+            className={btnClass('embedding')}
+            disabled={loadingBtn !== null}
+            onClick={() => run('embedding', async () => {
+              const res = await invoke<{ model: string; model_loaded: boolean; dimension: number; embedded_chunks: number; total_documents: number; status: string }>('get_embedding_status');
+              const statusLabel = res.status === 'active' ? '✓ 활성' : res.status === 'ready' ? '⚡ 준비됨 (재인덱싱 필요)' : '✗ 미활성';
+              setDevResult(`임베딩: ${res.model} [${statusLabel}] | 문서 ${res.total_documents}개 중 ${res.embedded_chunks}청크 벡터화`);
+            })}
+          >
+            {loadingBtn === 'embedding' && <span className="animate-spin">⟳</span>}
+            임베딩 상태
+          </button>
+          <button
+            className={btnClass('sync')}
+            disabled={loadingBtn !== null}
+            onClick={() => run('sync', async () => {
+              const res = await invoke<{ message: string }>('trigger_sync');
+              setDevResult(res.message);
+            })}
+          >
+            {loadingBtn === 'sync' && <span className="animate-spin">⟳</span>}
+            동기화 강제 실행
           </button>
         </div>
         {devResult && <p className="text-xs text-emerald-400 mt-1">{devResult}</p>}
@@ -437,6 +565,9 @@ function DevToolsSection() {
           * 대부분의 개발 도구는 Phase 6 (관측성/디버깅)에서 구현됩니다
         </p>
       </div>
+      {pluginLogs != null && (
+        <PluginLogModal initialLogs={pluginLogs} onClose={() => setPluginLogs(null)} />
+      )}
     </section>
   );
 }

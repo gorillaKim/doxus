@@ -592,20 +592,20 @@ pub async fn index_project(
                 let stream = plugin.fetch_all(FetchAllOpts { cursor: cursor.clone(), page_size: 50 })
                     .await
                     .map_err(|e| format!("문서 가져오기 실패: {e}"))?;
-                {
-                    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
-                    let engine = SearchEngine::new(&conn);
-                    for doc in &stream.documents {
-                        let meta = doxus_core::search::DocMeta {
-                            tags: doc.tags.clone(),
-                            aliases: doc.aliases.clone(),
-                            created_at: doc.created_at,
-                            updated_at: doc.updated_at,
-                            metadata: doc.metadata.clone(),
-                        };
-                        if engine.index_document_with_meta(project_id, &doc.id.0, doc.title.as_deref().unwrap_or("Untitled"), &doc.content, &meta).is_ok() {
-                            total += 1;
-                        }
+                let engine = doxus_core::search::SearchEngine::with_embedder(
+                    std::sync::Arc::clone(&state.conn),
+                    std::sync::Arc::clone(&state.embedder) as std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider>,
+                );
+                for doc in &stream.documents {
+                    let meta = doxus_core::search::DocMeta {
+                        tags: doc.tags.clone(),
+                        aliases: doc.aliases.clone(),
+                        created_at: doc.created_at,
+                        updated_at: doc.updated_at,
+                        metadata: doc.metadata.clone(),
+                    };
+                    if engine.index_document_async_with_meta(project_id, &doc.id.0, doc.title.as_deref().unwrap_or("Untitled"), &doc.content, meta).await.is_ok() {
+                        total += 1;
                     }
                 }
                 cursor = stream.next_cursor.clone();
@@ -634,20 +634,20 @@ pub async fn index_project(
                 let stream = plugin.fetch_all(FetchAllOpts { cursor: cursor.clone(), page_size: 50 })
                     .await
                     .map_err(|e| format!("문서 가져오기 실패: {e}"))?;
-                {
-                    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
-                    let engine = SearchEngine::new(&conn);
-                    for doc in &stream.documents {
-                        let meta = doxus_core::search::DocMeta {
-                            tags: doc.tags.clone(),
-                            aliases: doc.aliases.clone(),
-                            created_at: doc.created_at,
-                            updated_at: doc.updated_at,
-                            metadata: doc.metadata.clone(),
-                        };
-                        if engine.index_document_with_meta(project_id, &doc.id.0, doc.title.as_deref().unwrap_or("Untitled"), &doc.content, &meta).is_ok() {
-                            total += 1;
-                        }
+                let engine = doxus_core::search::SearchEngine::with_embedder(
+                    std::sync::Arc::clone(&state.conn),
+                    std::sync::Arc::clone(&state.embedder) as std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider>,
+                );
+                for doc in &stream.documents {
+                    let meta = doxus_core::search::DocMeta {
+                        tags: doc.tags.clone(),
+                        aliases: doc.aliases.clone(),
+                        created_at: doc.created_at,
+                        updated_at: doc.updated_at,
+                        metadata: doc.metadata.clone(),
+                    };
+                    if engine.index_document_async_with_meta(project_id, &doc.id.0, doc.title.as_deref().unwrap_or("Untitled"), &doc.content, meta).await.is_ok() {
+                        total += 1;
                     }
                 }
                 cursor = stream.next_cursor.clone();
@@ -665,20 +665,20 @@ pub async fn index_project(
                 let stream = plugin.fetch_all(FetchAllOpts { cursor: cursor.clone(), page_size: 100 })
                     .await
                     .map_err(|e| format!("문서 가져오기 실패: {e}"))?;
-                {
-                    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
-                    let engine = SearchEngine::new(&conn);
-                    for doc in &stream.documents {
-                        let meta = doxus_core::search::DocMeta {
-                            tags: doc.tags.clone(),
-                            aliases: doc.aliases.clone(),
-                            created_at: doc.created_at,
-                            updated_at: doc.updated_at,
-                            metadata: doc.metadata.clone(),
-                        };
-                        if engine.index_document_with_meta(project_id, &doc.id.0, doc.title.as_deref().unwrap_or("Untitled"), &doc.content, &meta).is_ok() {
-                            total += 1;
-                        }
+                let engine = doxus_core::search::SearchEngine::with_embedder(
+                    std::sync::Arc::clone(&state.conn),
+                    std::sync::Arc::clone(&state.embedder) as std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider>,
+                );
+                for doc in &stream.documents {
+                    let meta = doxus_core::search::DocMeta {
+                        tags: doc.tags.clone(),
+                        aliases: doc.aliases.clone(),
+                        created_at: doc.created_at,
+                        updated_at: doc.updated_at,
+                        metadata: doc.metadata.clone(),
+                    };
+                    if engine.index_document_async_with_meta(project_id, &doc.id.0, doc.title.as_deref().unwrap_or("Untitled"), &doc.content, meta).await.is_ok() {
+                        total += 1;
                     }
                 }
                 cursor = stream.next_cursor.clone();
@@ -732,15 +732,15 @@ pub async fn trigger_reindex(
                 Err(e) => { eprintln!("fetch_all error for {name}: {e}"); break; }
             };
 
-            {
-                let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
-                let engine = SearchEngine::new(&conn);
-                for doc in &stream.documents {
-                    let source_doc_id = doc.id.0.as_str();
-                    let title = doc.title.as_deref().unwrap_or("Untitled");
-                    if engine.index_document(project_id, source_doc_id, title, &doc.content).is_ok() {
-                        total += 1;
-                    }
+            let engine = doxus_core::search::SearchEngine::with_embedder(
+                std::sync::Arc::clone(&state.conn),
+                std::sync::Arc::clone(&state.embedder) as std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider>,
+            );
+            for doc in &stream.documents {
+                let source_doc_id = doc.id.0.as_str();
+                let title = doc.title.as_deref().unwrap_or("Untitled");
+                if engine.index_document_async(project_id, source_doc_id, title, &doc.content).await.is_ok() {
+                    total += 1;
                 }
             }
 
@@ -957,10 +957,22 @@ pub async fn get_document_content(
                     .map_err(|e| format!("GitHub 플러그인 초기화 실패: {e}"))?;
                 let raw = plugin.fetch_document(&doc_id).await
                     .map_err(|e| format!("문서 가져오기 실패: {e}"))?;
+                let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+                let db_meta = get_document_content_impl(&conn, &file_path).ok();
+                let tags = db_meta.as_ref().and_then(|v| v.get("tags")).cloned().unwrap_or(serde_json::json!([]));
+                let aliases = db_meta.as_ref().and_then(|v| v.get("aliases")).cloned().unwrap_or(serde_json::json!([]));
+                let created_at = db_meta.as_ref().and_then(|v| v.get("created_at")).cloned().unwrap_or(serde_json::json!(null));
+                let updated_at = db_meta.as_ref().and_then(|v| v.get("updated_at")).cloned().unwrap_or(serde_json::json!(null));
+                let metadata = db_meta.as_ref().and_then(|v| v.get("metadata")).cloned().unwrap_or(serde_json::json!({}));
                 return Ok(serde_json::json!({
                     "title": raw.title,
                     "content": raw.content,
                     "file_path": file_path,
+                    "tags": tags,
+                    "aliases": aliases,
+                    "created_at": created_at,
+                    "updated_at": updated_at,
+                    "metadata": metadata,
                 }));
             }
             _ => {
@@ -973,10 +985,23 @@ pub async fn get_document_content(
                     .map_err(|e| format!("Obsidian 플러그인 초기화 실패: {e}"))?;
                 let raw = plugin.fetch_document(&doc_id).await
                     .map_err(|e| format!("문서 가져오기 실패: {e}"))?;
+                // DB에서 메타데이터 병합
+                let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+                let db_meta = get_document_content_impl(&conn, &file_path).ok();
+                let tags = db_meta.as_ref().and_then(|v| v.get("tags")).cloned().unwrap_or(serde_json::json!([]));
+                let aliases = db_meta.as_ref().and_then(|v| v.get("aliases")).cloned().unwrap_or(serde_json::json!([]));
+                let created_at = db_meta.as_ref().and_then(|v| v.get("created_at")).cloned().unwrap_or(serde_json::json!(null));
+                let updated_at = db_meta.as_ref().and_then(|v| v.get("updated_at")).cloned().unwrap_or(serde_json::json!(null));
+                let metadata = db_meta.as_ref().and_then(|v| v.get("metadata")).cloned().unwrap_or(serde_json::json!({}));
                 return Ok(serde_json::json!({
                     "title": raw.title,
                     "content": raw.content,
                     "file_path": file_path,
+                    "tags": tags,
+                    "aliases": aliases,
+                    "created_at": created_at,
+                    "updated_at": updated_at,
+                    "metadata": metadata,
                 }));
             }
         }

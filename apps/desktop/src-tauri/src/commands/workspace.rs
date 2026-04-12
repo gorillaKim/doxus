@@ -1,4 +1,9 @@
 use rusqlite::Connection;
+use sha2::{Digest, Sha256};
+
+fn sha256_hex(s: &str) -> String {
+    format!("{:x}", Sha256::digest(s.as_bytes()))
+}
 
 // ── Pure DB helpers (pub for integration tests) ───────────────────────────────
 
@@ -7,7 +12,7 @@ pub fn list_workspace_documents_in_conn(
 ) -> Result<Vec<serde_json::Value>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, title, created_at, file_path FROM workspace_documents \
+            "SELECT id, title, created_at, content FROM workspace_documents \
              ORDER BY created_at DESC LIMIT 50",
         )
         .map_err(|e| e.to_string())?;
@@ -16,8 +21,8 @@ pub fn list_workspace_documents_in_conn(
             let id: i64 = r.get(0)?;
             let title: Option<String> = r.get(1)?;
             let created_at: i64 = r.get(2)?;
-            let file_path: String = r.get(3)?;
-            let preview: String = file_path.chars().take(100).collect();
+            let content: Option<String> = r.get(3)?;
+            let preview: Option<String> = content.map(|c| c.chars().take(100).collect());
             Ok(serde_json::json!({
                 "id": id,
                 "title": title,
@@ -47,7 +52,10 @@ pub fn create_workspace_document_in_conn(
         std::sync::atomic::AtomicU64::new(0);
     let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let file_path = format!("ws-{}-{:06}.md", now, seq);
-    let content_hash = format!("{:x}", now);
+    let initial_content_val = initial_content_for_template(
+        template_id.as_deref().unwrap_or(""),
+    ).unwrap_or("");
+    let content_hash = sha256_hex(initial_content_val);
     // Map template IDs to the allowed doc_type values
     let doc_type = match template_id.as_deref() {
         Some("note") | None => "note",
@@ -107,6 +115,71 @@ fn initial_content_for_template(template_id: &str) -> Option<&'static str> {
     }
 }
 
+// ── Workspace CRUD commands ───────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn list_workspaces(
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<serde_json::Value, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, name, description, project_ids, created_at FROM workspaces \
+             ORDER BY created_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let workspaces: Vec<serde_json::Value> = stmt
+        .query_map([], |r| {
+            Ok(serde_json::json!({
+                "id": r.get::<_, i64>(0)?,
+                "name": r.get::<_, String>(1)?,
+                "description": r.get::<_, Option<String>>(2)?,
+                "project_ids": r.get::<_, String>(3).unwrap_or_else(|_| "[]".into()),
+                "created_at": r.get::<_, i64>(4)?,
+            }))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(serde_json::json!(workspaces))
+}
+
+#[tauri::command]
+pub async fn create_workspace(
+    state: tauri::State<'_, crate::AppState>,
+    name: String,
+    description: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs() as i64;
+    conn.execute(
+        "INSERT INTO workspaces (name, description, project_ids, created_at, updated_at) \
+         VALUES (?1, ?2, '[]', ?3, ?3)",
+        rusqlite::params![name, description, now],
+    )
+    .map_err(|e| e.to_string())?;
+    let id = conn.last_insert_rowid();
+    Ok(serde_json::json!({ "id": id, "name": name, "description": description, "created_at": now }))
+}
+
+#[tauri::command]
+pub async fn delete_workspace(
+    state: tauri::State<'_, crate::AppState>,
+    id: i64,
+) -> Result<serde_json::Value, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    let rows = conn
+        .execute("DELETE FROM workspaces WHERE id = ?1", rusqlite::params![id])
+        .map_err(|e| e.to_string())?;
+    if rows == 0 {
+        return Err(format!("workspace {} not found", id));
+    }
+    Ok(serde_json::json!({ "ok": true }))
+}
+
 // ── Tauri IPC commands ────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -128,6 +201,25 @@ pub async fn create_workspace_document(
     create_workspace_document_in_conn(&conn, &title, template_id)
 }
 
+pub fn update_workspace_document_in_conn(
+    conn: &Connection,
+    id: i64,
+    title: &str,
+    content: &str,
+) -> Result<serde_json::Value, String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs() as i64;
+    let content_hash = sha256_hex(content);
+    conn.execute(
+        "UPDATE workspace_documents SET title = ?1, content = ?2, content_hash = ?3, updated_at = ?4 WHERE id = ?5",
+        rusqlite::params![title, content, content_hash, now, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "ok": true }))
+}
+
 #[tauri::command]
 pub async fn update_workspace_document(
     state: tauri::State<'_, crate::AppState>,
@@ -136,16 +228,7 @@ pub async fn update_workspace_document(
     content: String,
 ) -> Result<serde_json::Value, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_secs() as i64;
-    conn.execute(
-        "UPDATE workspace_documents SET title = ?1, content = ?2, updated_at = ?3 WHERE id = ?4",
-        rusqlite::params![title, content, now, id],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(serde_json::json!({ "ok": true }))
+    update_workspace_document_in_conn(&conn, id, &title, &content)
 }
 
 #[tauri::command]
@@ -272,5 +355,45 @@ mod tests {
     #[test]
     fn initial_content_unknown_template_is_none() {
         assert!(initial_content_for_template("unknown").is_none());
+    }
+
+    // ── TDD: correctness tests ────────────────────────────────────────────────
+
+    #[test]
+    fn content_preview_is_content_not_file_path() {
+        // After creating a doc with content, list must return content-based preview, not file_path
+        let conn = make_conn();
+        let doc = create_workspace_document_in_conn(&conn, "Preview Test", Some("todo".to_string())).unwrap();
+        let _ = doc; // creation ok
+
+        // Update content so it's non-empty
+        let id: i64 = conn.query_row("SELECT id FROM workspace_documents ORDER BY id DESC LIMIT 1", [], |r| r.get(0)).unwrap();
+        let now = now_secs();
+        conn.execute(
+            "UPDATE workspace_documents SET content = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params!["실제 내용입니다.", now, id],
+        ).unwrap();
+
+        let docs = list_workspace_documents_in_conn(&conn).unwrap();
+        let doc = docs.iter().find(|d| d["id"] == id).expect("doc not found");
+        let preview = doc["content_preview"].as_str().unwrap_or("");
+        assert!(!preview.starts_with("ws-"), "preview must not be file_path (got: {preview})");
+        assert!(preview.contains("실제 내용"), "preview must be content-based (got: {preview})");
+    }
+
+    #[test]
+    fn update_workspace_document_content_hash_changes() {
+        // update_workspace_document_in_conn must store SHA-256 (64 hex chars) as content_hash
+        let conn = make_conn();
+        let id = insert_workspace_doc(&conn, "Hash Check");
+
+        update_workspace_document_in_conn(&conn, id, "Hash Check", "updated body text").unwrap();
+
+        let hash: String = conn.query_row(
+            "SELECT content_hash FROM workspace_documents WHERE id = ?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(hash.len(), 64, "content_hash must be SHA-256 (64 hex chars), got: {hash}");
     }
 }

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::AtomicBool;
 use rusqlite::Connection;
+use doxus_core::embedding::EmbeddingProvider;
 use doxus_core::plugin::PluginManager;
 use doxus_agent::sync_sidecar::SyncSidecarManager;
 use doxus_agent::prompt::PromptLoader;
@@ -21,6 +22,7 @@ pub struct AppState {
     pub plugin_manager: PluginManager,
     pub plugins_dir: PathBuf,
     pub oauth_pending: Mutex<HashMap<String, OAuthPending>>,
+    pub embedder: Arc<dyn EmbeddingProvider + Send + Sync>,
     // Agent sidecar
     pub sidecar: Arc<SyncSidecarManager>,
     pub sidecar_script: PathBuf,
@@ -30,7 +32,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(conn: Connection, plugins_dir: PathBuf, sidecar_script: PathBuf) -> Self {
+    pub fn new(conn: Connection, plugins_dir: PathBuf, sidecar_script: PathBuf, embedder: Arc<dyn EmbeddingProvider + Send + Sync>) -> Self {
         let prompt_loader = PromptLoader::new().expect("PromptLoader init failed");
         prompt_loader.ensure_defaults().ok();
         // App-start: clean up any expired cache entries from previous sessions
@@ -47,6 +49,7 @@ impl AppState {
             plugin_manager: PluginManager::new(plugins_dir.clone()),
             plugins_dir,
             oauth_pending: Mutex::new(HashMap::new()),
+            embedder,
             sidecar: Arc::new(SyncSidecarManager::new()),
             sidecar_script,
             prompt_loader,
@@ -59,15 +62,28 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use doxus_core::embedding::MockEmbedder;
+
+    fn make_embedder() -> Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync> {
+        Arc::new(MockEmbedder::new(384))
+    }
 
     #[test]
     fn app_state_creates_with_in_memory_db() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         doxus_core::db::migrate(&conn).unwrap();
-        let state = AppState::new(conn, PathBuf::from("/tmp"), PathBuf::from("/tmp/fake.mjs"));
-        let _guard = state.conn.lock().unwrap(); // Arc<Mutex<T>>::lock() via auto-deref
+        let state = AppState::new(conn, PathBuf::from("/tmp"), PathBuf::from("/tmp/fake.mjs"), make_embedder());
+        let _guard = state.conn.lock().unwrap();
         drop(_guard);
         let pending = state.oauth_pending.lock().unwrap();
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn app_state_embedder_dimension_is_set() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        doxus_core::db::migrate(&conn).unwrap();
+        let state = AppState::new(conn, PathBuf::from("/tmp"), PathBuf::from("/tmp/fake.mjs"), make_embedder());
+        assert_eq!(state.embedder.dimension(), 384);
     }
 }

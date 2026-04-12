@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { useWorkspaceStore, WorkspaceDocument } from '../stores/useWorkspaceStore';
+import { useWorkspaceStore, WorkspaceDocument, Workspace } from '../stores/useWorkspaceStore';
 
 interface Template {
   id: string;
@@ -58,14 +58,9 @@ function NewDocModal({ initialTemplateId, onClose, onCreated }: NewDocModalProps
         templateId: selectedTemplate,
       });
       onCreated(doc);
-    } catch {
-      const stub: WorkspaceDocument = {
-        id: Date.now(),
-        title: title.trim(),
-        created_at: Math.floor(Date.now() / 1000),
-        content_preview: selectedTemplate ? `템플릿: ${selectedTemplate}` : undefined,
-      };
-      onCreated(stub);
+    } catch (e) {
+      console.error('문서 생성 실패:', e);
+      // 실패 시 모달 열린 상태 유지 — 사용자가 재시도 가능
     } finally {
       setIsCreating(false);
     }
@@ -134,7 +129,7 @@ function NewDocModal({ initialTemplateId, onClose, onCreated }: NewDocModalProps
   );
 }
 
-type TabKey = 'documents' | 'templates';
+type TabKey = 'workspaces' | 'documents' | 'templates';
 
 interface EditingDoc {
   id: number;
@@ -142,19 +137,91 @@ interface EditingDoc {
   content: string;
 }
 
-export default function WorkspacePage() {
-  const { documents, isLoading, fetchDocuments, addDocument, removeDocument, updateDocument } =
-    useWorkspaceStore();
+interface NewWorkspaceModalProps {
+  onClose: () => void;
+  onCreated: (ws: Workspace) => void;
+}
 
-  const [activeTab, setActiveTab] = useState<TabKey>('documents');
+function NewWorkspaceModal({ onClose, onCreated }: NewWorkspaceModalProps) {
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [isCreating, setIsCreating] = useState(false);
+
+  const handleCreate = async () => {
+    if (!name.trim()) return;
+    setIsCreating(true);
+    try {
+      const ws = await invoke<Workspace>('create_workspace', {
+        name: name.trim(),
+        description: description.trim() || null,
+      });
+      onCreated(ws);
+    } catch (e) {
+      console.error('workspace create failed', e);
+    } finally {
+      setIsCreating(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+      <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 w-full max-w-md shadow-2xl">
+        <h2 className="text-white font-semibold text-lg mb-4">새 워크스페이스</h2>
+        <label className="block text-gray-400 text-sm mb-1">이름</label>
+        <input
+          autoFocus
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
+          placeholder="워크스페이스 이름"
+          className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm mb-3"
+        />
+        <label className="block text-gray-400 text-sm mb-1">설명 (선택)</label>
+        <input
+          type="text"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="간단한 설명"
+          className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm mb-5"
+        />
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="px-4 py-1.5 rounded-lg text-sm text-gray-400 hover:text-white border border-gray-700 hover:border-gray-600 transition-colors"
+          >
+            취소
+          </button>
+          <button
+            onClick={handleCreate}
+            disabled={!name.trim() || isCreating}
+            className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white px-4 py-1.5 rounded-lg text-sm transition-colors"
+          >
+            {isCreating ? '생성 중...' : '생성'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function WorkspacePage() {
+  const {
+    documents, isLoading, fetchDocuments, addDocument, removeDocument, updateDocument,
+    workspaces, fetchWorkspaces, addWorkspace, removeWorkspace,
+  } = useWorkspaceStore();
+
+  const [activeTab, setActiveTab] = useState<TabKey>('workspaces');
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [showModal, setShowModal] = useState(false);
+  const [showWsModal, setShowWsModal] = useState(false);
   const [preselectedTemplate, setPreselectedTemplate] = useState<string | null>(null);
   const [editingDoc, setEditingDoc] = useState<EditingDoc | null>(null);
 
   useEffect(() => {
     fetchDocuments();
-  }, [fetchDocuments]);
+    fetchWorkspaces();
+  }, [fetchDocuments, fetchWorkspaces]);
 
   const handleCreated = (doc: WorkspaceDocument) => {
     addDocument(doc);
@@ -179,6 +246,7 @@ export default function WorkspacePage() {
   };
 
   const tabs: { key: TabKey; label: string }[] = [
+    { key: 'workspaces', label: '워크스페이스' },
     { key: 'documents', label: '문서' },
     { key: 'templates', label: '템플릿' },
   ];
@@ -191,6 +259,14 @@ export default function WorkspacePage() {
           <h1 className="text-white text-xl font-semibold tracking-tight">워크스페이스</h1>
           <p className="text-gray-400 text-sm mt-0.5">개인 문서 및 템플릿 관리</p>
         </div>
+        {activeTab === 'workspaces' && (
+          <button
+            onClick={() => setShowWsModal(true)}
+            className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded-lg text-sm transition-colors"
+          >
+            + 새 워크스페이스
+          </button>
+        )}
         {activeTab === 'documents' && (
           <button
             onClick={() => {
@@ -220,6 +296,53 @@ export default function WorkspacePage() {
           </button>
         ))}
       </div>
+
+      {/* 워크스페이스 탭 */}
+      {activeTab === 'workspaces' && (
+        <div className="flex-1 overflow-auto">
+          {workspaces.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-48 gap-3">
+              <p className="text-gray-500 text-sm">워크스페이스가 없습니다.</p>
+              <button
+                onClick={() => setShowWsModal(true)}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded-lg text-sm transition-colors"
+              >
+                첫 번째 워크스페이스 만들기
+              </button>
+            </div>
+          ) : (
+            <div className="grid gap-3">
+              {workspaces.map((ws) => (
+                <div
+                  key={ws.id}
+                  className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex items-center justify-between hover:border-gray-700 transition-colors"
+                >
+                  <div>
+                    <h3 className="text-white font-semibold">{ws.name}</h3>
+                    {ws.description && (
+                      <p className="text-gray-400 text-sm mt-0.5">{ws.description}</p>
+                    )}
+                    <p className="text-gray-600 text-xs mt-1">{formatDate(ws.created_at)}</p>
+                  </div>
+                  <button
+                    onClick={async () => {
+                      try {
+                        await invoke('delete_workspace', { id: ws.id });
+                        removeWorkspace(ws.id);
+                      } catch (e) {
+                        console.error('delete workspace failed', e);
+                      }
+                    }}
+                    className="text-gray-500 hover:text-red-400 text-xs px-2 py-1 rounded border border-gray-700 hover:border-red-500 transition-colors shrink-0"
+                  >
+                    삭제
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 문서 탭 */}
       {activeTab === 'documents' && (
@@ -322,6 +445,16 @@ export default function WorkspacePage() {
             ))}
           </div>
         </div>
+      )}
+
+      {showWsModal && (
+        <NewWorkspaceModal
+          onClose={() => setShowWsModal(false)}
+          onCreated={(ws) => {
+            addWorkspace(ws);
+            setShowWsModal(false);
+          }}
+        />
       )}
 
       {showModal && (
