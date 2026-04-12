@@ -3,6 +3,16 @@ use doxus_plugin_sdk::{DocSource, FetchAllOpts, FetchChangesOpts, PluginError, S
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+fn make_ancestor_plugin(server: &MockServer, ancestor_id: &str) -> ConfluencePlugin {
+    let mut plugin = ConfluencePlugin::new();
+    plugin.set_test_ancestor_config(
+        server.uri().trim_end_matches('/').to_string(),
+        ancestor_id.to_string(),
+        "test-token".to_string(),
+    );
+    plugin
+}
+
 fn make_plugin(server: &MockServer, space_key: &str) -> ConfluencePlugin {
     // Set fields directly to bypass SSRF validation (wiremock uses HTTP localhost).
     let mut plugin = ConfluencePlugin::new();
@@ -292,6 +302,270 @@ async fn fetch_changes_detects_deletions_on_final_page() {
         .unwrap();
 
     assert_eq!(changeset.updated.len(), 1);
+    assert_eq!(changeset.deleted_ids.len(), 1);
+    assert_eq!(changeset.deleted_ids[0].0, "999");
+}
+
+#[tokio::test]
+async fn health_check_ancestor_only_config_returns_healthy() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/content/4667998225"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "4667998225",
+            "type": "page",
+            "title": "Root Page",
+            "_links": {"webui": "/wiki/root"}
+        })))
+        .mount(&server)
+        .await;
+
+    let plugin = make_ancestor_plugin(&server, "4667998225");
+    let status = plugin.health_check().await;
+
+    assert!(status.healthy, "expected healthy for ancestor-only config, got: {:?}", status.message);
+}
+
+#[tokio::test]
+async fn health_check_ancestor_only_returns_unhealthy_on_404() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/content/9999999"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+
+    let plugin = make_ancestor_plugin(&server, "9999999");
+    let status = plugin.health_check().await;
+
+    assert!(!status.healthy, "expected unhealthy for 404 ancestor");
+}
+
+#[tokio::test]
+async fn fetch_all_returns_rate_limited_on_429() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/content"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("Retry-After", "30"),
+        )
+        .mount(&server)
+        .await;
+
+    let plugin = make_plugin(&server, "TEAM");
+    let result = plugin
+        .fetch_all(FetchAllOpts { cursor: None, page_size: 25 })
+        .await;
+
+    assert!(
+        matches!(result, Err(PluginError::RateLimited { retry_after_secs: 30 })),
+        "expected RateLimited{{30}}, got: {:?}",
+        result
+    );
+}
+
+#[tokio::test]
+async fn fetch_all_returns_rate_limited_default_on_429_without_header() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/content"))
+        .respond_with(ResponseTemplate::new(429))
+        .mount(&server)
+        .await;
+
+    let plugin = make_plugin(&server, "TEAM");
+    let result = plugin
+        .fetch_all(FetchAllOpts { cursor: None, page_size: 25 })
+        .await;
+
+    assert!(
+        matches!(result, Err(PluginError::RateLimited { retry_after_secs: 60 })),
+        "expected RateLimited{{60}}, got: {:?}",
+        result
+    );
+}
+
+#[tokio::test]
+async fn fetch_all_returns_permission_denied_on_403() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/content"))
+        .respond_with(ResponseTemplate::new(403))
+        .mount(&server)
+        .await;
+
+    let plugin = make_plugin(&server, "TEAM");
+    let result = plugin
+        .fetch_all(FetchAllOpts { cursor: None, page_size: 25 })
+        .await;
+
+    assert!(
+        matches!(result, Err(PluginError::PermissionDenied(_))),
+        "expected PermissionDenied, got: {:?}",
+        result
+    );
+}
+
+#[tokio::test]
+async fn fetch_changes_returns_rate_limited_on_429() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/content/search"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("Retry-After", "45"),
+        )
+        .mount(&server)
+        .await;
+
+    let plugin = make_plugin(&server, "TEAM");
+    let result = plugin
+        .fetch_changes(FetchChangesOpts {
+            since: 0,
+            cursor: None,
+            page_size: 25,
+            known_ids: vec![],
+        })
+        .await;
+
+    assert!(
+        matches!(result, Err(PluginError::RateLimited { retry_after_secs: 45 })),
+        "expected RateLimited{{45}}, got: {:?}",
+        result
+    );
+}
+
+// ── ancestor_id (folder) mode tests ──────────────────────────────────────────
+
+#[tokio::test]
+async fn fetch_all_ancestor_filters_out_folder_types() {
+    let server = MockServer::start().await;
+
+    // Real Confluence returns mix of folders + pages when ancestor is a folder
+    let body = serde_json::json!({
+        "results": [
+            {"id": "101", "type": "folder", "title": "Sub-folder", "_links": {"webui": "/wiki/folder1"}, "body": null},
+            {"id": "200", "type": "page", "title": "Real Page", "_links": {"webui": "/wiki/page1"}, "body": {"storage": {"value": "<p>Content</p>"}}},
+            {"id": "201", "type": "page", "title": "Another Page", "_links": {"webui": "/wiki/page2"}, "body": null},
+        ],
+        "start": 0, "limit": 25, "size": 3
+    });
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/content/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+        .mount(&server)
+        .await;
+
+    let plugin = make_ancestor_plugin(&server, "4667998225");
+    let stream = plugin
+        .fetch_all(FetchAllOpts { cursor: None, page_size: 25 })
+        .await
+        .unwrap();
+
+    // folder type must be filtered out — only 2 pages returned
+    assert_eq!(stream.documents.len(), 2, "should filter out folder type items");
+    assert_eq!(stream.documents[0].title.as_deref(), Some("Real Page"));
+    assert_eq!(stream.documents[1].title.as_deref(), Some("Another Page"));
+}
+
+#[tokio::test]
+async fn fetch_all_ancestor_returns_zero_when_only_folders() {
+    let server = MockServer::start().await;
+
+    let body = serde_json::json!({
+        "results": [
+            {"id": "101", "type": "folder", "title": "Folder A", "_links": {"webui": ""}, "body": null},
+            {"id": "102", "type": "folder", "title": "Folder B", "_links": {"webui": ""}, "body": null},
+        ],
+        "start": 0, "limit": 25, "size": 2
+    });
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/content/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+        .mount(&server)
+        .await;
+
+    let plugin = make_ancestor_plugin(&server, "4667998225");
+    let stream = plugin
+        .fetch_all(FetchAllOpts { cursor: None, page_size: 25 })
+        .await
+        .unwrap();
+
+    assert_eq!(stream.documents.len(), 0, "all-folder response should yield 0 documents");
+}
+
+#[tokio::test]
+async fn fetch_changes_ancestor_filters_out_folder_types() {
+    let server = MockServer::start().await;
+
+    let body = serde_json::json!({
+        "results": [
+            {"id": "101", "type": "folder", "title": "Folder", "_links": {"webui": ""}, "body": null},
+            {"id": "200", "type": "page", "title": "Updated Page", "_links": {"webui": ""}, "body": {"storage": {"value": "content"}}},
+        ],
+        "start": 0, "limit": 25, "size": 2
+    });
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/content/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+        .mount(&server)
+        .await;
+
+    let plugin = make_ancestor_plugin(&server, "4667998225");
+    let changeset = plugin
+        .fetch_changes(FetchChangesOpts {
+            since: 0,
+            cursor: None,
+            page_size: 25,
+            known_ids: vec![],
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(changeset.updated.len(), 1, "folder type should be filtered from changes");
+    assert_eq!(changeset.updated[0].title.as_deref(), Some("Updated Page"));
+}
+
+#[tokio::test]
+async fn fetch_changes_ancestor_deletion_ignores_folder_ids() {
+    let server = MockServer::start().await;
+
+    // Only "200" (page) comes back; "999" is known page ID → deleted
+    // "101" is a folder ID in known_ids — should NOT appear in deletions
+    let body = serde_json::json!({
+        "results": [
+            {"id": "200", "type": "page", "title": "Existing", "_links": {"webui": ""}, "body": null},
+        ],
+        "start": 0, "limit": 25, "size": 1
+    });
+
+    Mock::given(method("GET"))
+        .and(path("/rest/api/content/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&body))
+        .mount(&server)
+        .await;
+
+    let plugin = make_ancestor_plugin(&server, "4667998225");
+    let changeset = plugin
+        .fetch_changes(FetchChangesOpts {
+            since: 0,
+            cursor: None,
+            page_size: 25,
+            known_ids: vec![SourceDocId("200".into()), SourceDocId("999".into())],
+        })
+        .await
+        .unwrap();
+
     assert_eq!(changeset.deleted_ids.len(), 1);
     assert_eq!(changeset.deleted_ids[0].0, "999");
 }

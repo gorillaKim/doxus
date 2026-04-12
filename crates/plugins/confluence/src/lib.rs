@@ -1,3 +1,4 @@
+pub mod html_convert;
 pub mod oauth_server;
 
 use async_trait::async_trait;
@@ -34,9 +35,18 @@ struct ConfluenceCqlResult {
 struct ConfluencePage {
     id: String,
     title: String,
+    #[serde(rename = "type", default = "default_page_type")]
+    content_type: String,
     #[serde(rename = "_links")]
     links: ConfluenceLinks,
     body: Option<ConfluenceBody>,
+    version: Option<ConfluenceVersion>,
+    metadata: Option<ConfluencePageMetadata>,
+    space: Option<ConfluenceSpace>,
+}
+
+fn default_page_type() -> String {
+    "page".to_string()
 }
 
 #[derive(Deserialize)]
@@ -55,13 +65,41 @@ struct ConfluenceStorage {
     value: String,
 }
 
+#[derive(Deserialize)]
+struct ConfluenceVersion {
+    when: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ConfluencePageMetadata {
+    labels: Option<ConfluenceLabels>,
+}
+
+#[derive(Deserialize)]
+struct ConfluenceLabels {
+    results: Vec<ConfluenceLabel>,
+}
+
+#[derive(Deserialize)]
+struct ConfluenceLabel {
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct ConfluenceSpace {
+    key: String,
+}
+
 // ── Plugin ────────────────────────────────────────────────────────────────────
 
 pub struct ConfluencePlugin {
     meta: PluginMetadata,
     base_url: Option<String>,
     api_token: Option<String>,
+    /// 이메일이 설정된 경우 Basic auth(email:token) 사용, 없으면 Bearer 사용
+    email: Option<String>,
     space_key: Option<String>,
+    ancestor_id: Option<String>,
     oauth_config: Option<OAuthConfig>,
     oauth_token: Arc<RwLock<Option<OAuthToken>>>,
     /// Pending state value generated during oauth_start, used to validate oauth_exchange.
@@ -69,6 +107,20 @@ pub struct ConfluencePlugin {
     /// OAuth callback server started during oauth_start.
     oauth_server: std::sync::Mutex<Option<oauth_server::OAuthCallbackServer>>,
     client: reqwest::Client,
+}
+
+fn build_oauth_urls(base_url: &str) -> (String, String) {
+    if base_url.contains(".atlassian.net") {
+        (
+            "https://auth.atlassian.com/authorize".to_string(),
+            "https://auth.atlassian.com/oauth/token".to_string(),
+        )
+    } else {
+        (
+            format!("{base_url}/rest/oauth2/latest/authorize"),
+            format!("{base_url}/rest/oauth2/latest/token"),
+        )
+    }
 }
 
 impl ConfluencePlugin {
@@ -82,7 +134,9 @@ impl ConfluencePlugin {
             },
             base_url: None,
             api_token: None,
+            email: None,
             space_key: None,
+            ancestor_id: None,
             oauth_config: None,
             oauth_token: Arc::new(RwLock::new(None)),
             oauth_pending_state: std::sync::Mutex::new(None),
@@ -106,32 +160,90 @@ impl ConfluencePlugin {
             .ok_or_else(|| PluginError::Internal("plugin not initialized".into()))
     }
 
+    /// Authorization 헤더 값 반환.
+    /// email이 있으면 Basic auth(email:token), 없으면 Bearer token.
+    fn auth_header(&self) -> Result<String, PluginError> {
+        let token = self.api_token()?;
+        if let Some(email) = &self.email {
+            use base64::Engine as _;
+            let credentials = base64::engine::general_purpose::STANDARD
+                .encode(format!("{email}:{token}"));
+            Ok(format!("Basic {credentials}"))
+        } else {
+            Ok(format!("Bearer {token}"))
+        }
+    }
+
     fn space_key(&self) -> Result<&str, PluginError> {
         self.space_key
             .as_deref()
             .ok_or_else(|| PluginError::Internal("plugin not initialized".into()))
     }
 
+    /// HTTP 응답 상태 코드를 PluginError로 변환.
+    /// 성공(2xx)이면 Ok(())를 반환하고, 오류면 적절한 PluginError를 반환.
+    fn check_status(status: reqwest::StatusCode, headers: &reqwest::header::HeaderMap) -> Result<(), PluginError> {
+        if status.is_success() {
+            return Ok(());
+        }
+        match status.as_u16() {
+            401 => Err(PluginError::AuthRequired),
+            403 => Err(PluginError::PermissionDenied("insufficient permissions".into())),
+            404 => Err(PluginError::NotFound("resource not found".into())),
+            429 => {
+                let retry_after = headers
+                    .get("Retry-After")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(60);
+                Err(PluginError::RateLimited { retry_after_secs: retry_after })
+            }
+            _ => Err(PluginError::NetworkError(format!("HTTP {}", status))),
+        }
+    }
+
     fn page_to_doc(&self, page: ConfluencePage) -> Result<RawDocument, PluginError> {
         let base_url = self.base_url()?;
-        let content = page
+        let raw_content = page
             .body
             .and_then(|b| b.storage)
             .map(|s| s.value)
             .unwrap_or_default();
+        let content = html_convert::confluence_html_to_markdown(&raw_content);
         let url = page
             .links
             .web_ui
             .map(|path| format!("{base_url}{path}"));
+
+        // updated_at: version.when → Unix timestamp
+        let updated_at = page
+            .version
+            .and_then(|v| v.when)
+            .and_then(|when| chrono::DateTime::parse_from_rfc3339(&when).ok())
+            .map(|dt| dt.timestamp());
+
+        // metadata: space_key
+        let mut metadata = HashMap::new();
+        if let Some(space) = page.space {
+            metadata.insert("space_key".to_string(), serde_json::Value::String(space.key));
+        }
+
+        // tags: Confluence labels
+        let tags = page
+            .metadata
+            .and_then(|m| m.labels)
+            .map(|l| l.results.into_iter().map(|label| label.name).collect())
+            .unwrap_or_default();
+
         Ok(RawDocument {
             id: SourceDocId(page.id),
             title: Some(page.title),
             content,
-            content_type: ContentType::PlainText,
+            content_type: ContentType::Markdown,
             url,
-            metadata: HashMap::new(),
-            tags: vec![],
-            updated_at: None,
+            metadata,
+            tags,
+            updated_at,
         })
     }
 }
@@ -151,7 +263,7 @@ impl ConfluencePlugin {
     async fn fetch_all_space_ids(
         &self,
         base_url: &str,
-        api_token: &str,
+        auth_header: &str,
         space_key: &str,
     ) -> Result<std::collections::HashSet<String>, PluginError> {
         let mut ids = std::collections::HashSet::new();
@@ -167,17 +279,12 @@ impl ConfluencePlugin {
                     ("start", &start.to_string()),
                     ("limit", &limit.to_string()),
                 ])
-                .header("Authorization", format!("Bearer {api_token}"))
+                .header("Authorization", auth_header)
                 .send()
                 .await
                 .map_err(|e| PluginError::NetworkError(e.to_string()))?;
 
-            if !resp.status().is_success() {
-                return Err(PluginError::NetworkError(format!(
-                    "HTTP {}",
-                    resp.status()
-                )));
-            }
+            Self::check_status(resp.status(), resp.headers())?;
 
             let result: ConfluenceCqlResult = resp
                 .json()
@@ -197,10 +304,65 @@ impl ConfluencePlugin {
         Ok(ids)
     }
 
+    async fn fetch_all_ancestor_ids(
+        &self,
+        base_url: &str,
+        auth_header: &str,
+        ancestor_id: &str,
+    ) -> Result<std::collections::HashSet<String>, PluginError> {
+        let mut ids = std::collections::HashSet::new();
+        let mut start: i64 = 0;
+        let limit: i64 = 200;
+        loop {
+            // type 필터 없이 조회 — folder ancestor에서도 하위 페이지 ID를 수집하기 위함
+            let cql = format!("ancestor = \"{ancestor_id}\" ORDER BY id ASC");
+            let resp = self
+                .client
+                .get(&format!("{base_url}/rest/api/content/search"))
+                .query(&[
+                    ("cql", cql.as_str()),
+                    ("start", &start.to_string()),
+                    ("limit", &limit.to_string()),
+                ])
+                .header("Authorization", auth_header)
+                .send()
+                .await
+                .map_err(|e| PluginError::NetworkError(e.to_string()))?;
+
+            Self::check_status(resp.status(), resp.headers())?;
+
+            let result: ConfluenceCqlResult = resp
+                .json()
+                .await
+                .map_err(|e| PluginError::Internal(e.to_string()))?;
+
+            let count = result.results.len() as i64;
+            for page in result.results {
+                // folder 타입은 인덱싱 대상이 아니므로 ID 수집에서도 제외
+                if page.content_type == "page" {
+                    ids.insert(page.id);
+                }
+            }
+
+            if count < limit {
+                break;
+            }
+            start += limit;
+        }
+        Ok(ids)
+    }
+
     #[doc(hidden)]
     pub fn set_test_config(&mut self, base_url: String, space_key: String, api_token: String) {
         self.base_url = Some(base_url);
         self.space_key = Some(space_key);
+        self.api_token = Some(api_token);
+    }
+
+    #[doc(hidden)]
+    pub fn set_test_ancestor_config(&mut self, base_url: String, ancestor_id: String, api_token: String) {
+        self.base_url = Some(base_url);
+        self.ancestor_id = Some(ancestor_id);
         self.api_token = Some(api_token);
     }
 
@@ -299,20 +461,34 @@ impl DocSource for ConfluencePlugin {
     }
 
     async fn validate_config(&self, config: &PluginConfig) -> Result<(), PluginError> {
-        for field in ["base_url", "space_key", "api_token"] {
+        for field in ["base_url", "api_token"] {
             if !config.fields.contains_key(field) {
                 return Err(PluginError::ConfigInvalid(format!(
                     "missing required field: {field}"
                 )));
             }
         }
+        let has_space_key = config.fields.get("space_key").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
+        let has_ancestor_id = config.fields.get("ancestor_id").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
+        if !has_space_key && !has_ancestor_id {
+            return Err(PluginError::ConfigInvalid(
+                "either space_key or ancestor_id must be provided".to_string(),
+            ));
+        }
         if let Some(base_url) = config.fields.get("base_url").and_then(|v| v.as_str()) {
             validate_base_url(base_url)?;
         }
         if let Some(space_key) = config.fields.get("space_key").and_then(|v| v.as_str()) {
-            if !space_key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+            if !space_key.is_empty() && !space_key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '~') {
                 return Err(PluginError::ConfigInvalid(
-                    "space_key must contain only alphanumeric characters, underscores, or hyphens".to_string(),
+                    "space_key must contain only alphanumeric characters, underscores, hyphens, or tildes".to_string(),
+                ));
+            }
+        }
+        if let Some(ancestor_id) = config.fields.get("ancestor_id").and_then(|v| v.as_str()) {
+            if !ancestor_id.is_empty() && !ancestor_id.chars().all(|c| c.is_ascii_digit()) {
+                return Err(PluginError::ConfigInvalid(
+                    "ancestor_id must be a numeric content ID".to_string(),
                 ));
             }
         }
@@ -331,15 +507,36 @@ impl DocSource for ConfluencePlugin {
             .unwrap_or("")
             .trim_end_matches('/');
         validate_base_url(raw_base_url)?;
-        self.base_url = if raw_base_url.is_empty() {
+        // Atlassian Cloud: Confluence REST API lives under /wiki. Auto-append if missing.
+        let normalized_base_url = if raw_base_url.contains(".atlassian.net")
+            && !raw_base_url.ends_with("/wiki")
+        {
+            format!("{raw_base_url}/wiki")
+        } else {
+            raw_base_url.to_string()
+        };
+        self.base_url = if normalized_base_url.is_empty() {
             None
         } else {
-            Some(raw_base_url.to_string())
+            Some(normalized_base_url.clone())
         };
+        let raw_base_url = normalized_base_url.as_str();
+        self.email = config
+            .fields
+            .get("email")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from);
         self.space_key = config
             .fields
             .get("space_key")
             .and_then(|v| v.as_str())
+            .map(String::from);
+        self.ancestor_id = config
+            .fields
+            .get("ancestor_id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
             .map(String::from);
 
         // api_token from secrets, fallback to config field
@@ -363,7 +560,7 @@ impl DocSource for ConfluencePlugin {
             config.fields.get("client_id").and_then(|v| v.as_str()),
             config.fields.get("client_secret").and_then(|v| v.as_str()),
         ) {
-            let base = raw_base_url;
+            let (auth_url, token_url) = build_oauth_urls(raw_base_url);
             self.oauth_config = Some(OAuthConfig {
                 client_id: client_id.to_string(),
                 client_secret: client_secret.to_string(),
@@ -373,8 +570,8 @@ impl DocSource for ConfluencePlugin {
                     .and_then(|v| v.as_str())
                     .unwrap_or("http://localhost:8080/callback")
                     .to_string(),
-                auth_url: format!("{base}/oauth2/authorize"),
-                token_url: format!("{base}/oauth2/token"),
+                auth_url,
+                token_url,
                 scopes: vec!["read:confluence-content.all".to_string()],
             });
         }
@@ -441,7 +638,6 @@ impl DocSource for ConfluencePlugin {
         self.ensure_valid_token().await?;
         let base_url = self.base_url()?;
         let api_token = self.api_token()?;
-        let space_key = self.space_key()?;
 
         let start: i64 = opts
             .cursor
@@ -450,51 +646,83 @@ impl DocSource for ConfluencePlugin {
             .unwrap_or(0);
         let limit = opts.page_size as i64;
 
-        let url = format!("{base_url}/rest/api/content");
-        let resp = self
-            .client
-            .get(&url)
-            .query(&[
-                ("spaceKey", space_key),
-                ("type", "page"),
-                ("start", &start.to_string()),
-                ("limit", &limit.to_string()),
-                ("expand", "body.storage"),
-            ])
-            .header("Authorization", format!("Bearer {api_token}"))
-            .send()
-            .await
-            .map_err(|e| PluginError::NetworkError(e.to_string()))?;
-
-        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(PluginError::AuthRequired);
-        }
-        if !resp.status().is_success() {
-            return Err(PluginError::NetworkError(format!(
-                "HTTP {}",
-                resp.status()
-            )));
-        }
-
-        let page_list: ConfluencePageList = resp
-            .json()
-            .await
-            .map_err(|e| PluginError::Internal(e.to_string()))?;
-
-        let next_cursor = if page_list.size >= page_list.limit {
-            Some((page_list.start + page_list.limit).to_string())
+        // ancestor_id 모드의 첫 페이지: ancestor 페이지 자체도 포함
+        let ancestor_self_doc: Option<RawDocument> = if self.ancestor_id.is_some() && start == 0 {
+            let ancestor_id = self.ancestor_id.as_deref().unwrap();
+            let url = format!("{base_url}/rest/api/content/{ancestor_id}");
+            if let Ok(resp) = self
+                .client
+                .get(&url)
+                .query(&[("expand", "body.storage,version,metadata.labels,space")])
+                .header("Authorization", self.auth_header()?)
+                .send()
+                .await
+            {
+                if resp.status().is_success() {
+                    resp.json::<ConfluencePage>().await.ok().and_then(|p| self.page_to_doc(p).ok())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
         } else {
             None
         };
 
-        let documents: Result<Vec<_>, _> = page_list
-            .results
+        // CQL 통합: ancestor 모드와 space 모드 모두 CQL search API 사용
+        // - ancestor: /descendant/page는 Cloud에서 404 발생, space path에 ~가 포함된 경우도 404
+        // - CQL은 두 경우 모두 처리 가능
+        let cql = if let Some(ancestor_id) = &self.ancestor_id {
+            format!("ancestor = \"{ancestor_id}\" ORDER BY id ASC")
+        } else {
+            let space_key = self.space_key()?;
+            format!("space = \"{space_key}\" AND type = page ORDER BY id ASC")
+        };
+        let url = format!("{base_url}/rest/api/content/search");
+        eprintln!("[confluence:fetch_all] CQL={cql}");
+        eprintln!("[confluence:fetch_all] URL={url} start={start}");
+        let resp = self
+            .client
+            .get(&url)
+            .query(&[
+                ("cql", cql.as_str()),
+                ("expand", "body.storage,version,metadata.labels,space"),
+                ("start", &start.to_string()),
+                ("limit", &limit.to_string()),
+            ])
+            .header("Authorization", self.auth_header()?)
+            .send()
+            .await
+            .map_err(|e| PluginError::NetworkError(e.to_string()))?;
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let body_bytes = resp.bytes().await.map_err(|e| PluginError::Internal(e.to_string()))?;
+        eprintln!("[confluence:fetch_all] status={status} body={}", String::from_utf8_lossy(&body_bytes[..body_bytes.len().min(500)]));
+        Self::check_status(status, &headers)?;
+        let r: ConfluenceCqlResult = serde_json::from_slice(&body_bytes).map_err(|e| PluginError::Internal(e.to_string()))?;
+        eprintln!("[confluence:fetch_all] parsed: results={} size={}", r.results.len(), r.size);
+        let (results, size, limit_val, start_val) = (r.results, r.size, r.limit, r.start);
+
+        let next_cursor = if size >= limit_val {
+            Some((start_val + limit_val).to_string())
+        } else {
+            None
+        };
+
+        let mut documents: Vec<RawDocument> = results
             .into_iter()
+            .filter(|p| p.content_type == "page")
             .map(|p| self.page_to_doc(p))
-            .collect();
+            .collect::<Result<_, _>>()?;
+
+        // ancestor 페이지 자체를 맨 앞에 prepend (첫 페이지, start==0 일 때만)
+        if let Some(self_doc) = ancestor_self_doc {
+            documents.insert(0, self_doc);
+        }
 
         Ok(DocumentStream {
-            documents: documents?,
+            documents,
             next_cursor,
             estimated_total: None,
         })
@@ -504,7 +732,6 @@ impl DocSource for ConfluencePlugin {
         self.ensure_valid_token().await?;
         let base_url = self.base_url()?;
         let api_token = self.api_token()?;
-        let space_key = self.space_key()?;
 
         // Convert Unix timestamp (seconds) to ISO 8601 date string for CQL
         let since_dt = chrono::DateTime::from_timestamp(opts.since, 0)
@@ -518,9 +745,16 @@ impl DocSource for ConfluencePlugin {
             .unwrap_or(0);
         let limit = opts.page_size as i64;
 
-        let cql = format!(
-            "space = \"{space_key}\" AND lastModified >= \"{since_str}\" ORDER BY lastModified ASC"
-        );
+        let cql = if let Some(ancestor_id) = &self.ancestor_id {
+            format!(
+                "ancestor = \"{ancestor_id}\" AND lastModified >= \"{since_str}\" ORDER BY lastModified ASC"
+            )
+        } else {
+            let space_key = self.space_key()?;
+            format!(
+                "space = \"{space_key}\" AND lastModified >= \"{since_str}\" ORDER BY lastModified ASC"
+            )
+        };
 
         let url = format!("{base_url}/rest/api/content/search");
         let resp = self
@@ -528,24 +762,16 @@ impl DocSource for ConfluencePlugin {
             .get(&url)
             .query(&[
                 ("cql", cql.as_str()),
-                ("expand", "body.storage"),
+                ("expand", "body.storage,version,metadata.labels,space"),
                 ("start", &start.to_string()),
                 ("limit", &limit.to_string()),
             ])
-            .header("Authorization", format!("Bearer {api_token}"))
+            .header("Authorization", self.auth_header()?)
             .send()
             .await
             .map_err(|e| PluginError::NetworkError(e.to_string()))?;
 
-        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(PluginError::AuthRequired);
-        }
-        if !resp.status().is_success() {
-            return Err(PluginError::NetworkError(format!(
-                "HTTP {}",
-                resp.status()
-            )));
-        }
+        Self::check_status(resp.status(), resp.headers())?;
 
         let cql_result: ConfluenceCqlResult = resp
             .json()
@@ -561,6 +787,7 @@ impl DocSource for ConfluencePlugin {
         let updated: Result<Vec<_>, _> = cql_result
             .results
             .into_iter()
+            .filter(|p| p.content_type == "page")
             .map(|p| self.page_to_doc(p))
             .collect();
 
@@ -569,8 +796,12 @@ impl DocSource for ConfluencePlugin {
         // page IDs and compute the set difference — comparing only against the
         // CQL change-result would cause false positives for unmodified documents.
         let deleted_ids = if next_cursor.is_none() && !opts.known_ids.is_empty() {
-            let all_current_ids =
-                self.fetch_all_space_ids(base_url, api_token, space_key).await?;
+            let all_current_ids = if let Some(ancestor_id) = &self.ancestor_id {
+                self.fetch_all_ancestor_ids(base_url, &self.auth_header()?, ancestor_id).await?
+            } else {
+                let space_key = self.space_key()?;
+                self.fetch_all_space_ids(base_url, &self.auth_header()?, space_key).await?
+            };
             opts.known_ids
                 .into_iter()
                 .filter(|id| !all_current_ids.contains(&id.0))
@@ -600,21 +831,13 @@ impl DocSource for ConfluencePlugin {
         let resp = self
             .client
             .get(&url)
-            .query(&[("expand", "body.storage")])
-            .header("Authorization", format!("Bearer {api_token}"))
+            .query(&[("expand", "body.storage,version,metadata.labels,space")])
+            .header("Authorization", self.auth_header()?)
             .send()
             .await
             .map_err(|e| PluginError::NetworkError(e.to_string()))?;
 
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            return Err(PluginError::NotFound(id.0.clone()));
-        }
-        if !resp.status().is_success() {
-            return Err(PluginError::NetworkError(format!(
-                "HTTP {}",
-                resp.status()
-            )));
-        }
+        Self::check_status(resp.status(), resp.headers())?;
 
         let page: ConfluencePage = resp
             .json()
@@ -625,12 +848,11 @@ impl DocSource for ConfluencePlugin {
     }
 
     async fn health_check(&self) -> HealthStatus {
-        let (base_url, api_token, space_key) = match (
+        let (base_url, api_token) = match (
             self.base_url.as_deref(),
             self.api_token.as_deref(),
-            self.space_key.as_deref(),
         ) {
-            (Some(b), Some(t), Some(s)) => (b, t, s),
+            (Some(b), Some(t)) => (b, t),
             _ => {
                 return HealthStatus {
                     healthy: false,
@@ -639,11 +861,21 @@ impl DocSource for ConfluencePlugin {
             }
         };
 
-        let url = format!("{base_url}/rest/api/space/{space_key}");
+        let url = if let Some(ancestor_id) = &self.ancestor_id {
+            format!("{base_url}/rest/api/content/{ancestor_id}")
+        } else if let Some(space_key) = &self.space_key {
+            format!("{base_url}/rest/api/space/{space_key}")
+        } else {
+            return HealthStatus {
+                healthy: false,
+                message: Some("neither space_key nor ancestor_id is configured".into()),
+            };
+        };
+
         match self
             .client
             .get(&url)
-            .header("Authorization", format!("Bearer {api_token}"))
+            .header("Authorization", self.auth_header().unwrap_or_default())
             .send()
             .await
         {
@@ -670,6 +902,26 @@ mod tests {
     use doxus_plugin_sdk::{FetchAllOpts, PluginConfig};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn test_build_oauth_urls_cloud() {
+        let (auth, token) = build_oauth_urls("https://mycompany.atlassian.net/wiki");
+        assert_eq!(auth, "https://auth.atlassian.com/authorize");
+        assert_eq!(token, "https://auth.atlassian.com/oauth/token");
+    }
+
+    #[test]
+    fn test_build_oauth_urls_server() {
+        let (auth, token) = build_oauth_urls("https://confluence.corp.com");
+        assert_eq!(auth, "https://confluence.corp.com/rest/oauth2/latest/authorize");
+        assert_eq!(token, "https://confluence.corp.com/rest/oauth2/latest/token");
+    }
+
+    #[test]
+    fn test_build_oauth_urls_cloud_no_trailing_slash() {
+        let (auth, _) = build_oauth_urls("https://foo.atlassian.net");
+        assert_eq!(auth, "https://auth.atlassian.com/authorize");
+    }
 
     fn make_plugin(server: &MockServer) -> ConfluencePlugin {
         // Set fields directly to bypass SSRF validation (wiremock uses HTTP localhost).
@@ -701,6 +953,29 @@ mod tests {
         // missing space_key
         let result = plugin.validate_config(&config).await;
         assert!(matches!(result, Err(PluginError::ConfigInvalid(_))));
+    }
+
+    #[tokio::test]
+    async fn validate_config_accepts_numeric_ancestor_id() {
+        let plugin = ConfluencePlugin::new();
+        let mut config = PluginConfig::default();
+        config.fields.insert("base_url".into(), serde_json::json!("https://example.atlassian.net/wiki"));
+        config.fields.insert("api_token".into(), serde_json::json!("tok"));
+        config.fields.insert("ancestor_id".into(), serde_json::json!("4667998225"));
+        let result = plugin.validate_config(&config).await;
+        assert!(result.is_ok(), "numeric ancestor_id should be valid");
+    }
+
+    #[tokio::test]
+    async fn validate_config_rejects_non_numeric_ancestor_id() {
+        let plugin = ConfluencePlugin::new();
+        let mut config = PluginConfig::default();
+        config.fields.insert("base_url".into(), serde_json::json!("https://example.atlassian.net/wiki"));
+        config.fields.insert("api_token".into(), serde_json::json!("tok"));
+        // CQL injection attempt
+        config.fields.insert("ancestor_id".into(), serde_json::json!("123\" OR \"1\"=\"1"));
+        let result = plugin.validate_config(&config).await;
+        assert!(matches!(result, Err(PluginError::ConfigInvalid(_))), "non-numeric ancestor_id should be rejected");
     }
 
     #[tokio::test]
@@ -1032,5 +1307,151 @@ mod tests {
         let plugin = make_plugin(&server);
         let status = plugin.health_check().await;
         assert!(!status.healthy);
+    }
+
+    #[test]
+    fn test_page_to_doc_html_converted_to_markdown() {
+        let mut plugin = ConfluencePlugin::new();
+        plugin.base_url = Some("https://example.atlassian.net/wiki".into());
+        let page = ConfluencePage {
+            id: "1".into(),
+            title: "Test".into(),
+            content_type: "page".into(),
+            links: ConfluenceLinks { web_ui: None },
+            body: Some(ConfluenceBody {
+                storage: Some(ConfluenceStorage {
+                    value: "<p>Hello <strong>world</strong></p>".into(),
+                }),
+            }),
+            version: None,
+            metadata: None,
+            space: None,
+        };
+        let doc = plugin.page_to_doc(page).unwrap();
+        assert!(matches!(doc.content_type, ContentType::Markdown));
+        assert!(doc.content.contains("**world**"), "expected bold markdown, got: {}", doc.content);
+    }
+
+    #[test]
+    fn test_page_to_doc_empty_body_is_markdown() {
+        let mut plugin = ConfluencePlugin::new();
+        plugin.base_url = Some("https://example.atlassian.net/wiki".into());
+        let page = ConfluencePage {
+            id: "2".into(),
+            title: "Empty".into(),
+            content_type: "page".into(),
+            links: ConfluenceLinks { web_ui: None },
+            body: None,
+            version: None,
+            metadata: None,
+            space: None,
+        };
+        let doc = plugin.page_to_doc(page).unwrap();
+        assert!(matches!(doc.content_type, ContentType::Markdown));
+        assert!(doc.content.is_empty() || !doc.content.contains('<'));
+    }
+
+    #[test]
+    fn test_page_to_doc_confluence_macro_code_block() {
+        let mut plugin = ConfluencePlugin::new();
+        plugin.base_url = Some("https://example.atlassian.net/wiki".into());
+        let html = r#"<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">rust</ac:parameter><ac:plain-text-body><![CDATA[fn main() {}]]></ac:plain-text-body></ac:structured-macro>"#;
+        let page = ConfluencePage {
+            id: "3".into(),
+            title: "Code".into(),
+            content_type: "page".into(),
+            links: ConfluenceLinks { web_ui: None },
+            body: Some(ConfluenceBody {
+                storage: Some(ConfluenceStorage { value: html.into() }),
+            }),
+            version: None,
+            metadata: None,
+            space: None,
+        };
+        let doc = plugin.page_to_doc(page).unwrap();
+        assert!(matches!(doc.content_type, ContentType::Markdown));
+        assert!(!doc.content.contains("<ac:"), "raw ac: tags should not appear: {}", doc.content);
+    }
+
+    #[test]
+    fn test_page_to_doc_updated_at_from_version() {
+        let mut plugin = ConfluencePlugin::new();
+        plugin.base_url = Some("https://example.atlassian.net/wiki".into());
+        let page = ConfluencePage {
+            id: "1".into(),
+            title: "Test".into(),
+            content_type: "page".into(),
+            links: ConfluenceLinks { web_ui: None },
+            body: None,
+            version: Some(ConfluenceVersion {
+                when: Some("2024-01-15T10:30:00.000Z".into()),
+            }),
+            metadata: None,
+            space: None,
+        };
+        let doc = plugin.page_to_doc(page).unwrap();
+        assert_eq!(doc.updated_at, Some(1705314600));
+    }
+
+    #[test]
+    fn test_page_to_doc_updated_at_none_when_missing() {
+        let mut plugin = ConfluencePlugin::new();
+        plugin.base_url = Some("https://example.atlassian.net/wiki".into());
+        let page = ConfluencePage {
+            id: "2".into(),
+            title: "Test".into(),
+            content_type: "page".into(),
+            links: ConfluenceLinks { web_ui: None },
+            body: None,
+            version: None,
+            metadata: None,
+            space: None,
+        };
+        let doc = plugin.page_to_doc(page).unwrap();
+        assert_eq!(doc.updated_at, None);
+    }
+
+    #[test]
+    fn test_page_to_doc_space_key_in_metadata() {
+        let mut plugin = ConfluencePlugin::new();
+        plugin.base_url = Some("https://example.atlassian.net/wiki".into());
+        let page = ConfluencePage {
+            id: "3".into(),
+            title: "Test".into(),
+            content_type: "page".into(),
+            links: ConfluenceLinks { web_ui: None },
+            body: None,
+            version: None,
+            metadata: None,
+            space: Some(ConfluenceSpace { key: "ENG".into() }),
+        };
+        let doc = plugin.page_to_doc(page).unwrap();
+        assert_eq!(doc.metadata.get("space_key").and_then(|v| v.as_str()), Some("ENG"));
+    }
+
+    #[test]
+    fn test_page_to_doc_labels_as_tags() {
+        let mut plugin = ConfluencePlugin::new();
+        plugin.base_url = Some("https://example.atlassian.net/wiki".into());
+        let page = ConfluencePage {
+            id: "4".into(),
+            title: "Test".into(),
+            content_type: "page".into(),
+            links: ConfluenceLinks { web_ui: None },
+            body: None,
+            version: None,
+            metadata: Some(ConfluencePageMetadata {
+                labels: Some(ConfluenceLabels {
+                    results: vec![
+                        ConfluenceLabel { name: "architecture".into() },
+                        ConfluenceLabel { name: "draft".into() },
+                    ],
+                }),
+            }),
+            space: None,
+        };
+        let doc = plugin.page_to_doc(page).unwrap();
+        assert!(doc.tags.contains(&"architecture".to_string()));
+        assert!(doc.tags.contains(&"draft".to_string()));
     }
 }
