@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useProjectStore } from '../stores/useProjectStore';
+import { usePluginStore } from '../stores/usePluginStore';
 
 // PluginType is now an open string — supports any installed plugin id
 type PluginType = string;
@@ -29,6 +30,13 @@ const KNOWN_PLUGINS: Record<string, Omit<PluginOption, 'id' | 'config_schema'>> 
   'confluence': { label: 'Confluence', description: 'Confluence Cloud 또는 Server',           icon: '📄' },
   'github':     { label: 'GitHub',     description: 'GitHub Issues / Wiki / Discussions',     icon: '🐙' },
 };
+
+function pluginMeta(sourceType: string) {
+  const short = sourceType.replace(/^com\.doxus\./, '');
+  const pluginId = `com.doxus.${short}`;
+  const base = KNOWN_PLUGINS[short] ?? { label: short, description: '', icon: '🔌' };
+  return { ...base, icon: usePluginStore.getState().getEmoji(pluginId) };
+}
 
 function ConfigSchemaForm({
   schema,
@@ -142,7 +150,9 @@ function AddProjectModal({ onClose }: { onClose: () => void }) {
     try {
       const projectPath = fields.path ?? fields.base_url ?? fields.repo ?? fields.endpoint ?? pluginType;
       const name = fields.name ?? '';
-      await addProject(name.trim(), projectPath);
+      // name/path 제외한 나머지 필드를 config로 전달
+      const { name: _n, path: _p, ...configFields } = fields;
+      await addProject(name.trim(), projectPath, pluginType, configFields);
       onClose();
     } catch (e) {
       setError(String(e));
@@ -218,9 +228,11 @@ function AddProjectModal({ onClose }: { onClose: () => void }) {
 }
 
 export function ProjectsPage() {
-  const { projects, isLoading, error, fetch, toggleStatus, indexProject, indexingNames } = useProjectStore();
+  const { projects, isLoading, error, fetch, toggleStatus, indexProject, indexingNames, removeProject } = useProjectStore();
+  usePluginStore((s) => s.emojiMap); // emoji 변경 시 리렌더 트리거
   const [showModal, setShowModal] = useState(false);
   const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [removingId, setRemovingId] = useState<string | null>(null);
   const [indexResult, setIndexResult] = useState<{ name: string; message: string } | null>(null);
 
   useEffect(() => { fetch(); }, [fetch]);
@@ -233,6 +245,16 @@ export function ProjectsPage() {
     } catch (e) {
       setIndexResult({ name, message: `오류: ${String(e)}` });
       setTimeout(() => setIndexResult(null), 4000);
+    }
+  };
+
+  const handleRemove = async (name: string, displayName: string) => {
+    if (!window.confirm(`"${displayName}" 프로젝트를 삭제하시겠습니까?\n인덱스 데이터만 삭제되며 원본 파일은 유지됩니다.`)) return;
+    setRemovingId(name);
+    try {
+      await removeProject(name);
+    } finally {
+      setRemovingId(null);
     }
   };
 
@@ -284,37 +306,59 @@ export function ProjectsPage() {
         </div>
       )}
 
-      <div className="flex flex-col gap-2">
-        {projects.map((p) => (
-          <div key={p.name}
-            className="p-4 bg-gray-900 border border-gray-800 rounded-xl flex items-center justify-between hover:border-gray-700 transition-colors">
-            <div className="min-w-0">
-              <h3 className="font-medium text-gray-100">{p.display_name}</h3>
-              <p className="text-sm text-gray-500 truncate max-w-md">{p.path}</p>
+      {(() => {
+        // Group by source_type
+        const groups = projects.reduce<Record<string, typeof projects>>((acc, p) => {
+          const key = p.source_type ?? 'obsidian';
+          (acc[key] ??= []).push(p);
+          return acc;
+        }, {});
+        return Object.entries(groups).map(([srcType, items]) => {
+          const { label, icon } = pluginMeta(srcType);
+          return (
+            <div key={srcType} className="flex flex-col gap-2">
+              <div className="flex items-center gap-2 px-1">
+                <span className="text-base">{icon}</span>
+                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">{label}</span>
+                <span className="text-xs text-gray-700">({items.length})</span>
+              </div>
+              {items.map((p) => (
+                <div key={p.name}
+                  className="p-4 bg-gray-900 border border-gray-800 rounded-xl flex items-center justify-between hover:border-gray-700 transition-colors">
+                  <div className="min-w-0">
+                    <h3 className="font-medium text-gray-100">{p.display_name}</h3>
+                    <p className="text-sm text-gray-500 truncate max-w-md">{p.path}</p>
+                  </div>
+                  <div className="flex items-center gap-3 flex-shrink-0 ml-4">
+                    <span className={`text-xs px-2 py-1 rounded-full font-medium ${
+                      p.status === 'active'
+                        ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
+                        : 'bg-gray-800 text-gray-500 border border-gray-700'
+                    }`}>
+                      {p.status}
+                    </span>
+                    <button
+                      onClick={() => handleIndex(p.name)}
+                      disabled={indexingNames.has(p.name)}
+                      className="text-xs px-2.5 py-1 border border-indigo-700 text-indigo-400 rounded-lg hover:bg-indigo-950 disabled:opacity-50 transition-colors"
+                    >
+                      {indexingNames.has(p.name) ? '인덱싱 중...' : '인덱싱'}
+                    </button>
+                    <button onClick={() => handleToggleStatus(p.name, p.status)} disabled={togglingId === p.name}
+                      className="text-xs px-2.5 py-1 border border-gray-700 text-gray-400 rounded-lg hover:bg-gray-800 hover:text-gray-200 disabled:opacity-50 transition-colors">
+                      {togglingId === p.name ? '...' : p.status === 'active' ? '비활성화' : '활성화'}
+                    </button>
+                    <button onClick={() => handleRemove(p.name, p.display_name)} disabled={removingId === p.name}
+                      className="text-xs px-2.5 py-1 border border-red-900 text-red-500 rounded-lg hover:bg-red-950 hover:text-red-400 disabled:opacity-50 transition-colors">
+                      {removingId === p.name ? '...' : '삭제'}
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
-            <div className="flex items-center gap-3 flex-shrink-0 ml-4">
-              <span className={`text-xs px-2 py-1 rounded-full font-medium ${
-                p.status === 'active'
-                  ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
-                  : 'bg-gray-800 text-gray-500 border border-gray-700'
-              }`}>
-                {p.status}
-              </span>
-              <button
-                onClick={() => handleIndex(p.name)}
-                disabled={indexingNames.has(p.name)}
-                className="text-xs px-2.5 py-1 border border-indigo-700 text-indigo-400 rounded-lg hover:bg-indigo-950 disabled:opacity-50 transition-colors"
-              >
-                {indexingNames.has(p.name) ? '인덱싱 중...' : '인덱싱'}
-              </button>
-              <button onClick={() => handleToggleStatus(p.name, p.status)} disabled={togglingId === p.name}
-                className="text-xs px-2.5 py-1 border border-gray-700 text-gray-400 rounded-lg hover:bg-gray-800 hover:text-gray-200 disabled:opacity-50 transition-colors">
-                {togglingId === p.name ? '...' : p.status === 'active' ? '비활성화' : '활성화'}
-              </button>
-            </div>
-          </div>
-        ))}
-      </div>
+          );
+        });
+      })()}
     </div>
   );
 }
