@@ -32,6 +32,8 @@ fn make_registry_entry(plugin_id: &str, public_key_hex: &str) -> RegistryEntry {
         download_url: format!("https://registry.doxus.io/{}.wasm", plugin_id),
         checksum_sha256: "abc123".to_string(),
         public_key_hex: public_key_hex.to_string(),
+        auth_type: "none".to_string(),
+        guide_url: String::new(),
     }
 }
 

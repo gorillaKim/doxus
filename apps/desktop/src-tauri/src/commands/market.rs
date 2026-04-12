@@ -70,12 +70,13 @@ pub async fn market_list_installed(
             "config_schema": config_schema(&[
                 ("name", "프로젝트 이름", "text", true, "confluence-docs"),
                 ("base_url", "Base URL", "url", true, "https://yourcompany.atlassian.net"),
-                ("space_key", "스페이스 키", "text", false, "ENG"),
+                ("space_key", "스페이스 키 (전체 스페이스 연동 시)", "text", false, "ENG 또는 ~222368988"),
+                ("ancestor_id", "페이지 ID (특정 폴더 하위만 연동 시)", "text", false, "123456"),
             ]),
-            "auth_type": "oauth",
+            "auth_type": "api_token",
             "auth_schema": config_schema(&[
-                ("client_id", "Client ID", "text", true, "your-atlassian-app-client-id"),
-                ("client_secret", "Client Secret", "password", true, "your-atlassian-app-client-secret"),
+                ("email", "Atlassian 계정 이메일", "email", true, "you@company.com"),
+                ("api_token", "Personal API Token", "password", true, "ATATT3xFfGF..."),
             ])
         }),
         serde_json::json!({
@@ -285,7 +286,7 @@ pub async fn plugin_get_auth_status(
     plugin_id: String,
 ) -> Result<serde_json::Value, String> {
     let keys_to_check: &[&str] = match plugin_id.as_str() {
-        "com.doxus.confluence" => &["access_token", "api_token"],
+        "com.doxus.confluence" => &["api_token", "email"],
         "com.doxus.github" => &["access_token", "token"],
         _ => &[],
     };
@@ -458,6 +459,33 @@ pub async fn plugin_oauth_exchange(
             keyring::Entry::new("doxus", &format!("doxus:{}:refresh_token", plugin_id))
         {
             let _ = kr_refresh.set_password(&refresh_token);
+        }
+    }
+
+    // Atlassian Cloud OAuth 토큰은 api.atlassian.com/ex/confluence/{cloudId} 로만 유효.
+    // accessible-resources에서 cloudId를 가져와 저장.
+    if plugin_id == "com.doxus.confluence" {
+        let resources_res = client
+            .get("https://api.atlassian.com/oauth/token/accessible-resources")
+            .header("Authorization", format!("Bearer {access_token}"))
+            .header("Accept", "application/json")
+            .send()
+            .await;
+        if let Ok(r) = resources_res {
+            if let Ok(resources) = r.json::<serde_json::Value>().await {
+                if let Some(cloud_id) = resources
+                    .as_array()
+                    .and_then(|arr| arr.first())
+                    .and_then(|site| site["id"].as_str())
+                {
+                    if let Ok(kr_cloud) = keyring::Entry::new(
+                        "doxus",
+                        &format!("doxus:{}:cloud_id", plugin_id),
+                    ) {
+                        let _ = kr_cloud.set_password(cloud_id);
+                    }
+                }
+            }
         }
     }
 
@@ -720,7 +748,60 @@ pub async fn market_fetch_registry(
         .unwrap_or_else(|| "https://registry.doxus.io".to_string());
     let client = doxus_core::marketplace::registry::RegistryClient::new(&url)
         .map_err(|e| e.to_string())?;
-    client.fetch_entries().await.map_err(|e| e.to_string())
+    match client.fetch_entries().await {
+        Ok(entries) => Ok(entries),
+        Err(e) => {
+            // 레지스트리 서버 미운영 시 개발용 목 데이터 반환
+            eprintln!("[doxus] Registry fetch failed ({}), returning dev mock data", e);
+            Ok(vec![
+                doxus_core::marketplace::registry::RegistryEntry {
+                    plugin_id: "com.doxus.confluence".to_string(),
+                    version: "1.0.0".to_string(),
+                    display_name: "Confluence".to_string(),
+                    download_url: "https://registry.doxus.io/confluence-1.0.0.wasm".to_string(),
+                    checksum_sha256: "".to_string(),
+                    public_key_hex: "".to_string(),
+                    auth_type: "api_token".to_string(),
+                    guide_url: concat!(env!("CARGO_MANIFEST_DIR"), "/../../../crates/plugins/confluence/GUIDE.md").to_string(),
+                },
+                doxus_core::marketplace::registry::RegistryEntry {
+                    plugin_id: "com.doxus.github".to_string(),
+                    version: "1.0.0".to_string(),
+                    display_name: "GitHub".to_string(),
+                    download_url: "https://registry.doxus.io/github-1.0.0.wasm".to_string(),
+                    checksum_sha256: "".to_string(),
+                    public_key_hex: "".to_string(),
+                    auth_type: "api_token".to_string(),
+                    guide_url: concat!(env!("CARGO_MANIFEST_DIR"), "/../../../crates/plugins/github/GUIDE.md").to_string(),
+                },
+            ])
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn market_fetch_guide(guide_url: String) -> Result<String, String> {
+    if guide_url.is_empty() {
+        return Err("가이드 URL이 없습니다".to_string());
+    }
+    // 로컬 파일 경로인 경우 직접 읽기
+    if guide_url.starts_with('/') || guide_url.starts_with("file://") {
+        let path = guide_url.trim_start_matches("file://");
+        return std::fs::read_to_string(path).map_err(|e| format!("가이드 파일 읽기 실패: {e}"));
+    }
+    // 원격 URL: HTTP 요청
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+    match client.get(&guide_url).send().await {
+        Ok(res) if res.status().is_success() => res.text().await.map_err(|e| e.to_string()),
+        Ok(res) => Err(format!("가이드 로드 실패: HTTP {}", res.status())),
+        Err(_) => Ok(format!(
+            "# 플러그인 가이드\n\n> 온라인 가이드를 불러올 수 없습니다.\n\n가이드 URL: `{}`\n\n## 설치 방법\n1. 마켓에서 플러그인을 설치하세요.\n2. 설정 버튼을 눌러 인증 정보를 입력하세요.\n3. 프로젝트를 추가하고 인덱싱을 시작하세요.",
+            guide_url
+        )),
+    }
 }
 
 #[tauri::command]
@@ -767,4 +848,57 @@ pub async fn get_workspaces(
     let repo = doxus_core::workspace::WorkspaceRepo::new(&conn);
     let workspaces = repo.list().map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "workspaces": workspaces }))
+}
+
+/// 플러그인의 캐시 TTL(분) 조회 (plugin_kv 기반, per-plugin-type).
+/// 반환: `{ "cache_ttl_minutes": 30 }` 또는 `{ "cache_ttl_minutes": null }` (비활성화)
+#[tauri::command]
+pub async fn plugin_get_cache_ttl(
+    state: tauri::State<'_, crate::AppState>,
+    plugin_id: String,
+) -> Result<serde_json::Value, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    let ttl: Option<i64> = conn.query_row(
+        "SELECT CAST(value AS INTEGER) FROM plugin_kv
+         WHERE plugin_id = ?1 AND namespace = 'settings' AND key = 'cache_ttl_minutes'",
+        rusqlite::params![plugin_id],
+        |r| r.get(0),
+    ).ok();
+    Ok(serde_json::json!({ "cache_ttl_minutes": ttl }))
+}
+
+/// 플러그인의 캐시 TTL(분) 설정 (plugin_kv 기반, per-plugin-type).
+/// `ttl_minutes`: null이면 캐시 비활성화 (행 삭제), 숫자면 활성화 (최소 10분).
+#[tauri::command]
+pub async fn plugin_set_cache_ttl(
+    state: tauri::State<'_, crate::AppState>,
+    plugin_id: String,
+    ttl_minutes: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    if let Some(ttl) = ttl_minutes {
+        if ttl < 10 {
+            return Err("캐시 TTL은 최소 10분이어야 합니다".to_string());
+        }
+    }
+
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    match ttl_minutes {
+        Some(ttl) => {
+            conn.execute(
+                "INSERT INTO plugin_kv(plugin_id, namespace, key, value, updated_at)
+                 VALUES(?1, 'settings', 'cache_ttl_minutes', ?2, unixepoch())
+                 ON CONFLICT(plugin_id, namespace, key)
+                 DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                rusqlite::params![plugin_id, ttl as i64],
+            ).map_err(|e| e.to_string())?;
+        }
+        None => {
+            conn.execute(
+                "DELETE FROM plugin_kv WHERE plugin_id = ?1 AND namespace = 'settings' AND key = 'cache_ttl_minutes'",
+                rusqlite::params![plugin_id],
+            ).map_err(|e| e.to_string())?;
+        }
+    }
+
+    Ok(serde_json::json!({ "ok": true, "cache_ttl_minutes": ttl_minutes }))
 }

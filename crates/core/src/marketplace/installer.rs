@@ -235,6 +235,8 @@ mod tests {
             download_url: "https://example.com/plugin.wasm".into(),
             checksum_sha256: checksum.into(),
             public_key_hex: "deadbeef".into(),
+            auth_type: "none".into(),
+            guide_url: String::new(),
         }
     }
 

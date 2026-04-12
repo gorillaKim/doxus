@@ -8,6 +8,8 @@ fn make_entry(version: &str) -> RegistryEntry {
         download_url: "https://example.com/plugin.wasm".to_string(),
         checksum_sha256: "abc".to_string(),
         public_key_hex: "def".to_string(),
+        auth_type: "none".to_string(),
+        guide_url: String::new(),
     }
 }
 

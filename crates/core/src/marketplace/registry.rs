@@ -53,6 +53,12 @@ pub struct RegistryEntry {
     pub download_url: String,
     pub checksum_sha256: String,
     pub public_key_hex: String,
+    /// Authentication type: "none" | "api_token" | "oauth"
+    #[serde(default)]
+    pub auth_type: String,
+    /// URL to the plugin's guide markdown file
+    #[serde(default)]
+    pub guide_url: String,
 }
 
 /// Errors from registry operations.
