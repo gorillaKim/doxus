@@ -990,7 +990,7 @@ mod tests {
             "start": 0, "limit": 50, "size": 1
         });
         Mock::given(method("GET"))
-            .and(path("/rest/api/content"))
+            .and(path("/rest/api/content/search"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&body))
             .mount(&server)
             .await;
@@ -1014,13 +1014,13 @@ mod tests {
         let page2 = serde_json::json!({"results": [{"id": "2", "title": "B", "_links": {"webui": ""}, "body": null}], "start": 1, "limit": 1, "size": 1});
 
         Mock::given(method("GET"))
-            .and(path("/rest/api/content"))
+            .and(path("/rest/api/content/search"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&page1))
             .up_to_n_times(1)
             .mount(&server)
             .await;
         Mock::given(method("GET"))
-            .and(path("/rest/api/content"))
+            .and(path("/rest/api/content/search"))
             .respond_with(ResponseTemplate::new(200).set_body_json(&page2))
             .mount(&server)
             .await;

@@ -772,6 +772,10 @@ mod tests {
             include_str!("db/migrations/V7__plugins.sql"),
             include_str!("db/migrations/V8__workspace.sql"),
             include_str!("db/migrations/V9__workspace_content.sql"),
+            include_str!("db/migrations/V10__plugin_kv.sql"),
+            include_str!("db/migrations/V11__project_source.sql"),
+            include_str!("db/migrations/V12__content_cache.sql"),
+            include_str!("db/migrations/V13__document_meta.sql"),
         ];
         for sql in migrations {
             c.execute_batch(sql).unwrap();

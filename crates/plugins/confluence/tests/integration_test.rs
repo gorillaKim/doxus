@@ -33,7 +33,7 @@ async fn fetch_all_returns_pages_from_api() {
     .unwrap();
 
     Mock::given(method("GET"))
-        .and(path("/rest/api/content"))
+        .and(path("/rest/api/content/search"))
         .respond_with(ResponseTemplate::new(200).set_body_json(&fixture))
         .mount(&server)
         .await;
@@ -71,19 +71,19 @@ async fn fetch_all_paginates_with_cursor() {
     });
 
     Mock::given(method("GET"))
-        .and(path("/rest/api/content"))
+        .and(path("/rest/api/content/search"))
         .and(query_param("start", "0"))
         .respond_with(ResponseTemplate::new(200).set_body_json(&page1))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
-        .and(path("/rest/api/content"))
+        .and(path("/rest/api/content/search"))
         .and(query_param("start", "25"))
         .respond_with(ResponseTemplate::new(200).set_body_json(&page2))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
-        .and(path("/rest/api/content"))
+        .and(path("/rest/api/content/search"))
         .and(query_param("start", "50"))
         .respond_with(ResponseTemplate::new(200).set_body_json(&page3))
         .mount(&server)
@@ -118,7 +118,7 @@ async fn fetch_all_returns_error_on_unauthorized() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .and(path("/rest/api/content"))
+        .and(path("/rest/api/content/search"))
         .respond_with(ResponseTemplate::new(401))
         .mount(&server)
         .await;
@@ -145,7 +145,7 @@ async fn fetch_all_respects_page_size() {
     });
 
     Mock::given(method("GET"))
-        .and(path("/rest/api/content"))
+        .and(path("/rest/api/content/search"))
         .and(query_param("limit", "25"))
         .respond_with(ResponseTemplate::new(200).set_body_json(&body))
         .mount(&server)
@@ -348,7 +348,7 @@ async fn fetch_all_returns_rate_limited_on_429() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .and(path("/rest/api/content"))
+        .and(path("/rest/api/content/search"))
         .respond_with(
             ResponseTemplate::new(429)
                 .insert_header("Retry-After", "30"),
@@ -373,7 +373,7 @@ async fn fetch_all_returns_rate_limited_default_on_429_without_header() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .and(path("/rest/api/content"))
+        .and(path("/rest/api/content/search"))
         .respond_with(ResponseTemplate::new(429))
         .mount(&server)
         .await;
@@ -395,7 +395,7 @@ async fn fetch_all_returns_permission_denied_on_403() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .and(path("/rest/api/content"))
+        .and(path("/rest/api/content/search"))
         .respond_with(ResponseTemplate::new(403))
         .mount(&server)
         .await;

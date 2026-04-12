@@ -89,7 +89,7 @@ async fn token_refreshed_before_fetch_all_when_expired() {
         .await;
 
     Mock::given(method("GET"))
-        .and(path("/rest/api/content"))
+        .and(path("/rest/api/content/search"))
         .respond_with(ResponseTemplate::new(200).set_body_json(empty_page_list()))
         .mount(&server)
         .await;
@@ -151,7 +151,7 @@ async fn no_refresh_when_token_valid() {
         .await;
 
     Mock::given(method("GET"))
-        .and(path("/rest/api/content"))
+        .and(path("/rest/api/content/search"))
         .respond_with(ResponseTemplate::new(200).set_body_json(empty_page_list()))
         .mount(&server)
         .await;
@@ -194,7 +194,7 @@ async fn concurrent_fetch_does_not_double_refresh() {
         .await;
 
     Mock::given(method("GET"))
-        .and(path("/rest/api/content"))
+        .and(path("/rest/api/content/search"))
         .respond_with(ResponseTemplate::new(200).set_body_json(empty_page_list()))
         .mount(&server)
         .await;
@@ -267,7 +267,7 @@ async fn api_token_auth_unaffected() {
         .await;
 
     Mock::given(method("GET"))
-        .and(path("/rest/api/content"))
+        .and(path("/rest/api/content/search"))
         .respond_with(ResponseTemplate::new(200).set_body_json(empty_page_list()))
         .mount(&server)
         .await;
