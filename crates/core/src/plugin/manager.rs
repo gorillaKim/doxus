@@ -185,6 +185,8 @@ mod tests {
             download_url: "https://example.com/plugin.wasm".into(),
             checksum_sha256: sha256_hex(wasm),
             public_key_hex: "deadbeef".into(),
+            auth_type: "none".into(),
+            guide_url: String::new(),
         }
     }
 
@@ -197,6 +199,8 @@ mod tests {
             download_url: "https://example.com/plugin.wasm".into(),
             checksum_sha256: sha256_hex(wasm),
             public_key_hex: hex::encode(signed.public_key),
+            auth_type: "none".into(),
+            guide_url: String::new(),
         }
     }
 

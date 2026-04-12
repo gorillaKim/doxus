@@ -1,103 +1,283 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import rehypeRaw from 'rehype-raw';
+import remarkGfm from 'remark-gfm';
 import { invoke } from '@tauri-apps/api/core';
-import { useSearchStore } from '../stores/useSearchStore';
+import { useSearchStore, AllDocument, SearchHit } from '../stores/useSearchStore';
+import { usePluginStore } from '../stores/usePluginStore';
 
-interface Hit {
-  document_id?: number;
-  title?: string;
-  score: number;
-  heading_path?: string;
-  file_path?: string;
+// ── 통합 문서 타입 (검색결과 or 전체목록 공통) ────────────────────────────
+
+interface DocEntry {
+  document_id: number;
+  title: string;
+  source_doc_id: string;
+  project_name: string;
+  source_type: string;
+  // 검색 결과에만 존재
+  score?: number;
   snippet?: string;
-  content?: string;
+  heading_path?: string;
 }
+
+function hitToEntry(hit: SearchHit): DocEntry {
+  return {
+    document_id: hit.document_id,
+    title: hit.title ?? '(제목 없음)',
+    source_doc_id: hit.file_path ?? '',
+    project_name: '',
+    source_type: '',
+    score: hit.score,
+    snippet: hit.snippet ?? undefined,
+    heading_path: hit.heading_path ?? undefined,
+  };
+}
+
+function allDocToEntry(doc: AllDocument): DocEntry {
+  return {
+    document_id: doc.document_id,
+    title: doc.title,
+    source_doc_id: doc.source_doc_id,
+    project_name: doc.project_name,
+    source_type: doc.source_type,
+  };
+}
+
+// ── 플러그인 메타 ─────────────────────────────────────────────────────────
+
+const PLUGIN_META: Record<string, { icon: string; label: string }> = {
+  obsidian:   { icon: '🪨', label: 'Obsidian' },
+  confluence: { icon: '📄', label: 'Confluence' },
+  github:     { icon: '🐙', label: 'GitHub' },
+};
+
+function pluginIcon(sourceType: string): string {
+  const short = sourceType.replace(/^com\.doxus\./, '');
+  const pluginId = `com.doxus.${short}`;
+  return usePluginStore.getState().getEmoji(pluginId);
+}
+
+// ── Tooltip ───────────────────────────────────────────────────────────────
+
+interface TooltipProps {
+  doc: DocEntry;
+  x: number;
+  y: number;
+}
+
+function DocTooltip({ doc, x, y }: TooltipProps) {
+  return (
+    <div
+      className="fixed z-50 bg-gray-800 border border-gray-700 rounded-lg shadow-xl p-3 w-64 text-xs pointer-events-none"
+      style={{ left: x + 12, top: y }}
+    >
+      <p className="text-white font-semibold leading-tight mb-1.5">{doc.title}</p>
+      <p className="text-gray-400 break-all leading-relaxed">{doc.source_doc_id}</p>
+      {doc.project_name && (
+        <p className="text-indigo-400 mt-1">
+          {pluginIcon(doc.source_type)} {doc.project_name}
+        </p>
+      )}
+      {doc.score != null && (
+        <p className="text-gray-500 mt-1">점수: {doc.score.toFixed(3)}</p>
+      )}
+      {doc.heading_path && (
+        <p className="text-indigo-300 mt-1">섹션: {doc.heading_path}</p>
+      )}
+    </div>
+  );
+}
+
+// ── 파일 항목 (hover 2.5s 툴팁) ───────────────────────────────────────────
+
+function FileItem({
+  doc,
+  isSelected,
+  onSelect,
+  depth = 0,
+}: {
+  doc: DocEntry;
+  isSelected: boolean;
+  onSelect: (doc: DocEntry) => void;
+  depth?: number;
+}) {
+  const [tooltip, setTooltip] = useState<{ x: number; y: number } | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleMouseEnter = (e: React.MouseEvent) => {
+    const { clientX, clientY } = e;
+    timerRef.current = setTimeout(() => {
+      setTooltip({ x: clientX, y: clientY });
+    }, 1000);
+  };
+
+  const handleMouseLeave = () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    setTooltip(null);
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (tooltip) setTooltip({ x: e.clientX, y: e.clientY });
+  };
+
+  return (
+    <>
+      <button
+        onClick={() => onSelect(doc)}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+        onMouseMove={handleMouseMove}
+        className={`w-full text-left py-0.5 text-xs truncate transition-colors rounded ${
+          isSelected
+            ? 'text-indigo-300 bg-indigo-950/60'
+            : 'text-gray-400 hover:text-gray-100 hover:bg-gray-800/40'
+        }`}
+        style={{ paddingLeft: depth * 12 + 18 }}
+        title=""
+      >
+        <span className="mr-1.5 opacity-50">📄</span>
+        {doc.title}
+        {doc.score != null && (
+          <span className="ml-1.5 text-gray-600">{doc.score.toFixed(2)}</span>
+        )}
+      </button>
+      {tooltip && <DocTooltip doc={doc} x={tooltip.x} y={tooltip.y} />}
+    </>
+  );
+}
+
+// ── 폴더 트리 빌더 ───────────────────────────────────────────────────────
 
 interface TreeNode {
   name: string;
-  path: string;
   isDir: boolean;
-  children: TreeNode[];
-  hit?: Hit;
+  children: Map<string, TreeNode>;
+  doc?: DocEntry;
 }
 
-function buildTree(hits: Hit[]): TreeNode[] {
-  const root: TreeNode[] = [];
-  for (const hit of hits) {
-    if (!hit.file_path) continue;
-    const parts = hit.file_path.split('/').filter(Boolean);
-    let nodes = root;
+function buildTree(docs: DocEntry[]): TreeNode {
+  const root: TreeNode = { name: '', isDir: true, children: new Map() };
+  for (const doc of docs) {
+    const parts = doc.source_doc_id.split('/').filter(Boolean);
+    let node = root;
     for (let i = 0; i < parts.length; i++) {
       const part = parts[i];
       const isLast = i === parts.length - 1;
-      let node = nodes.find(n => n.name === part);
-      if (!node) {
-        node = {
+      if (!node.children.has(part)) {
+        node.children.set(part, {
           name: part,
-          path: parts.slice(0, i + 1).join('/'),
           isDir: !isLast,
-          children: [],
-          hit: isLast ? hit : undefined,
-        };
-        nodes.push(node);
+          children: new Map(),
+          doc: isLast ? doc : undefined,
+        });
       }
-      nodes = node.children;
+      node = node.children.get(part)!;
+    }
+    // 경로 없는 경우 루트에 직접
+    if (parts.length === 0) {
+      root.children.set(doc.title, { name: doc.title, isDir: false, children: new Map(), doc });
     }
   }
   return root;
 }
 
-function TreeItem({
+function TreeNodeView({
   node,
   depth,
-  selectedHit,
+  selectedDoc,
   onSelect,
 }: {
   node: TreeNode;
   depth: number;
-  selectedHit: Hit | null;
-  onSelect: (hit: Hit) => void;
+  selectedDoc: DocEntry | null;
+  onSelect: (doc: DocEntry) => void;
 }) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
+  const indent = depth * 12;
+
   if (node.isDir) {
     return (
       <div>
         <button
           onClick={() => setOpen(v => !v)}
-          className="flex items-center gap-1 w-full text-left px-2 py-0.5 text-xs text-gray-400 hover:text-gray-200 transition-colors"
-          style={{ paddingLeft: depth * 12 + 8 }}
+          className="flex items-center gap-1 w-full text-left py-0.5 text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-800/40 transition-colors rounded"
+          style={{ paddingLeft: indent + 6 }}
         >
-          <span>{open ? '▾' : '▸'}</span>
+          <span className="text-gray-600 w-3 text-center shrink-0">{open ? '▾' : '▸'}</span>
+          <span className="text-yellow-600 mr-1">📁</span>
           <span className="truncate">{node.name}</span>
         </button>
-        {open &&
-          node.children.map(child => (
-            <TreeItem
-              key={child.path}
-              node={child}
-              depth={depth + 1}
-              selectedHit={selectedHit}
-              onSelect={onSelect}
-            />
-          ))}
+        {open && Array.from(node.children.values()).map(child => (
+          <TreeNodeView
+            key={child.name}
+            node={child}
+            depth={depth + 1}
+            selectedDoc={selectedDoc}
+            onSelect={onSelect}
+          />
+        ))}
       </div>
     );
   }
-  const isSelected = node.hit != null && selectedHit === node.hit;
+
+  const doc = node.doc!;
+  const isSelected = selectedDoc?.document_id === doc.document_id && selectedDoc?.source_doc_id === doc.source_doc_id;
   return (
-    <button
-      onClick={() => node.hit && onSelect(node.hit)}
-      className={`w-full text-left px-2 py-0.5 text-xs truncate transition-colors ${
-        isSelected
-          ? 'text-indigo-300 bg-indigo-950/50'
-          : 'text-gray-500 hover:text-gray-200'
-      }`}
-      style={{ paddingLeft: depth * 12 + 8 }}
-    >
-      {node.name}
-    </button>
+    <FileItem
+      doc={doc}
+      isSelected={isSelected}
+      onSelect={onSelect}
+      depth={depth}
+    />
   );
 }
+
+// ── 프로젝트 그룹 ─────────────────────────────────────────────────────────
+
+function ProjectGroup({
+  projectName,
+  sourceType,
+  docs,
+  selectedDoc,
+  onSelect,
+}: {
+  projectName: string;
+  sourceType: string;
+  docs: DocEntry[];
+  selectedDoc: DocEntry | null;
+  onSelect: (doc: DocEntry) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const tree = buildTree(docs);
+  return (
+    <div className="mb-1">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="flex items-center gap-1.5 w-full text-left px-2 py-1 text-xs font-semibold text-gray-500 uppercase tracking-wider hover:text-gray-300 transition-colors"
+      >
+        <span className="text-xs">{open ? '▾' : '▸'}</span>
+        <span>{pluginIcon(sourceType)}</span>
+        <span className="truncate">{projectName || '(프로젝트 없음)'}</span>
+        <span className="text-gray-700 font-normal ml-auto">{docs.length}</span>
+      </button>
+      {open && (
+        <div className="pl-1">
+          {Array.from(tree.children.values()).map(child => (
+            <TreeNodeView
+              key={child.name}
+              node={child}
+              depth={0}
+              selectedDoc={selectedDoc}
+              onSelect={onSelect}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Markdown Preview ──────────────────────────────────────────────────────
 
 function MarkdownPreview({ content }: { content: string }) {
   return (
@@ -111,55 +291,113 @@ function MarkdownPreview({ content }: { content: string }) {
       prose-blockquote:border-indigo-500 prose-blockquote:text-gray-400
       prose-a:text-indigo-400 prose-a:no-underline hover:prose-a:underline
       prose-li:text-gray-300 prose-ul:text-gray-300 prose-ol:text-gray-300
-      prose-hr:border-gray-700">
-      <ReactMarkdown>{content}</ReactMarkdown>
+      prose-hr:border-gray-700
+      prose-table:w-full prose-table:border-collapse
+      prose-th:border prose-th:border-gray-700 prose-th:bg-gray-800 prose-th:px-3 prose-th:py-2 prose-th:text-left prose-th:text-xs prose-th:text-gray-300
+      prose-td:border prose-td:border-gray-700 prose-td:px-3 prose-td:py-2 prose-td:text-xs prose-td:text-gray-400">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>{content}</ReactMarkdown>
     </div>
   );
 }
 
+// ── SearchPage ────────────────────────────────────────────────────────────
+
 export function SearchPage() {
-  const { query, hits, isLoading, error, setQuery, search, clear } = useSearchStore();
+  const { query, hits, isLoading, error, setQuery, search, clear, allDocuments, allDocsLoading, listAllDocuments } = useSearchStore();
+  usePluginStore((s) => s.emojiMap); // emoji 변경 시 리렌더 트리거
   const [inputValue, setInputValue] = useState(query);
-  const [selectedHit, setSelectedHit] = useState<Hit | null>(null);
+  const [selectedDoc, setSelectedDoc] = useState<DocEntry | null>(null);
   const [previewContent, setPreviewContent] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [refreshToast, setRefreshToast] = useState<string | null>(null);
+  const refreshToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // 초기 로드
+  useEffect(() => {
+    listAllDocuments();
+  }, [listAllDocuments]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setQuery(inputValue);
-    setSelectedHit(null);
+    setSelectedDoc(null);
     setPreviewContent(null);
     search();
   };
 
   const handleClear = () => {
     clear();
-    setSelectedHit(null);
+    setSelectedDoc(null);
     setPreviewContent(null);
+    setPreviewError(null);
     setInputValue('');
   };
 
-  const handleSelectHit = async (hit: Hit) => {
-    setSelectedHit(hit);
-    setPreviewContent(null);
-    if (hit.document_id != null) {
-      invoke('increment_view_count', { documentId: hit.document_id }).catch(() => {});
-    }
-    if (hit.file_path) {
-      try {
-        const result = await invoke<{ content: string }>('get_document_content', {
-          filePath: hit.file_path,
-        });
-        setPreviewContent(result.content);
-      } catch {
-        // fallback: use snippet from hit
+  const fetchPreview = async (doc: DocEntry, forceRefresh = false) => {
+    const identifier = doc.source_doc_id;
+    if (!identifier) return;
+    setPreviewLoading(true);
+    setPreviewError(null);
+    try {
+      const result = await invoke<{ content: string; from_cache?: boolean }>('get_document_content', {
+        filePath: identifier,
+        projectName: doc.project_name || undefined,
+        forceRefresh,
+      });
+      setPreviewContent(result.content);
+      if (forceRefresh) {
+        if (refreshToastTimer.current) clearTimeout(refreshToastTimer.current);
+        setRefreshToast('최신 콘텐츠로 업데이트됨');
+        refreshToastTimer.current = setTimeout(() => setRefreshToast(null), 3000);
       }
+    } catch (e) {
+      console.error('[preview] get_document_content failed:', identifier, e);
+      setPreviewError(String(e));
+    } finally {
+      setPreviewLoading(false);
     }
   };
 
-  const treeNodes = buildTree(hits as Hit[]);
+  const handleSelectDoc = async (doc: DocEntry) => {
+    setSelectedDoc(doc);
+    setPreviewContent(null);
+    setPreviewError(null);
+    if (doc.document_id) {
+      invoke('increment_view_count', { documentId: doc.document_id }).catch(() => {});
+    }
+    await fetchPreview(doc);
+  };
+
+  const handleRefresh = () => {
+    if (selectedDoc) fetchPreview(selectedDoc, true);
+  };
+
+  // 파일 목록 데이터 결정: 검색 후 → hits, 검색 전 → allDocuments
+  const hasSearch = hits.length > 0;
+
+  // 그룹화
+  const groupedEntries = (() => {
+    const entries: DocEntry[] = hasSearch
+      ? hits.map(hitToEntry)
+      : allDocuments.map(allDocToEntry);
+
+    // project_name 기준 그룹화 (검색결과는 project_name이 없을 수 있음)
+    const groups = new Map<string, { sourceType: string; docs: DocEntry[] }>();
+    for (const entry of entries) {
+      const key = entry.project_name || '검색결과';
+      if (!groups.has(key)) {
+        groups.set(key, { sourceType: entry.source_type || 'obsidian', docs: [] });
+      }
+      groups.get(key)!.docs.push(entry);
+    }
+    return groups;
+  })();
+
+  const totalCount = hasSearch ? hits.length : allDocuments.length;
 
   return (
-    <div className="flex flex-col h-full gap-4">
+    <div className="flex flex-col h-full gap-3">
       {/* 검색 폼 */}
       <form onSubmit={handleSubmit} className="flex gap-2 shrink-0">
         <input
@@ -193,131 +431,141 @@ export function SearchPage() {
         </div>
       )}
 
-      {/* 결과 영역 */}
-      <div className="flex-1 overflow-hidden flex gap-4">
-        {/* 디렉토리 트리 (hits 있을 때만) */}
-        {hits.length > 0 && (
-          <div className="w-48 shrink-0 overflow-auto bg-gray-950 border border-gray-800 rounded-xl p-2">
-            <p className="text-xs text-gray-600 px-2 py-1 uppercase tracking-wider mb-1">파일 목록</p>
-            {treeNodes.map(node => (
-              <TreeItem
-                key={node.path}
-                node={node}
-                depth={0}
-                selectedHit={selectedHit}
-                onSelect={handleSelectHit}
-              />
-            ))}
+      {/* 하단 2-panel */}
+      <div className="flex-1 overflow-hidden flex gap-3">
+        {/* 좌측: 파일 목록 */}
+        <div className="w-72 shrink-0 overflow-auto bg-gray-950 border border-gray-800 rounded-xl py-2">
+          {/* 헤더 */}
+          <div className="px-3 pb-1.5 flex items-center justify-between">
+            <span className="text-xs text-gray-600 uppercase tracking-wider">
+              {hasSearch ? `검색결과` : `전체 문서`}
+            </span>
+            {(isLoading || allDocsLoading) ? (
+              <span className="text-xs text-gray-700">로딩 중...</span>
+            ) : (
+              <span className="text-xs text-gray-700">{totalCount}</span>
+            )}
           </div>
-        )}
 
-        {/* 검색 결과 목록 */}
-        <div className={`flex flex-col gap-2 overflow-auto ${selectedHit ? 'w-72 shrink-0' : 'flex-1'}`}>
-          {hits.length === 0 && !isLoading && query && (
-            <div className="flex items-center justify-center h-48">
-              <p className="text-gray-500 text-sm">"{query}"에 대한 검색 결과가 없습니다</p>
+          {/* 그룹 목록 */}
+          {groupedEntries.size === 0 && !isLoading && !allDocsLoading ? (
+            <div className="px-3 py-8 text-center text-xs text-gray-600">
+              {hasSearch ? '검색 결과 없음' : '인덱싱된 문서 없음'}
             </div>
+          ) : (
+            Array.from(groupedEntries.entries()).map(([projectName, { sourceType, docs }]) => (
+              <ProjectGroup
+                key={projectName}
+                projectName={projectName}
+                sourceType={sourceType}
+                docs={docs}
+                selectedDoc={selectedDoc}
+                onSelect={handleSelectDoc}
+              />
+            ))
           )}
-          {hits.length === 0 && !isLoading && !query && (
-            <div className="flex flex-col items-center justify-center h-48 gap-2">
-              <p className="text-4xl">🔍</p>
-              <p className="text-gray-400 font-medium">검색어를 입력하세요</p>
-              <p className="text-sm text-gray-600">프로젝트에 인덱싱된 모든 문서를 검색합니다</p>
-            </div>
-          )}
-          {(hits as Hit[]).map((hit, i) => (
-            <button
-              key={i}
-              onClick={() => {
-                if (selectedHit === hit) {
-                  setSelectedHit(null);
-                  setPreviewContent(null);
-                } else {
-                  handleSelectHit(hit);
-                }
-              }}
-              className={`w-full text-left p-4 rounded-xl border transition-colors ${
-                selectedHit === hit
-                  ? 'bg-indigo-950 border-indigo-700'
-                  : 'bg-gray-900 border-gray-800 hover:border-gray-700'
-              }`}
-            >
-              <div className="flex items-start justify-between gap-2">
-                <h3 className="font-medium text-white text-sm leading-tight">
-                  {hit.title ?? '(제목 없음)'}
-                </h3>
-                <span className="text-xs text-gray-600 shrink-0">
-                  {hit.score.toFixed(2)}
-                </span>
-              </div>
-              {hit.heading_path && (
-                <span className="inline-block text-xs text-indigo-400 bg-indigo-950 px-2 py-0.5 rounded mt-1">
-                  {hit.heading_path}
-                </span>
-              )}
-              {hit.file_path && (
-                <p className="text-xs text-gray-600 mt-1 truncate">{hit.file_path}</p>
-              )}
-              {hit.snippet && (
-                <p className="text-xs text-gray-500 mt-2 line-clamp-2 leading-relaxed">
-                  {hit.snippet}
-                </p>
-              )}
-            </button>
-          ))}
         </div>
 
         {/* 우측: 문서 프리뷰 */}
-        {selectedHit && (
-          <div className="flex-1 bg-gray-900 border border-gray-800 rounded-xl flex flex-col overflow-hidden">
-            {/* 프리뷰 헤더 */}
-            <div className="px-5 py-3 border-b border-gray-800 flex items-center justify-between shrink-0">
-              <div className="min-w-0">
-                <h2 className="text-white font-semibold text-sm truncate">
-                  {selectedHit.title ?? '(제목 없음)'}
-                </h2>
-                {selectedHit.file_path && (
-                  <p className="text-xs text-gray-600 truncate mt-0.5">{selectedHit.file_path}</p>
+        <div className="flex-1 bg-gray-900 border border-gray-800 rounded-xl flex flex-col overflow-hidden">
+          {selectedDoc ? (
+            <>
+              {/* 프리뷰 헤더 */}
+              <div className="px-5 py-3 border-b border-gray-800 flex items-center justify-between shrink-0">
+                <div className="min-w-0">
+                  <h2 className="text-white font-semibold text-sm truncate">
+                    {selectedDoc.title}
+                  </h2>
+                  {selectedDoc.source_doc_id && (
+                    <p className="text-xs text-gray-600 truncate mt-0.5">{selectedDoc.source_doc_id}</p>
+                  )}
+                </div>
+                <div className="flex items-center gap-1 shrink-0 ml-3">
+                  <button
+                    onClick={handleRefresh}
+                    disabled={previewLoading}
+                    title="최신 내용으로 새로고침"
+                    className="text-gray-600 hover:text-gray-300 disabled:opacity-40 transition-colors p-1 rounded"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="14"
+                      height="14"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      className={previewLoading ? 'animate-spin' : ''}
+                    >
+                      <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
+                      <path d="M21 3v5h-5" />
+                      <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
+                      <path d="M8 16H3v5" />
+                    </svg>
+                  </button>
+                  <button
+                    onClick={() => { setSelectedDoc(null); setPreviewContent(null); }}
+                    className="text-gray-600 hover:text-gray-300 transition-colors text-lg p-1"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+
+              {/* 프리뷰 내용 */}
+              <div className="flex-1 overflow-auto p-5">
+                {previewLoading ? (
+                  <div className="flex items-center justify-center h-32">
+                    <p className="text-gray-500 text-sm">불러오는 중...</p>
+                  </div>
+                ) : previewError ? (
+                  <div className="space-y-3">
+                    <p className="text-xs text-red-400 bg-red-950 border border-red-800 rounded-lg px-3 py-2">
+                      {previewError}
+                    </p>
+                    {selectedDoc.snippet && <MarkdownPreview content={selectedDoc.snippet} />}
+                  </div>
+                ) : previewContent ? (
+                  <MarkdownPreview content={previewContent} />
+                ) : selectedDoc.snippet ? (
+                  <div className="space-y-4">
+                    {selectedDoc.heading_path && (
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-gray-500">섹션</span>
+                        <span className="text-xs text-indigo-400 bg-indigo-950 px-2 py-1 rounded">
+                          {selectedDoc.heading_path}
+                        </span>
+                      </div>
+                    )}
+                    <MarkdownPreview content={selectedDoc.snippet} />
+                  </div>
+                ) : (
+                  <p className="text-gray-600 text-sm">미리볼 내용이 없습니다.</p>
                 )}
               </div>
-              <button
-                onClick={() => { setSelectedHit(null); setPreviewContent(null); }}
-                className="text-gray-600 hover:text-gray-300 transition-colors shrink-0 ml-3 text-lg"
-              >
-                ✕
-              </button>
+            </>
+          ) : (
+            /* 선택 없을 때 empty state */
+            <div className="flex flex-col items-center justify-center h-full gap-3 text-center px-8">
+              <p className="text-4xl">📖</p>
+              <p className="text-gray-400 font-medium">문서를 선택하세요</p>
+              <p className="text-sm text-gray-600">
+                {hasSearch
+                  ? '검색 결과에서 문서를 클릭하면 내용을 미리 볼 수 있습니다'
+                  : '좌측 파일 목록에서 문서를 클릭하면 내용을 미리 볼 수 있습니다'}
+              </p>
             </div>
-
-            {/* 프리뷰 내용 */}
-            <div className="flex-1 overflow-auto p-5">
-              {previewContent ? (
-                <MarkdownPreview content={previewContent} />
-              ) : selectedHit.content ? (
-                <MarkdownPreview content={selectedHit.content} />
-              ) : selectedHit.snippet ? (
-                <div className="space-y-4">
-                  {selectedHit.heading_path && (
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-gray-500">섹션</span>
-                      <span className="text-xs text-indigo-400 bg-indigo-950 px-2 py-1 rounded">
-                        {selectedHit.heading_path}
-                      </span>
-                    </div>
-                  )}
-                  <MarkdownPreview content={selectedHit.snippet} />
-                  <div className="pt-4 border-t border-gray-800">
-                    <p className="text-xs text-gray-600">
-                      전체 내용을 보려면 원본 파일을 열어주세요.
-                    </p>
-                  </div>
-                </div>
-              ) : (
-                <p className="text-gray-600 text-sm">미리볼 내용이 없습니다.</p>
-              )}
-            </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
+
+      {refreshToast && (
+        <div className="fixed bottom-6 right-6 z-50 px-4 py-3 bg-gray-900 border border-gray-700 rounded-xl shadow-xl text-sm text-gray-200 max-w-xs">
+          ✅ {refreshToast}
+        </div>
+      )}
     </div>
   );
 }

@@ -332,7 +332,7 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
     let _ = base_param_count;
 
     let sql = format!(
-        "SELECT d.id, c.id, d.title, d.file_path, c.heading_path,
+        "SELECT d.id, c.id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path,
                 snippet(chunks_fts, 0, '<b>', '</b>', '…', 20) AS snippet,
                 bm25(chunks_fts) AS score
          FROM chunks_fts
@@ -389,7 +389,7 @@ fn vector_search_sync(
     // vec0 KNN requires LIMIT on the virtual table query directly,
     // so we use a subquery to get candidate chunk_ids first, then join.
     let sql = format!(
-        "SELECT c.id, c.document_id, d.title, d.file_path, c.heading_path, c.content, knn.distance
+        "SELECT c.id, c.document_id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path, c.content, knn.distance
          FROM (
              SELECT chunk_id, distance FROM chunk_embeddings
              WHERE embedding MATCH ?1 AND k = ?2

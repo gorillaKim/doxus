@@ -22,6 +22,8 @@ doxus-core = { path = "../../../crates/core" }
 doxus-agent = { path = "../../../crates/agent" }
 doxus-plugin-sdk = { path = "../../../crates/plugin-sdk" }
 doxus-plugin-obsidian = { path = "../../../crates/plugins/obsidian" }
+doxus-plugin-confluence = { path = "../../../crates/plugins/confluence" }
+doxus-plugin-github = { path = "../../../crates/plugins/github" }
 tokio = { workspace = true }
 rusqlite = { workspace = true }
 keyring = { version = "2", features = ["default"] }
@@ -35,6 +37,10 @@ toml = "0.8"
 tempfile = { workspace = true }
 doxus-mcp = { path = "../../../crates/mcp-server" }
 doxus-plugin-obsidian = { path = "../../../crates/plugins/obsidian" }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+mockito = "1"
+hex = "0.4"
+sha2 = "0.10"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

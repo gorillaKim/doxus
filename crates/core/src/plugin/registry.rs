@@ -99,6 +99,8 @@ mod tests {
             download_url: format!("{}/{}.wasm", server_uri, plugin_id),
             checksum_sha256: sha256_hex(wasm),
             public_key_hex: "deadbeef".into(),
+            auth_type: "none".into(),
+            guide_url: String::new(),
         }
     }
 

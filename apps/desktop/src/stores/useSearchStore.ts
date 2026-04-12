@@ -11,15 +11,26 @@ export interface SearchHit {
   heading_path: string | null;
 }
 
+export interface AllDocument {
+  document_id: number;
+  title: string;
+  source_doc_id: string;
+  project_name: string;
+  source_type: string;
+}
+
 interface SearchState {
   query: string;
   hits: SearchHit[];
   isLoading: boolean;
   error: string | null;
   queryHistory: string[];
+  allDocuments: AllDocument[];
+  allDocsLoading: boolean;
   setQuery: (q: string) => void;
   search: () => Promise<void>;
   clear: () => void;
+  listAllDocuments: () => Promise<void>;
 }
 
 export const useSearchStore = create<SearchState>((set, get) => ({
@@ -28,6 +39,8 @@ export const useSearchStore = create<SearchState>((set, get) => ({
   isLoading: false,
   error: null,
   queryHistory: [],
+  allDocuments: [],
+  allDocsLoading: false,
 
   setQuery: (q) => set({ query: q }),
 
@@ -49,4 +62,15 @@ export const useSearchStore = create<SearchState>((set, get) => ({
   },
 
   clear: () => set({ query: '', hits: [], error: null }),
+
+  listAllDocuments: async () => {
+    set({ allDocsLoading: true });
+    try {
+      const result = await invoke<{ documents: AllDocument[] }>('list_all_documents');
+      set({ allDocuments: result.documents, allDocsLoading: false });
+    } catch (e) {
+      console.error('[listAllDocuments]', e);
+      set({ allDocsLoading: false });
+    }
+  },
 }));

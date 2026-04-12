@@ -17,7 +17,7 @@ pub struct OAuthPending {
 pub type PendingMessages = Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>>;
 
 pub struct AppState {
-    pub conn: Mutex<Connection>,
+    pub conn: Arc<Mutex<Connection>>,
     pub plugin_manager: PluginManager,
     pub plugins_dir: PathBuf,
     pub oauth_pending: Mutex<HashMap<String, OAuthPending>>,
@@ -33,8 +33,17 @@ impl AppState {
     pub fn new(conn: Connection, plugins_dir: PathBuf, sidecar_script: PathBuf) -> Self {
         let prompt_loader = PromptLoader::new().expect("PromptLoader init failed");
         prompt_loader.ensure_defaults().ok();
+        // App-start: clean up any expired cache entries from previous sessions
+        {
+            let cache = doxus_core::cache::ContentCache::new(&conn);
+            if let Ok(n) = cache.cleanup_expired() {
+                if n > 0 {
+                    eprintln!("[cache] cleaned {n} expired entries on startup");
+                }
+            }
+        }
         Self {
-            conn: Mutex::new(conn),
+            conn: Arc::new(Mutex::new(conn)),
             plugin_manager: PluginManager::new(plugins_dir.clone()),
             plugins_dir,
             oauth_pending: Mutex::new(HashMap::new()),
@@ -56,7 +65,7 @@ mod tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         doxus_core::db::migrate(&conn).unwrap();
         let state = AppState::new(conn, PathBuf::from("/tmp"), PathBuf::from("/tmp/fake.mjs"));
-        let _guard = state.conn.lock().unwrap();
+        let _guard = state.conn.lock().unwrap(); // Arc<Mutex<T>>::lock() via auto-deref
         drop(_guard);
         let pending = state.oauth_pending.lock().unwrap();
         assert!(pending.is_empty());
