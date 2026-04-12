@@ -89,6 +89,96 @@ pub struct Hit {
 /// RRF constant (k=60 is standard).
 const RRF_K: usize = 60;
 
+/// 벡터 검색 L2 거리 임계값. sqlite-vec 반환 distance가 이 값을 초과하면 노이즈로 제거.
+/// all-MiniLM-L6-v2 기준 distance ≈ 1.0 은 거의 무관한 문서에 해당.
+const VECTOR_MAX_L2_DISTANCE: f64 = 1.0;
+
+/// title boost — RRF 스케일 기준 (1/(60+rank) ≈ 0.016~0.001)
+/// 제목 완전 일치 시 약 1~2 순위 상승, 부분 일치 시 미세 보정.
+const TITLE_EXACT_BOOST: f64 = 0.005;
+const TITLE_PARTIAL_BOOST: f64 = 0.002;
+
+/// FTS5 토큰 sanitize: 사용자 입력에서 FTS5 문법을 깨는 문자 제거.
+/// " 는 phrase literal 내에서 `""` 이스케이프가 필요하지만, 검색 쿼리에서
+/// 리터럴 따옴표 검색은 불필요하므로 단순 제거한다.
+fn sanitize_fts_token(token: &str) -> String {
+    token
+        .replace('"', "")
+        .replace(['(', ')', '^', '~'], "")
+        .replace('-', " ")
+}
+
+/// prefix fallback 쿼리 빌더 — 각 토큰을 "token"* OR 조합
+/// vector 실패 시 recall 보완용
+#[allow(dead_code)]
+fn build_prefix_fallback_query(query: &str) -> String {
+    let tokens: Vec<String> = query
+        .split_whitespace()
+        .filter(|w| w.chars().count() >= 2)
+        .map(|w| format!("\"{}\"*", sanitize_fts_token(w)))
+        .collect();
+    if tokens.is_empty() {
+        format!("\"{}\"", sanitize_fts_token(query.trim()))
+    } else {
+        tokens.join(" OR ")
+    }
+}
+
+/// 메인 FTS 쿼리 빌더:
+/// 1. 전체 phrase match
+/// 2. 다단어: 각 토큰 개별 OR
+/// 3. 언더스코어 분리: DocSource_trait → DocSource OR trait
+/// 4. 짧은 쿼리(≤3자): prefix 추가
+fn build_fts_query(query: &str) -> String {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let escaped = sanitize_fts_token(trimmed);
+    let mut parts: Vec<String> = vec![format!("\"{}\"", escaped)];
+
+    let words: Vec<&str> = trimmed.split_whitespace().collect();
+    if words.len() > 1 {
+        for word in &words {
+            let w = word.trim();
+            if !w.is_empty() {
+                parts.push(format!("\"{}\"", sanitize_fts_token(w)));
+            }
+        }
+    }
+
+    if trimmed.contains('_') {
+        for part in trimmed.split('_') {
+            let p = part.trim();
+            if !p.is_empty() {
+                parts.push(format!("\"{}\"", sanitize_fts_token(p)));
+            }
+        }
+    }
+
+    if trimmed.chars().count() <= 3 {
+        parts.push(format!("\"{}\"*", escaped));
+    }
+
+    parts.join(" OR ")
+}
+
+/// RRF score에 제목 일치 보너스를 가산. 곱셈이 아닌 가산으로 RRF 스케일 유지.
+fn apply_title_boost(hits: &mut Vec<Hit>, query: &str) {
+    let q = query.to_lowercase();
+    for hit in hits.iter_mut() {
+        if let Some(ref title) = hit.title {
+            let t = title.to_lowercase();
+            if t.contains(&q) {
+                hit.score += TITLE_EXACT_BOOST;
+            } else if q.split_whitespace().any(|w| w.len() >= 2 && t.contains(w)) {
+                hit.score += TITLE_PARTIAL_BOOST;
+            }
+        }
+    }
+    hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+}
+
 fn rrf_score(rank: usize) -> f64 {
     1.0 / (RRF_K + rank) as f64
 }
@@ -306,6 +396,16 @@ fn index_document_sync(
     emb_bytes: Option<&[u8]>,
     meta: &DocMeta,
 ) -> Result<(), SearchError> {
+    // content 빈값 방어 — 빈 content를 청크/임베딩에 삽입하지 않음
+    if content.trim().is_empty() {
+        tracing::warn!(source_doc_id = %source_doc_id, "skipping document with empty content");
+        conn.execute(
+            "UPDATE documents SET indexing_status = 'failed', last_indexed = unixepoch() WHERE project_id = ?1 AND source_doc_id = ?2",
+            rusqlite::params![project_id, source_doc_id],
+        )?;
+        return Ok(());
+    }
+
     let content_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
     let metadata_json = serde_json::to_string(&meta.metadata).unwrap_or_else(|_| "{}".to_string());
     let now = std::time::SystemTime::now()
@@ -399,6 +499,10 @@ fn index_document_sync(
 }
 
 fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchHit>, SearchError> {
+    let fts_query = build_fts_query(&query.text);
+    if fts_query.is_empty() {
+        return Ok(vec![]);
+    }
     let limit = query.limit as i64;
 
     let (project_filter, base_param_count) = if query.project_ids.is_empty() {
@@ -414,7 +518,7 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
     let sql = format!(
         "SELECT d.id, c.id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path,
                 snippet(chunks_fts, 0, '<b>', '</b>', '…', 20) AS snippet,
-                bm25(chunks_fts) AS score
+                bm25(chunks_fts, 1.0, 3.0) AS score
          FROM chunks_fts
          JOIN chunks c ON c.id = chunks_fts.rowid
          JOIN documents d ON d.id = c.document_id
@@ -427,7 +531,7 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
 
     let mut stmt = conn.prepare(&sql)?;
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
-        Box::new(query.text.clone()),
+        Box::new(fts_query),
         Box::new(limit),
     ];
     for id in &query.project_ids {
@@ -505,6 +609,18 @@ fn vector_search_sync(
         })?
         .collect::<Result<Vec<_>, rusqlite::Error>>()?;
 
+    // 유사도 임계값 이하 결과 필터링 (L2 distance 기반: distance > VECTOR_MAX_L2_DISTANCE 제거)
+    let mut hits = hits;
+    hits.retain(|h| {
+        // score는 1/(RRF_K + distance)로 계산됨 → distance = 1/score - RRF_K
+        // score == 0.0 인 경우 division-by-zero → inf 이므로 명시적으로 제거
+        if h.score <= 0.0 {
+            return false;
+        }
+        let distance = (1.0 / h.score) - RRF_K as f64;
+        distance <= VECTOR_MAX_L2_DISTANCE
+    });
+
     Ok(hits)
 }
 
@@ -564,10 +680,15 @@ impl<'a> SyncSearchEngine<'a> {
             _ => ("AND p.status = 'active'".to_string(), vec![]),
         };
 
+        let fts_query_str = build_fts_query(query);
+        if fts_query_str.is_empty() {
+            return Ok(vec![]);
+        }
+
         let sql = format!(
             "SELECT d.id, d.project_id, d.source_doc_id, d.title,
                     snippet(chunks_fts, 0, '<b>', '</b>', '...', 20) AS snippet,
-                    bm25(chunks_fts) AS fts_score
+                    bm25(chunks_fts, 1.0, 3.0) AS fts_score
              FROM chunks_fts
              JOIN chunks c ON c.id = chunks_fts.rowid
              JOIN documents d ON d.id = c.document_id
@@ -580,7 +701,7 @@ impl<'a> SyncSearchEngine<'a> {
 
         let mut stmt = self.conn.prepare(&sql)?;
         let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
-            Box::new(query.to_string()),
+            Box::new(fts_query_str.clone()),
             Box::new(limit),
         ];
         for id in &project_id_params {
@@ -617,7 +738,66 @@ impl<'a> SyncSearchEngine<'a> {
         }
 
         let mut hits: Vec<Hit> = rrf_map.into_values().collect();
-        hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Fix 4-3: FTS 결과 < 3개이면 prefix fallback 쿼리로 보완
+        if hits.len() < 3 {
+            let fallback_q = build_prefix_fallback_query(query);
+            if fallback_q != fts_query_str {
+                let mut fb_params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
+                    Box::new(fallback_q),
+                    Box::new(limit),
+                ];
+                for id in &project_id_params {
+                    fb_params.push(Box::new(*id));
+                }
+                let fb_refs: Vec<&dyn rusqlite::types::ToSql> =
+                    fb_params.iter().map(|p| p.as_ref()).collect();
+                let fb_sql = format!(
+                    "SELECT d.id, d.project_id, d.source_doc_id, d.title,
+                            snippet(chunks_fts, 0, '<b>', '</b>', '...', 20) AS snippet,
+                            bm25(chunks_fts, 1.0, 3.0) AS fts_score
+                     FROM chunks_fts
+                     JOIN chunks c ON c.id = chunks_fts.rowid
+                     JOIN documents d ON d.id = c.document_id
+                     JOIN projects p ON p.id = d.project_id
+                     WHERE chunks_fts MATCH ?1
+                     {project_filter}
+                     ORDER BY fts_score
+                     LIMIT ?2"
+                );
+                if let Ok(mut fb_stmt) = self.conn.prepare(&fb_sql) {
+                    let existing_ids: std::collections::HashSet<i64> =
+                        hits.iter().map(|h| h.document_id).collect();
+                    let fb_rows: Vec<(i64, i64, String, Option<String>, String)> = fb_stmt
+                        .query_map(fb_refs.as_slice(), |row| {
+                            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+                        })
+                        .map(|mapped| {
+                            mapped
+                                .filter_map(|r| r.ok())
+                                .filter(|(doc_id, ..)| !existing_ids.contains(doc_id))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    // prefix 결과는 기존 rank 이후부터 시작해 자연스럽게 낮은 가중치
+                    let base_rank = hits.len();
+                    for (offset, (doc_id, project_id, source_doc_id, title, snippet)) in
+                        fb_rows.into_iter().enumerate()
+                    {
+                        hits.push(Hit {
+                            document_id: doc_id,
+                            project_id,
+                            source_doc_id,
+                            title,
+                            snippet: Some(snippet),
+                            score: rrf_score(base_rank + offset + 1),
+                        });
+                    }
+                }
+            }
+        }
+
+        apply_title_boost(&mut hits, query);
         Ok(hits)
     }
 
@@ -935,5 +1115,89 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stored_pid, Some(pid));
+    }
+
+    // ── Fix 3: empty content guard ──────────────────────────────────────
+
+    #[test]
+    fn index_document_empty_content_does_not_create_chunks() {
+        let db = TestDb::new();
+        let pid = insert_project(&db, "proj", "/proj");
+        let engine = SyncSearchEngine::from_conn(&db.conn);
+        // 빈 content 인덱싱 — 패닉 없이 Ok(())
+        engine.index_document(pid, "empty-doc", "Empty Doc", "").unwrap();
+        // chunks 테이블에 행이 없어야 함
+        let count: i64 = db.conn
+            .query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "빈 content 문서는 chunk를 생성하면 안 됨");
+    }
+
+    // ── Fix 4-1: FTS 쿼리 빌더 ─────────────────────────────────────────
+
+    #[test]
+    fn build_fts_query_single_word() {
+        let q = build_fts_query("hello");
+        assert!(q.contains("\"hello\""), "phrase match 포함되어야 함");
+    }
+
+    #[test]
+    fn build_fts_query_short_word_has_prefix() {
+        let q = build_fts_query("abc");
+        assert!(q.contains("\"abc\"*"), "짧은 쿼리는 prefix 포함되어야 함");
+    }
+
+    #[test]
+    fn build_fts_query_multiword_has_tokens() {
+        let q = build_fts_query("hello world");
+        assert!(q.contains("\"hello world\""), "phrase match 있어야 함");
+        assert!(q.contains("\"hello\""), "hello 개별 토큰 있어야 함");
+        assert!(q.contains("\"world\""), "world 개별 토큰 있어야 함");
+    }
+
+    #[test]
+    fn build_fts_query_underscore_split() {
+        let q = build_fts_query("DocSource_trait");
+        assert!(q.contains("\"DocSource\""), "언더스코어 앞부분 분리되어야 함");
+        assert!(q.contains("\"trait\""), "언더스코어 뒷부분 분리되어야 함");
+    }
+
+    #[test]
+    fn sanitize_fts_token_escapes_quotes() {
+        let s = sanitize_fts_token("a\"b");
+        assert!(!s.contains('"') || s.contains("\"\""), "따옴표 이스케이프되어야 함");
+    }
+
+    #[test]
+    fn sanitize_fts_token_replaces_dash() {
+        let s = sanitize_fts_token("sqlite-vec");
+        assert!(!s.contains('-'), "대시가 제거되어야 함");
+    }
+
+    // ── Fix 4-4: title boost ────────────────────────────────────────────
+
+    #[test]
+    fn title_boost_increases_score_for_title_match() {
+        let mut hits = vec![
+            Hit { document_id: 1, project_id: 1, source_doc_id: "a".into(),
+                  title: Some("Rust Programming Guide".into()), snippet: None, score: 0.010 },
+            Hit { document_id: 2, project_id: 1, source_doc_id: "b".into(),
+                  title: Some("Something Else".into()), snippet: None, score: 0.010 },
+        ];
+        apply_title_boost(&mut hits, "rust programming");
+        assert!(hits[0].document_id == 1, "title match 문서가 1위여야 함");
+        assert!(hits[0].score > hits[1].score, "title match가 더 높은 score를 가져야 함");
+    }
+
+    // ── Fix 4-5: vector 최소 유사도 임계값 ─────────────────────────────
+
+    #[test]
+    fn vector_search_filters_low_similarity() {
+        let score_low = 1.0 / (RRF_K as f64 + 2.0); // distance=2.0, 제거되어야 함
+        let score_ok  = 1.0 / (RRF_K as f64 + 0.5); // distance=0.5, 유지되어야 함
+        let distance_low = (1.0 / score_low) - RRF_K as f64;
+        let distance_ok  = (1.0 / score_ok)  - RRF_K as f64;
+        assert!(distance_low > VECTOR_MAX_L2_DISTANCE, "낮은 유사도는 임계값 초과여야 함");
+        assert!(distance_ok  <= VECTOR_MAX_L2_DISTANCE, "높은 유사도는 임계값 이하여야 함");
     }
 }

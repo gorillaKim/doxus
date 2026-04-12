@@ -79,7 +79,10 @@ fn db_path() -> PathBuf {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt().with_env_filter("info").init();
+    // ORT INFO 로그 억제: RUST_LOG 미설정 시 ort 크레이트는 error 레벨만 출력
+    let log_filter = std::env::var("RUST_LOG")
+        .unwrap_or_else(|_| "info,ort=error".to_string());
+    tracing_subscriber::fmt().with_env_filter(log_filter).init();
 
     let cli = Cli::parse();
     let db_path = std::env::var("DOXUS_DB_PATH")
@@ -88,11 +91,17 @@ async fn main() -> Result<()> {
 
     let conn = db::open(&db_path).context("failed to open database")?;
 
+    // Try to load ONNX embedder; fall back to FTS-only silently.
+    let embedder: Option<std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider>> =
+        doxus_core::embedding::OnnxEmbedder::from_default_path()
+            .map(|e| std::sync::Arc::new(e) as std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider>)
+            .ok();
+
     match cli.command {
         Commands::Project(args) => handle_project(&conn, args.action)?,
         Commands::Index => handle_index(&conn).await?,
         Commands::Search { query, limit, project } => {
-            handle_search(&conn, query, limit, project)?
+            handle_search(&conn, &db_path, embedder, query, limit, project).await?
         }
         Commands::Status => handle_status(&conn)?,
         Commands::Plugin(args) => handle_plugin(&conn, args.action)?,
@@ -237,15 +246,17 @@ async fn handle_index(conn: &rusqlite::Connection) -> Result<()> {
     Ok(())
 }
 
-fn handle_search(
+async fn handle_search(
     conn: &rusqlite::Connection,
+    db_path: &PathBuf,
+    embedder: Option<std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider>>,
     query_text: String,
     limit: usize,
     project: Option<String>,
 ) -> Result<()> {
     use doxus_core::search::SearchEngine;
 
-    let project_ids: Vec<i64> = if let Some(name) = project {
+    let project_ids: Vec<i64> = if let Some(ref name) = project {
         let id: i64 = conn
             .query_row("SELECT id FROM projects WHERE name=?1", rusqlite::params![name], |r| r.get(0))
             .context("project not found")?;
@@ -254,12 +265,21 @@ fn handle_search(
         vec![]
     };
 
-    let engine = SearchEngine::new(conn);
     let query = SearchQuery::new(&query_text)
         .with_projects(project_ids)
         .with_limit(limit);
 
-    let hits = engine.search(&query)?;
+    // Use hybrid search when ONNX embedder is available; otherwise fall back to FTS-only.
+    let hits = if let Some(emb) = embedder {
+        let search_conn = db::open(db_path).context("failed to open search connection")?;
+        let engine = SearchEngine::with_embedder(
+            std::sync::Arc::new(std::sync::Mutex::new(search_conn)),
+            emb,
+        );
+        engine.search_async(&query).await.map_err(|e| anyhow::anyhow!(e))?
+    } else {
+        SearchEngine::new(conn).search(&query).map_err(|e| anyhow::anyhow!(e))?
+    };
 
     if hits.is_empty() {
         println!("No results for '{query_text}'");
