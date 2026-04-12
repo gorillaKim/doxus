@@ -270,7 +270,7 @@ fn handle_search(
     for (i, hit) in hits.iter().enumerate() {
         let title = hit.title.as_deref().unwrap_or("(untitled)");
         let path = hit.file_path.as_deref().unwrap_or("");
-        println!("{}. {} [score: {:.2}]", i + 1, title, hit.score);
+        println!("{}. {} [score: {:.6}]", i + 1, title, hit.score);
         println!("   📄 {path}");
         println!("   {}", hit.snippet);
         println!();

@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod cache;
+pub mod chunker;
 pub mod conflict;
 pub mod secrets;
 pub mod db;

@@ -1,5 +1,6 @@
 use crate::db::schema::SearchHit;
 use crate::embedding::{EmbeddingError, EmbeddingProvider};
+use crate::observability::{persist_audit, AuditEvent};
 use rusqlite::Connection;
 use sha2::{Sha256, Digest};
 use std::collections::HashMap;
@@ -227,7 +228,10 @@ impl SearchEngine {
 
         tokio::task::spawn_blocking(move || -> Result<(), SearchError> {
             let conn = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
-            index_document_sync(&conn, project_id, &source_doc_id, &title, &content, emb_bytes.as_deref(), &meta)
+            persist_audit(&conn, &AuditEvent::IndexStart { project_id });
+            index_document_sync(&conn, project_id, &source_doc_id, &title, &content, emb_bytes.as_deref(), &meta)?;
+            persist_audit(&conn, &AuditEvent::IndexComplete { project_id, docs_indexed: 1 });
+            Ok(())
         })
         .await??;
 
@@ -365,13 +369,20 @@ fn index_document_sync(
     // Delete old chunks (triggers handle FTS cleanup)
     conn.execute("DELETE FROM chunks WHERE document_id = ?1", [doc_id])?;
 
-    // Insert single chunk (whole content)
-    conn.execute(
-        "INSERT INTO chunks (document_id, content, chunk_index) VALUES (?1, ?2, 0)",
-        rusqlite::params![doc_id, content],
-    )?;
+    // Split content into chunks and insert each one
+    let chunks = crate::chunker::split_chunks(
+        content,
+        crate::chunker::DEFAULT_MAX_CHARS,
+        crate::chunker::DEFAULT_OVERLAP_CHARS,
+    );
+    for chunk in &chunks {
+        conn.execute(
+            "INSERT INTO chunks (document_id, content, chunk_index) VALUES (?1, ?2, ?3)",
+            rusqlite::params![doc_id, chunk.content, chunk.index as i64],
+        )?;
+    }
 
-    // Store embedding in chunk_embeddings if provided
+    // Store embedding in chunk_embeddings for first chunk if provided
     if let Some(bytes) = emb_bytes {
         let chunk_id: i64 = conn.query_row(
             "SELECT id FROM chunks WHERE document_id = ?1 AND chunk_index = 0",
@@ -864,5 +875,65 @@ mod tests {
         let query = SearchQuery::new("rust programming");
         let hits = engine.search_async(&query).await.unwrap();
         assert!(!hits.is_empty(), "hybrid search should return results");
+    }
+
+    #[tokio::test]
+    async fn index_document_writes_index_start_audit_log() {
+        let (_engine, conn, pid) = make_async_engine("audit_start");
+        let engine = SearchEngine::with_embedder(
+            Arc::clone(&conn),
+            Arc::new(crate::embedding::MockEmbedder::new(384)),
+        );
+        engine.index_document_async(pid, "doc1", "Title", "content").await.unwrap();
+
+        let conn = conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE event_type = 'index_start'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "index_start should be recorded in audit_log");
+    }
+
+    #[tokio::test]
+    async fn index_document_writes_index_complete_audit_log() {
+        let (_engine, conn, pid) = make_async_engine("audit_complete");
+        let engine = SearchEngine::with_embedder(
+            Arc::clone(&conn),
+            Arc::new(crate::embedding::MockEmbedder::new(384)),
+        );
+        engine.index_document_async(pid, "doc1", "Title", "content").await.unwrap();
+
+        let conn = conn.lock().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE event_type = 'index_complete'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "index_complete should be recorded in audit_log");
+    }
+
+    #[tokio::test]
+    async fn index_document_audit_log_has_correct_project_id() {
+        let (_engine, conn, pid) = make_async_engine("audit_pid");
+        let engine = SearchEngine::with_embedder(
+            Arc::clone(&conn),
+            Arc::new(crate::embedding::MockEmbedder::new(384)),
+        );
+        engine.index_document_async(pid, "doc1", "Title", "content").await.unwrap();
+
+        let conn = conn.lock().unwrap();
+        let stored_pid: Option<i64> = conn
+            .query_row(
+                "SELECT project_id FROM audit_log WHERE event_type = 'index_complete'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_pid, Some(pid));
     }
 }

@@ -291,4 +291,63 @@ mod tests {
         let mgr = PluginManager::new(tmp.path().to_path_buf());
         assert!(!mgr.is_installed("not-there"));
     }
+
+    // ── ABI version runtime validation ────────────────────────────────────────
+
+    fn write_manifest(dir: &std::path::Path, plugin_id: &str, abi_version: u32) {
+        let content = format!(
+            r#"plugin_id = "{plugin_id}"
+display_name = "Test Plugin"
+version = "1.0.0"
+abi_version = {abi_version}
+http_domains = []
+kv_namespaces = []
+secrets = []
+"#
+        );
+        std::fs::write(dir.join(format!("{plugin_id}.manifest.toml")), content).unwrap();
+    }
+
+    #[test]
+    fn get_source_returns_none_for_unsupported_abi() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = PluginManager::new(tmp.path().to_path_buf());
+        let plugin_id = "com.test.newabi";
+
+        // Write manifest with future ABI version and dummy wasm
+        write_manifest(tmp.path(), plugin_id, SUPPORTED_ABI_VERSION + 1);
+        std::fs::write(tmp.path().join(format!("{plugin_id}.wasm")), b"fake").unwrap();
+
+        // get_source must reject the plugin before even trying to load WASM
+        assert!(
+            mgr.get_source(plugin_id).is_none(),
+            "expected None for unsupported ABI version"
+        );
+    }
+
+    #[test]
+    fn get_source_abi_check_uses_supported_abi_constant() {
+        // Verify the constant is what we expect so tests remain aligned with production
+        assert_eq!(SUPPORTED_ABI_VERSION, 1);
+    }
+
+    #[test]
+    fn get_source_returns_none_when_only_manifest_present() {
+        // No .wasm file → should return None (both files required)
+        let tmp = TempDir::new().unwrap();
+        let mgr = PluginManager::new(tmp.path().to_path_buf());
+        let plugin_id = "com.test.nowanasm";
+        write_manifest(tmp.path(), plugin_id, SUPPORTED_ABI_VERSION);
+        // No .wasm written
+        assert!(mgr.get_source(plugin_id).is_none());
+    }
+
+    #[test]
+    fn get_source_rejects_path_traversal_plugin_id() {
+        let tmp = TempDir::new().unwrap();
+        let mgr = PluginManager::new(tmp.path().to_path_buf());
+        assert!(mgr.get_source("../etc/passwd").is_none());
+        assert!(mgr.get_source("foo/bar").is_none());
+        assert!(mgr.get_source("foo\\bar").is_none());
+    }
 }
