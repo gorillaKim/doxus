@@ -271,6 +271,75 @@ function ProjectGroup({
   );
 }
 
+// ── 문서 메타데이터 패널 ──────────────────────────────────────────────────
+
+function formatUnixDate(ts: number): string {
+  return new Date(ts * 1000).toLocaleDateString('ko-KR', {
+    year: 'numeric', month: 'short', day: 'numeric',
+  });
+}
+
+function DocMetaPanel({
+  tags, aliases, created_at, updated_at, metadata,
+}: {
+  tags: string[]; aliases: string[];
+  created_at: number | null; updated_at: number | null;
+  metadata: Record<string, unknown>;
+}) {
+  const hasAny = tags.length > 0 || aliases.length > 0 || created_at || updated_at || Object.keys(metadata).length > 0;
+  if (!hasAny) return null;
+
+  // metadata에서 links 제외 (내부 처리용)
+  const displayMeta = Object.entries(metadata).filter(([k]) => k !== 'links');
+
+  return (
+    <div className="px-5 py-3 border-b border-gray-800 flex flex-wrap gap-x-5 gap-y-2 text-xs bg-gray-950/40">
+      {/* 날짜 */}
+      {created_at && (
+        <div className="flex items-center gap-1.5 text-gray-500">
+          <span className="text-gray-600">생성</span>
+          <span className="text-gray-400">{formatUnixDate(created_at)}</span>
+        </div>
+      )}
+      {updated_at && (
+        <div className="flex items-center gap-1.5 text-gray-500">
+          <span className="text-gray-600">수정</span>
+          <span className="text-gray-400">{formatUnixDate(updated_at)}</span>
+        </div>
+      )}
+      {/* 태그 */}
+      {tags.length > 0 && (
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-gray-600">태그</span>
+          {tags.map((t) => (
+            <span key={t} className="px-1.5 py-0.5 rounded-full bg-indigo-950 text-indigo-300 border border-indigo-800">
+              #{t}
+            </span>
+          ))}
+        </div>
+      )}
+      {/* 별칭 */}
+      {aliases.length > 0 && (
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-gray-600">별칭</span>
+          {aliases.map((a) => (
+            <span key={a} className="px-1.5 py-0.5 rounded-full bg-gray-800 text-gray-400 border border-gray-700">
+              {a}
+            </span>
+          ))}
+        </div>
+      )}
+      {/* 플러그인 메타 (space_key 등) */}
+      {displayMeta.map(([key, val]) => (
+        <div key={key} className="flex items-center gap-1.5">
+          <span className="text-gray-600">{key}</span>
+          <span className="text-gray-400">{String(val)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Markdown Preview ──────────────────────────────────────────────────────
 
 function MarkdownPreview({ content }: { content: string }) {
@@ -424,6 +493,11 @@ export function SearchPage() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [selectedDoc, setSelectedDoc] = useState<DocEntry | null>(null);
   const [previewContent, setPreviewContent] = useState<string | null>(null);
+  const [previewMeta, setPreviewMeta] = useState<{
+    tags: string[]; aliases: string[];
+    created_at: number | null; updated_at: number | null;
+    metadata: Record<string, unknown>;
+  } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [refreshToast, setRefreshToast] = useState<string | null>(null);
@@ -477,12 +551,24 @@ export function SearchPage() {
     setPreviewLoading(true);
     setPreviewError(null);
     try {
-      const result = await invoke<{ content: string; from_cache?: boolean }>('get_document_content', {
+      const result = await invoke<{
+        content: string; from_cache?: boolean;
+        tags?: string[]; aliases?: string[];
+        created_at?: number | null; updated_at?: number | null;
+        metadata?: Record<string, unknown>;
+      }>('get_document_content', {
         filePath: identifier,
         projectName: doc.project_name || undefined,
         forceRefresh,
       });
       setPreviewContent(result.content);
+      setPreviewMeta({
+        tags: result.tags ?? [],
+        aliases: result.aliases ?? [],
+        created_at: result.created_at ?? null,
+        updated_at: result.updated_at ?? null,
+        metadata: result.metadata ?? {},
+      });
       if (forceRefresh) {
         if (refreshToastTimer.current) clearTimeout(refreshToastTimer.current);
         setRefreshToast('최신 콘텐츠로 업데이트됨');
@@ -499,6 +585,7 @@ export function SearchPage() {
   const handleSelectDoc = async (doc: DocEntry) => {
     setSelectedDoc(doc);
     setPreviewContent(null);
+    setPreviewMeta(null);
     setPreviewError(null);
     if (doc.document_id) {
       invoke('increment_view_count', { documentId: doc.document_id }).catch(() => {});
@@ -682,6 +769,17 @@ export function SearchPage() {
                   </button>
                 </div>
               </div>
+
+              {/* 메타데이터 패널 */}
+              {previewMeta && (
+                <DocMetaPanel
+                  tags={previewMeta.tags}
+                  aliases={previewMeta.aliases}
+                  created_at={previewMeta.created_at}
+                  updated_at={previewMeta.updated_at}
+                  metadata={previewMeta.metadata}
+                />
+              )}
 
               {/* 프리뷰 내용 */}
               <div className="flex-1 overflow-auto p-5">

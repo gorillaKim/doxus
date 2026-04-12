@@ -241,6 +241,8 @@ mod tests {
             url: None,
             metadata: HashMap::new(),
             tags: vec![],
+            aliases: vec![],
+            created_at: None,
             updated_at: None,
         }
     }

@@ -142,6 +142,8 @@ impl GitHubPlugin {
             url: Some(issue.html_url),
             metadata: HashMap::new(),
             tags: vec!["issue".into(), issue.state],
+            aliases: vec![],
+            created_at: None,
             updated_at,
         }
     }
@@ -161,6 +163,8 @@ impl GitHubPlugin {
             url: Some(page.html_url),
             metadata: HashMap::new(),
             tags: vec!["wiki".into()],
+            aliases: vec![],
+            created_at: None,
             updated_at: None,
         }
     }
@@ -175,6 +179,8 @@ impl GitHubPlugin {
             url: Some(d.html_url),
             metadata: HashMap::new(),
             tags: vec!["discussion".into()],
+            aliases: vec![],
+            created_at: None,
             updated_at,
         }
     }

@@ -243,6 +243,8 @@ impl ConfluencePlugin {
             url,
             metadata,
             tags,
+            aliases: vec![],
+            created_at: None,
             updated_at,
         })
     }

@@ -194,6 +194,18 @@ impl SearchEngine {
         title: &str,
         content: &str,
     ) -> Result<(), SearchError> {
+        self.index_document_async_with_meta(project_id, source_doc_id, title, content, DocMeta::default()).await
+    }
+
+    /// Index a document with full metadata.
+    pub async fn index_document_async_with_meta(
+        &self,
+        project_id: i64,
+        source_doc_id: &str,
+        title: &str,
+        content: &str,
+        meta: DocMeta,
+    ) -> Result<(), SearchError> {
         // 1. Generate embedding
         let embedding_result = self.embedder.embed(&[content]).await;
         let emb_bytes: Option<Vec<u8>> = match embedding_result {
@@ -203,7 +215,7 @@ impl SearchEngine {
                 })?;
                 Some(emb.iter().flat_map(|f| f.to_le_bytes()).collect())
             }
-            Err(EmbeddingError::Inference(_)) => None, // NoOp embedder - skip vector storage
+            Err(EmbeddingError::Inference(_)) => None,
             Err(e) => return Err(SearchError::Embedding(e.to_string())),
         };
 
@@ -215,7 +227,7 @@ impl SearchEngine {
 
         tokio::task::spawn_blocking(move || -> Result<(), SearchError> {
             let conn = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
-            index_document_sync(&conn, project_id, &source_doc_id, &title, &content, emb_bytes.as_deref())
+            index_document_sync(&conn, project_id, &source_doc_id, &title, &content, emb_bytes.as_deref(), &meta)
         })
         .await??;
 
@@ -266,6 +278,21 @@ impl SearchEngine {
 
 // ── Sync free functions (used inside spawn_blocking) ─────────────────────────
 
+/// 인덱싱 시 함께 저장할 문서 메타정보.
+#[derive(Debug, Default, Clone)]
+pub struct DocMeta {
+    /// 문서 생성 시각 (Unix timestamp). 플러그인이 알 수 없으면 None → 인덱싱 시각으로 대체.
+    pub created_at: Option<i64>,
+    /// 문서 최종 수정 시각 (Unix timestamp).
+    pub updated_at: Option<i64>,
+    /// 태그 목록 (frontmatter `tags:` 또는 인라인 `#tag`, Confluence labels 등).
+    pub tags: Vec<String>,
+    /// 별칭 목록 (Obsidian `aliases:` frontmatter 등).
+    pub aliases: Vec<String>,
+    /// 플러그인별 추가 메타 (space_key, url, repo 등) — JSON 직렬화하여 저장.
+    pub metadata: std::collections::HashMap<String, serde_json::Value>,
+}
+
 fn index_document_sync(
     conn: &Connection,
     project_id: i64,
@@ -273,18 +300,29 @@ fn index_document_sync(
     title: &str,
     content: &str,
     emb_bytes: Option<&[u8]>,
+    meta: &DocMeta,
 ) -> Result<(), SearchError> {
-    // Upsert document
     let content_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
+    let metadata_json = serde_json::to_string(&meta.metadata).unwrap_or_else(|_| "{}".to_string());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let created_at = meta.created_at.unwrap_or(now);
+    let updated_at = meta.updated_at.unwrap_or(now);
+
     conn.execute(
-        "INSERT INTO documents (project_id, source_doc_id, title, content, content_hash, last_indexed)
-         VALUES (?1, ?2, ?3, ?4, ?5, unixepoch())
+        "INSERT INTO documents (project_id, source_doc_id, title, content, content_hash, last_indexed, created_at, updated_at, metadata_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, unixepoch(), ?6, ?7, ?8)
          ON CONFLICT(project_id, source_doc_id) DO UPDATE SET
             title = excluded.title,
             content = excluded.content,
             content_hash = excluded.content_hash,
-            last_indexed = excluded.last_indexed",
-        rusqlite::params![project_id, source_doc_id, title, content, content_hash],
+            last_indexed = excluded.last_indexed,
+            updated_at = excluded.updated_at,
+            metadata_json = excluded.metadata_json",
+        rusqlite::params![project_id, source_doc_id, title, content, content_hash,
+                          created_at, updated_at, metadata_json],
     )?;
 
     let doc_id: i64 = conn.query_row(
@@ -292,6 +330,37 @@ fn index_document_sync(
         rusqlite::params![project_id, source_doc_id],
         |row| row.get(0),
     )?;
+
+    // Tags: 기존 삭제 후 재삽입
+    conn.execute("DELETE FROM document_tags WHERE document_id = ?1", [doc_id])?;
+    for tag in &meta.tags {
+        conn.execute(
+            "INSERT OR IGNORE INTO document_tags (document_id, tag) VALUES (?1, ?2)",
+            rusqlite::params![doc_id, tag],
+        )?;
+    }
+
+    // Aliases: 기존 삭제 후 재삽입
+    conn.execute("DELETE FROM document_aliases WHERE document_id = ?1", [doc_id])?;
+    for alias in &meta.aliases {
+        conn.execute(
+            "INSERT OR IGNORE INTO document_aliases (document_id, alias) VALUES (?1, ?2)",
+            rusqlite::params![doc_id, alias],
+        )?;
+    }
+
+    // Metadata key-value (document_metadata): 기존 삭제 후 재삽입
+    conn.execute("DELETE FROM document_metadata WHERE document_id = ?1", [doc_id])?;
+    for (key, value) in &meta.metadata {
+        let val_str = match value {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        conn.execute(
+            "INSERT OR REPLACE INTO document_metadata (document_id, key, value) VALUES (?1, ?2, ?3)",
+            rusqlite::params![doc_id, key, val_str],
+        )?;
+    }
 
     // Delete old chunks (triggers handle FTS cleanup)
     conn.execute("DELETE FROM chunks WHERE document_id = ?1", [doc_id])?;
@@ -451,7 +520,19 @@ impl<'a> SyncSearchEngine<'a> {
         title: &str,
         content: &str,
     ) -> Result<(), SearchError> {
-        index_document_sync(self.conn, project_id, source_doc_id, title, content, None)
+        self.index_document_with_meta(project_id, source_doc_id, title, content, &DocMeta::default())
+    }
+
+    /// Index a document with full metadata (sync, FTS only).
+    pub fn index_document_with_meta(
+        &self,
+        project_id: i64,
+        source_doc_id: &str,
+        title: &str,
+        content: &str,
+        meta: &DocMeta,
+    ) -> Result<(), SearchError> {
+        index_document_sync(self.conn, project_id, source_doc_id, title, content, None, meta)
     }
 
     /// Convenience search: query string + options, returns `Hit` with RRF scoring.

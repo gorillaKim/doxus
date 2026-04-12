@@ -91,6 +91,69 @@ fn parse_tags(content: &str) -> Vec<String> {
     tags
 }
 
+/// Extract `aliases:` and `created:` / `date:` from YAML frontmatter.
+fn parse_frontmatter_meta(fm: &str) -> (Vec<String>, Option<i64>) {
+    let mut aliases: Vec<String> = Vec::new();
+    let mut created_at: Option<i64> = None;
+    let mut lines = fm.lines().peekable();
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim();
+        // aliases: [a, b] or block list
+        if trimmed.starts_with("aliases:") {
+            let after = trimmed["aliases:".len()..].trim();
+            if after.starts_with('[') {
+                let inner = after.trim_start_matches('[').trim_end_matches(']');
+                for item in inner.split(',') {
+                    let a = item.trim().trim_matches('"').trim_matches('\'');
+                    if !a.is_empty() { aliases.push(a.to_string()); }
+                }
+            } else if after.is_empty() {
+                while let Some(next) = lines.peek() {
+                    let nt = next.trim();
+                    if let Some(item) = nt.strip_prefix("- ") {
+                        aliases.push(item.trim().trim_matches('"').trim_matches('\'').to_string());
+                        lines.next();
+                    } else { break; }
+                }
+            } else {
+                // aliases: single value
+                let a = after.trim_matches('"').trim_matches('\'');
+                if !a.is_empty() { aliases.push(a.to_string()); }
+            }
+        }
+        // created: / date: → Unix timestamp (ISO 8601 or YYYY-MM-DD)
+        if trimmed.starts_with("created:") || trimmed.starts_with("date:") {
+            let val = trimmed.splitn(2, ':').nth(1).unwrap_or("").trim();
+            let val = val.trim_matches('"').trim_matches('\'');
+            // Try ISO 8601 parsing via simple heuristic (YYYY-MM-DD prefix)
+            if val.len() >= 10 {
+                let date_part = &val[..10]; // "YYYY-MM-DD"
+                let parts: Vec<&str> = date_part.split('-').collect();
+                if parts.len() == 3 {
+                    if let (Ok(y), Ok(m), Ok(d)) = (
+                        parts[0].parse::<i64>(),
+                        parts[1].parse::<u32>(),
+                        parts[2].parse::<u32>(),
+                    ) {
+                        // Rough Unix timestamp: days since epoch
+                        use std::time::{SystemTime, UNIX_EPOCH};
+                        let _ = (y, m, d); // suppress unused warnings
+                        // Simple approximation: (y-1970)*365.25 + day_of_year
+                        let days = (y - 1970) * 365 + (y - 1969) / 4
+                            + match m {
+                                1 => 0, 2 => 31, 3 => 59, 4 => 90, 5 => 120, 6 => 151,
+                                7 => 181, 8 => 212, 9 => 243, 10 => 273, 11 => 304, _ => 334,
+                            } as i64
+                            + d as i64 - 1;
+                        created_at = Some(days * 86400);
+                    }
+                }
+            }
+        }
+    }
+    (aliases, created_at)
+}
+
 /// Parse `tags:` field from YAML frontmatter string (no external crate).
 fn parse_frontmatter_tags(fm: &str) -> Vec<String> {
     let mut tags = Vec::new();
@@ -197,13 +260,29 @@ impl ObsidianPlugin {
 
         let tags = parse_tags(&content);
         let links = parse_links_for_doc(&content, &rel_path);
-        let updated_at = file_path
-            .metadata()
-            .ok()
+        let file_meta = file_path.metadata().ok();
+        let updated_at = file_meta
+            .as_ref()
             .and_then(|m| m.modified().ok())
-            .and_then(|t| {
-                t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs() as i64)
-            });
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs() as i64));
+        let fs_created_at = file_meta
+            .as_ref()
+            .and_then(|m| m.created().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs() as i64));
+
+        // frontmatter aliases + created_at
+        let (aliases, fm_created_at) = if content.starts_with("---") {
+            let rest = &content[3..];
+            let rest = rest.strip_prefix('\n').unwrap_or(rest);
+            if let Some(end) = rest.find("\n---") {
+                parse_frontmatter_meta(&rest[..end])
+            } else {
+                (vec![], None)
+            }
+        } else {
+            (vec![], None)
+        };
+        let created_at = fm_created_at.or(fs_created_at);
 
         let mut metadata: std::collections::HashMap<String, serde_json::Value> =
             Default::default();
@@ -224,6 +303,8 @@ impl ObsidianPlugin {
             url: Some(format!("obsidian://open?path={rel_path}")),
             metadata,
             tags,
+            aliases,
+            created_at,
             updated_at,
         })
     }
@@ -339,6 +420,8 @@ impl DocSource for ObsidianPlugin {
             url: Some(format!("obsidian://open?path={}", id.0)),
             metadata: Default::default(),
             tags,
+            aliases: vec![],
+            created_at: None,
             updated_at: None,
         })
     }

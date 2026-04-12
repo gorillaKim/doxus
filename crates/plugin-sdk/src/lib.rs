@@ -79,6 +79,8 @@ pub struct RawDocument {
     pub url: Option<String>,
     pub metadata: HashMap<String, serde_json::Value>,
     pub tags: Vec<String>,
+    pub aliases: Vec<String>,
+    pub created_at: Option<i64>,
     pub updated_at: Option<i64>,
 }
 
@@ -315,6 +317,8 @@ mod tests {
             url: None,
             metadata: HashMap::new(),
             tags: vec![],
+            aliases: vec![],
+            created_at: None,
             updated_at: None,
         };
         let doc2 = RawDocument {
@@ -325,6 +329,8 @@ mod tests {
             url: None,
             metadata: HashMap::new(),
             tags: vec![],
+            aliases: vec![],
+            created_at: None,
             updated_at: None,
         };
         // Same content → same hash when computed the same way
@@ -385,6 +391,8 @@ mod tests {
             url: None,
             metadata: HashMap::new(),
             tags: vec!["rust".into()],
+            aliases: vec![],
+            created_at: None,
             updated_at: Some(1700000000),
         };
         let json = serde_json::to_string(&doc).unwrap();

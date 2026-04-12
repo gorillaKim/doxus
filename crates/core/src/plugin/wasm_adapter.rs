@@ -366,6 +366,8 @@ fn raw_doc_from_wasm(d: doxus_plugin_sdk::wasm_types::RawDocumentWasm) -> RawDoc
         url: d.url,
         metadata: d.metadata,
         tags: d.tags,
+        aliases: vec![],
+        created_at: None,
         updated_at: d.updated_at,
     }
 }

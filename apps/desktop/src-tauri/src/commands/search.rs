@@ -596,7 +596,14 @@ pub async fn index_project(
                     let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
                     let engine = SearchEngine::new(&conn);
                     for doc in &stream.documents {
-                        if engine.index_document(project_id, &doc.id.0, doc.title.as_deref().unwrap_or("Untitled"), &doc.content).is_ok() {
+                        let meta = doxus_core::search::DocMeta {
+                            tags: doc.tags.clone(),
+                            aliases: doc.aliases.clone(),
+                            created_at: doc.created_at,
+                            updated_at: doc.updated_at,
+                            metadata: doc.metadata.clone(),
+                        };
+                        if engine.index_document_with_meta(project_id, &doc.id.0, doc.title.as_deref().unwrap_or("Untitled"), &doc.content, &meta).is_ok() {
                             total += 1;
                         }
                     }
@@ -631,7 +638,14 @@ pub async fn index_project(
                     let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
                     let engine = SearchEngine::new(&conn);
                     for doc in &stream.documents {
-                        if engine.index_document(project_id, &doc.id.0, doc.title.as_deref().unwrap_or("Untitled"), &doc.content).is_ok() {
+                        let meta = doxus_core::search::DocMeta {
+                            tags: doc.tags.clone(),
+                            aliases: doc.aliases.clone(),
+                            created_at: doc.created_at,
+                            updated_at: doc.updated_at,
+                            metadata: doc.metadata.clone(),
+                        };
+                        if engine.index_document_with_meta(project_id, &doc.id.0, doc.title.as_deref().unwrap_or("Untitled"), &doc.content, &meta).is_ok() {
                             total += 1;
                         }
                     }
@@ -655,7 +669,14 @@ pub async fn index_project(
                     let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
                     let engine = SearchEngine::new(&conn);
                     for doc in &stream.documents {
-                        if engine.index_document(project_id, &doc.id.0, doc.title.as_deref().unwrap_or("Untitled"), &doc.content).is_ok() {
+                        let meta = doxus_core::search::DocMeta {
+                            tags: doc.tags.clone(),
+                            aliases: doc.aliases.clone(),
+                            created_at: doc.created_at,
+                            updated_at: doc.updated_at,
+                            metadata: doc.metadata.clone(),
+                        };
+                        if engine.index_document_with_meta(project_id, &doc.id.0, doc.title.as_deref().unwrap_or("Untitled"), &doc.content, &meta).is_ok() {
                             total += 1;
                         }
                     }
@@ -737,11 +758,19 @@ pub async fn trigger_reindex(
 
 pub(crate) fn get_document_content_impl(conn: &rusqlite::Connection, file_path: &str) -> Result<serde_json::Value, String> {
     let mut stmt = conn.prepare(
-        "SELECT id, title, content FROM documents WHERE source_doc_id = ?1 OR file_path = ?1 ORDER BY id ASC"
+        "SELECT id, title, content, created_at, updated_at, metadata_json \
+         FROM documents WHERE source_doc_id = ?1 OR file_path = ?1 ORDER BY id ASC"
     ).map_err(|e| e.to_string())?;
-    let rows: Vec<(i64, Option<String>, String)> = stmt
+    let rows: Vec<(i64, Option<String>, String, Option<i64>, Option<i64>, Option<String>)> = stmt
         .query_map(rusqlite::params![file_path], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?))
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<i64>>(3)?,
+                r.get::<_, Option<i64>>(4)?,
+                r.get::<_, Option<String>>(5)?,
+            ))
         })
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
@@ -751,12 +780,37 @@ pub(crate) fn get_document_content_impl(conn: &rusqlite::Connection, file_path: 
     }
     let id = rows[0].0;
     let title = rows[0].1.clone();
-    let content = rows.into_iter().map(|(_, _, c)| c).collect::<Vec<_>>().join("\n\n");
+    let created_at = rows[0].3;
+    let updated_at = rows[0].4;
+    let metadata_json: serde_json::Value = rows[0].5.as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(serde_json::json!({}));
+    let content = rows.into_iter().map(|(_, _, c, _, _, _)| c).collect::<Vec<_>>().join("\n\n");
+
+    // Tags
+    let tags: Vec<String> = conn.prepare(
+        "SELECT tag FROM document_tags WHERE document_id = ?1 ORDER BY tag"
+    ).ok().and_then(|mut s| {
+        s.query_map([id], |r| r.get::<_, String>(0)).ok().map(|rows| rows.filter_map(|r| r.ok()).collect())
+    }).unwrap_or_default();
+
+    // Aliases
+    let aliases: Vec<String> = conn.prepare(
+        "SELECT alias FROM document_aliases WHERE document_id = ?1 ORDER BY alias"
+    ).ok().and_then(|mut s| {
+        s.query_map([id], |r| r.get::<_, String>(0)).ok().map(|rows| rows.filter_map(|r| r.ok()).collect())
+    }).unwrap_or_default();
+
     Ok(serde_json::json!({
         "document_id": id,
         "title": title,
         "content": content,
         "file_path": file_path,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "tags": tags,
+        "aliases": aliases,
+        "metadata": metadata_json,
     }))
 }
 
