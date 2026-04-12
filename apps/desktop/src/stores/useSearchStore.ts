@@ -9,6 +9,8 @@ export interface SearchHit {
   score: number;
   file_path: string | null;
   heading_path: string | null;
+  project_name: string;
+  source_type: string;
 }
 
 export interface AllDocument {

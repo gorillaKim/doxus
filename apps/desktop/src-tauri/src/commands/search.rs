@@ -415,9 +415,34 @@ pub async fn search_documents(
     let engine = SearchEngine::new(&conn);
     let q = SearchQuery::new(&query).with_limit(limit.unwrap_or(20));
     let hits = engine.search(&q).map_err(|e| e.to_string())?;
+    // document_id 목록으로 project_name / source_type 일괄 조회
+    let doc_ids: Vec<i64> = hits.iter().map(|h| h.document_id).collect();
+    let mut project_info: std::collections::HashMap<i64, (String, String)> = std::collections::HashMap::new();
+    for chunk in doc_ids.chunks(50) {
+        let placeholders = chunk.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT d.id, p.name, COALESCE(p.source_type, 'obsidian') \
+             FROM documents d JOIN projects p ON d.project_id = p.id \
+             WHERE d.id IN ({})",
+            placeholders
+        );
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let params: Vec<&dyn rusqlite::ToSql> = chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params.as_slice(), |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        }).map_err(|e| e.to_string())?;
+        for row in rows.filter_map(|r| r.ok()) {
+            project_info.insert(row.0, (row.1, row.2));
+        }
+    }
+
     let hits_json: Vec<serde_json::Value> = hits
         .into_iter()
         .map(|h| {
+            let (project_name, source_type) = project_info
+                .get(&h.document_id)
+                .cloned()
+                .unwrap_or_default();
             serde_json::json!({
                 "document_id": h.document_id,
                 "chunk_id": h.chunk_id,
@@ -426,6 +451,8 @@ pub async fn search_documents(
                 "heading_path": h.heading_path,
                 "snippet": h.snippet,
                 "score": h.score,
+                "project_name": project_name,
+                "source_type": source_type,
             })
         })
         .collect();
