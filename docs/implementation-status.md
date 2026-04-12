@@ -1,6 +1,6 @@
 ---
 title: doxus 구현 현황
-updated: 2026-04-12
+updated: 2026-04-13
 tags:
   - implementation
   - status-report
@@ -10,9 +10,9 @@ tags:
 
 # doxus 구현 현황
 
-> **최종 업데이트:** 2026-04-12  
+> **최종 업데이트:** 2026-04-13  
 > **상태:** Phase 0~8 완료 (구현 완료, 마켓 배포 파이프라인 미완)  
-> **주요 달성:** 11개 크레이트, 40개 MCP 도구, 10개 데이터베이스 마이그레이션, 36개 Tauri 커맨드
+> **주요 달성:** 11개 크레이트, 40개 MCP 도구, 13개 데이터베이스 마이그레이션, 36개 Tauri 커맨드
 
 ---
 
@@ -71,8 +71,9 @@ tags:
 #### `crates/core` — 검색/인덱싱/DB/플러그인 엔진
 | 모듈 | LOC | 구현 사항 |
 |------|-----|---------|
-| **embedding.rs** | 534 | EmbeddingProvider trait, OnnxEmbedder(all-MiniLM-L6-v2), OllamaEmbedder fallback, 배치 인퍼런스 |
-| **search.rs** | 783 | SearchEngine, FTS5+sqlite-vec 하이브리드, RRF 랭킹, SearchMode enum |
+| **embedding.rs** | 534 | EmbeddingProvider trait, OnnxEmbedder(all-MiniLM-L6-v2), OllamaEmbedder fallback, 배치 인퍼런스, MockEmbedder(테스트) |
+| **search.rs** | 940 | SearchEngine(async, 하이브리드), SyncSearchEngine(sync, FTS-only), FTS5+sqlite-vec, RRF 랭킹(k=60), DocMeta, SearchMode enum |
+| **chunker.rs** | 217 | split_chunks(단락 경계 분리, 오버랩 200자), DEFAULT_MAX_CHARS=1500, DEFAULT_OVERLAP_CHARS=200 |
 | **plugin/manager.rs** | 290 | PluginManager, 팩토리 패턴, WASM lazy 로드, ABI 버전 검증(v1) |
 | **plugin/wasm_adapter.rs** | 949 | WasmDocSourceAdapter, 6개 Host Function(http_request, log, kv_get/set, progress, secrets_get, content_transform) |
 | **plugin/manifest.rs** | 124 | PluginManifest 파싱, 권한 검증(http_domains, kv_namespaces, secrets) |
@@ -224,20 +225,23 @@ WASM 플러그인 로드/실행 검증용 PoC
 
 ---
 
-## 데이터베이스 마이그레이션 (V1~V10)
+## 데이터베이스 마이그레이션 (V1~V13)
 
 | 버전 | 내용 | 상태 |
 |------|------|------|
 | **V1** | `projects` 테이블 (id, name, display_name, path, status, created_at, updated_at) | ✅ |
 | **V2** | `documents` 테이블 (project_id, source_doc_id, content, content_hash, chunk_index) | ✅ |
-| **V3** | `document_fts5` 가상 테이블 (FTS5 전문 검색) | ✅ |
-| **V4** | `embeddings` 테이블 (document_id, embedding, dimension) | ✅ |
-| **V5** | `document_links` 테이블 (source_id, target_id, link_type) | ✅ |
+| **V3** | `chunks` + `chunks_fts` 가상 테이블 (FTS5 전문 검색, BM25) + `chunk_embeddings` (sqlite-vec vec0) | ✅ |
+| **V4** | 예약 (레거시 embeddings → V3로 통합) | ✅ |
+| **V5** | `document_links` 테이블 (source_id, target_id, link_type) — 그래프 탐색 | ✅ |
 | **V6** | `view_count` 컬럼 추가 (documents.view_count) | ✅ |
 | **V7** | `plugin_instances` 테이블 (plugin_id, project_id, config_json, last_sync, sync_cursor) | ✅ |
 | **V8** | `workspaces` 테이블 (name, template_json, created_at) | ✅ |
 | **V9** | `workspace_documents` 테이블 (workspace_id, document_id) | ✅ |
 | **V10** | `plugin_kv` 테이블 (plugin_instance_id, key, value) — KV 저장소 | ✅ |
+| **V11** | `project_source` — 프로젝트별 소스 타입 구분 | ✅ |
+| **V12** | `content_cache` — 플러그인 콘텐츠 캐시 | ✅ |
+| **V13** | `document_tags`, `document_aliases`, `document_metadata` — 메타데이터 수집 확장 | ✅ |
 
 ---
 

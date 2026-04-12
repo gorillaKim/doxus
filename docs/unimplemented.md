@@ -74,11 +74,13 @@ updated: 2026-04-11
 
 ### P4: Phase 6 (동기화 안정화)
 
-| 항목 | 파일 | 현재 상태 | 예상 LOC |
-|------|------|----------|----------|
-| Retry 로직 (exponential backoff) | `crates/mcp-server/src/sync_loop.rs` | 실패 시 로그만, 재시도 없음 | 80 |
-| Rate limit 핸들링 | `crates/mcp-server/src/sync_loop.rs` | `PluginError::RateLimited { retry_after_secs }` 반환되지만 sync_loop에서 무시 | 40 |
-| 동기화 충돌 해결 | 미존재 | 동시 수정 시 정책 없음 (last-write-wins도 미구현) | 150 |
+**현재 P4 미구현 없음.** 모든 항목 완료 (2026-04-13 재검증).
+
+| 항목 | 파일 | 실제 상태 |
+|------|------|----------|
+| Retry 로직 (exponential backoff) | `crates/mcp-server/src/sync_loop.rs` | **완료** — 100ms → 500ms → 2.5s 배수 증가, 30s 상한, ±10% jitter |
+| Rate limit 핸들링 | `crates/mcp-server/src/sync_loop.rs` | **완료** — `RateLimited { retry_after_secs }` 수신 시 해당 초만큼 대기, MAX 300s 캡 |
+| 동기화 충돌 해결 | `crates/core/src/sync/runner.rs` | **완료** — content_hash 비교 후 변경 시만 적용 (last-indexed-wins), `record_conflict()` audit_log 기록 |
 
 ---
 
@@ -107,8 +109,8 @@ updated: 2026-04-11
 | P1 (플러그인) | 0 | 0 |
 | P2 (Confluence) | 1 | 80 |
 | P3 (마켓) | 3 | 450 |
-| P4 (동기화) | 3 | 270 |
+| P4 (동기화) | 0 | 0 |
 | P5 (Desktop UI) | 4 | 330 |
-| **합계** | **11** | **~1,130** |
+| **합계** | **8** | **~860** |
 
-**총 예상 작업량:** ~2-3주 집중 개발 (풀타임 1인 기준)
+**총 예상 작업량:** ~1-2주 집중 개발 (풀타임 1인 기준)
