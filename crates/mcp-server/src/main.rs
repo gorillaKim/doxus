@@ -49,22 +49,18 @@ async fn main() -> Result<()> {
 
     let sync_handle = spawn_sync_loop(sync_conn, plugin_manager, interval_secs);
 
-    // Attempt to initialize OnnxEmbedder; fall back gracefully if model is absent.
-    let model_path = std::path::PathBuf::from(&home)
-        .join(".doxus/models/all-MiniLM-L6-v2/model.onnx");
+    // Attempt to initialize OnnxEmbedder via shared path resolution; fall back gracefully.
     let embedder: Option<std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider>> =
-        match doxus_core::embedding::OnnxEmbedder::new(&model_path) {
+        match doxus_core::embedding::OnnxEmbedder::from_default_path() {
             Ok(e) => {
-                tracing::info!(
-                    "OnnxEmbedder loaded from {}; hybrid search enabled.",
-                    model_path.display()
-                );
+                tracing::info!("OnnxEmbedder loaded; hybrid search enabled.");
                 Some(std::sync::Arc::new(e))
             }
             Err(e) => {
                 tracing::warn!(
                     "OnnxEmbedder unavailable ({}); running in FTS-only mode. \
-                     Run scripts/download-model.sh to enable vector search.",
+                     Place multilingual-e5-small.onnx + tokenizer.json in ~/.doxus/models/ \
+                     to enable vector search.",
                     e
                 );
                 None

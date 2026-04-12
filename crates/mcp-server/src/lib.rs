@@ -6,6 +6,7 @@ pub mod sync_loop;
 
 use doxus_core::embedding::EmbeddingProvider;
 use rusqlite::params;
+use sha2::{Digest, Sha256};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -1666,12 +1667,12 @@ impl McpServer {
             format!("# {title}\n\n<!-- template: {template} -->\n\n")
         };
 
-        let hash = format!("{:x}", content.len());
+        let hash = format!("{:x}", Sha256::digest(content.as_bytes()));
 
         let result = self.conn.execute(
-            "INSERT INTO workspace_documents(file_path, title, doc_type, content_hash, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, unixepoch(), unixepoch())",
-            params![file_path, title, doc_type, hash],
+            "INSERT INTO workspace_documents(file_path, title, doc_type, content, content_hash, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, unixepoch(), unixepoch())",
+            params![file_path, title, doc_type, content, hash],
         );
 
         match result {
@@ -1700,11 +1701,11 @@ impl McpServer {
             Some(c) => c,
             None => return McpResponse::err(id, -32602, "missing required arg: content"),
         };
-        let hash = format!("{:x}", content.len());
+        let hash = format!("{:x}", Sha256::digest(content.as_bytes()));
 
         let n = self.conn.execute(
-            "UPDATE workspace_documents SET content_hash=?2, updated_at=unixepoch() WHERE id=?1",
-            params![doc_id, hash],
+            "UPDATE workspace_documents SET content=?2, content_hash=?3, updated_at=unixepoch() WHERE id=?1",
+            params![doc_id, content, hash],
         );
 
         match n {
@@ -1735,7 +1736,7 @@ impl McpServer {
         let sql = match (type_filter, status_filter) {
             (Some(_), Some(_)) => "SELECT id, file_path, title, doc_type, status, priority, created_at FROM workspace_documents WHERE doc_type=?1 AND status=?2 ORDER BY created_at DESC",
             (Some(_), None) => "SELECT id, file_path, title, doc_type, status, priority, created_at FROM workspace_documents WHERE doc_type=?1 AND 1=1 ORDER BY created_at DESC",
-            (None, Some(_)) => "SELECT id, file_path, title, doc_type, status, priority, created_at FROM workspace_documents WHERE 1=1 AND status=?2 ORDER BY created_at DESC",
+            (None, Some(_)) => "SELECT id, file_path, title, doc_type, status, priority, created_at FROM workspace_documents WHERE status=?1 ORDER BY created_at DESC",
             (None, None) => "SELECT id, file_path, title, doc_type, status, priority, created_at FROM workspace_documents ORDER BY created_at DESC",
         };
 
@@ -1778,49 +1779,55 @@ impl McpServer {
             None => return McpResponse::err(id, -32602, "missing required arg: template"),
         };
         let variables = args.get("variables").cloned().unwrap_or(json!({}));
+        let title = variables["title"].as_str().unwrap_or(template_name);
 
-        let row: Result<(i64, Option<String>, String), _> = self.conn.query_row(
-            "SELECT id, description, config_json FROM workspace_templates WHERE name=?1",
+        // 1. 내장 템플릿 먼저 시도 (TemplateEngine::with_builtins)
+        let mut engine = doxus_core::workspace::TemplateEngine::with_builtins();
+
+        // 2. DB에서 사용자 정의 템플릿 조회 후 엔진에 등록
+        let db_config: Option<String> = self.conn.query_row(
+            "SELECT config_json FROM workspace_templates WHERE name=?1",
             params![template_name],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        );
+            |r| r.get(0),
+        ).ok();
+        if let Some(ref config) = db_config {
+            // config_json을 Handlebars 템플릿으로 등록
+            engine.register(template_name, config).ok();
+        }
 
-        match row {
+        // 3. 렌더링
+        let content = match engine.render(template_name, &variables) {
+            Ok(rendered) => rendered,
             Err(_) => {
-                let title = variables["title"].as_str().unwrap_or(template_name);
-                let content = format!("# {title}\n\n<!-- applied template: {template_name} -->\n\n");
-                let slug: String = title.chars().map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
-                let file_path = format!("workspace/{slug}.md");
-                let hash = format!("{:x}", content.len());
-
-                let result = self.conn.execute(
-                    "INSERT INTO workspace_documents(file_path, title, doc_type, content_hash, created_at, updated_at)
-                     VALUES (?1, ?2, 'note', ?3, unixepoch(), unixepoch())",
-                    params![file_path, title, hash],
-                );
-                match result {
-                    Ok(_) => McpResponse::text(id, format!("Template '{template_name}' applied. Document created at {file_path}.")),
-                    Err(e) => McpResponse::err(id, -32603, e.to_string()),
-                }
+                // 렌더링 실패 시 최소 폴백
+                format!("# {title}\n\n<!-- template: {template_name} -->\n\n")
             }
-            Ok((_tmpl_id, description, config)) => {
-                let title = variables["title"].as_str().unwrap_or(template_name);
-                let desc = description.as_deref().unwrap_or("");
-                let content = format!("# {title}\n\n{desc}\n\n<!-- config: {config} -->\n\n");
-                let slug: String = title.chars().map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
-                let file_path = format!("workspace/{slug}.md");
-                let hash = format!("{:x}", content.len());
+        };
 
-                let result = self.conn.execute(
-                    "INSERT INTO workspace_documents(file_path, title, doc_type, content_hash, created_at, updated_at)
-                     VALUES (?1, ?2, 'note', ?3, unixepoch(), unixepoch())",
-                    params![file_path, title, hash],
-                );
-                match result {
-                    Ok(_) => McpResponse::text(id, format!("Template '{template_name}' applied. Document created at {file_path}.")),
-                    Err(e) => McpResponse::err(id, -32603, e.to_string()),
-                }
+        let slug: String = title.chars()
+            .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+            .collect();
+        let file_path = format!("workspace/{slug}.md");
+        let hash = format!("{:x}", Sha256::digest(content.as_bytes()));
+
+        let result = self.conn.execute(
+            "INSERT INTO workspace_documents(file_path, title, doc_type, content, content_hash, created_at, updated_at)
+             VALUES (?1, ?2, 'note', ?3, ?4, unixepoch(), unixepoch())",
+            params![file_path, title, content, hash],
+        );
+        match result {
+            Ok(_) => {
+                let new_id = self.conn.last_insert_rowid();
+                McpResponse::ok(id, json!({
+                    "content": [{ "type": "text", "text": serde_json::to_string_pretty(&json!({
+                        "id": new_id,
+                        "file_path": file_path,
+                        "title": title,
+                        "content": content,
+                    })).unwrap_or_default() }]
+                }))
             }
+            Err(e) => McpResponse::err(id, -32603, e.to_string()),
         }
     }
 
@@ -2637,6 +2644,97 @@ mod tests {
         assert!(resp.error.is_none());
         let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
         assert!(text.contains("weekly-review") || text.contains("Week 14") || text.contains("applied"));
+    }
+
+    // ── Workspace correctness tests (TDD) ────────────────────────────────────
+
+    #[test]
+    fn test_content_hash_is_sha256_on_create() {
+        // SHA-256 hex = 64 chars; len().to_hex would be at most 4-6 chars for typical content
+        let server = test_server();
+        server.dispatch_tool("doxus_create_document", json!(1), &json!({"title": "Hash Test", "doc_type": "note"}));
+        let hash: String = server.conn
+            .query_row("SELECT content_hash FROM workspace_documents ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(hash.len(), 64, "content_hash must be SHA-256 (64 hex chars), got: {hash}");
+    }
+
+    #[test]
+    fn test_update_document_persists_content_in_db() {
+        // After update, content column must actually contain the new text
+        let server = test_server();
+        server.dispatch_tool("doxus_create_document", json!(1), &json!({"title": "Persist Test"}));
+        let new_id: i64 = server.conn
+            .query_row("SELECT id FROM workspace_documents ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+
+        server.dispatch_tool(
+            "doxus_update_document",
+            json!(2),
+            &json!({"id": new_id, "content": "persisted content"}),
+        );
+
+        let stored: Option<String> = server.conn
+            .query_row("SELECT content FROM workspace_documents WHERE id=?1", params![new_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored.as_deref(), Some("persisted content"), "content must be stored after update");
+    }
+
+    #[test]
+    fn test_update_document_hash_is_sha256() {
+        // After update, content_hash must be SHA-256, not len() hex
+        let server = test_server();
+        server.dispatch_tool("doxus_create_document", json!(1), &json!({"title": "Hash Update Test"}));
+        let new_id: i64 = server.conn
+            .query_row("SELECT id FROM workspace_documents ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+
+        server.dispatch_tool(
+            "doxus_update_document",
+            json!(2),
+            &json!({"id": new_id, "content": "some updated content here"}),
+        );
+
+        let hash: String = server.conn
+            .query_row("SELECT content_hash FROM workspace_documents WHERE id=?1", params![new_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(hash.len(), 64, "content_hash after update must be SHA-256 (64 hex chars), got: {hash}");
+    }
+
+    #[test]
+    fn test_list_workspace_documents_status_filter_no_error() {
+        // Filtering by status only (no doc_type) must not cause runtime error
+        let server = test_server();
+        server.dispatch_tool("doxus_create_document", json!(1), &json!({"title": "Status Test"}));
+        let resp = server.dispatch_tool(
+            "doxus_list_workspace_documents",
+            json!(2),
+            &json!({"status": "draft"}),
+        );
+        assert!(resp.error.is_none(), "status-only filter must not error: {:?}", resp.error);
+    }
+
+    #[test]
+    fn test_apply_template_builtin_renders_real_content() {
+        // apply_template with a builtin template name must produce rendered Handlebars output, not a comment stub
+        let server = test_server();
+        let resp = server.dispatch_tool(
+            "doxus_apply_template",
+            json!(1),
+            &json!({"template": "note", "variables": {"title": "My Note", "content": "hello world"}}),
+        );
+        assert!(resp.error.is_none());
+        let new_id: i64 = server.conn
+            .query_row("SELECT id FROM workspace_documents ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        let content: Option<String> = server.conn
+            .query_row("SELECT content FROM workspace_documents WHERE id=?1", params![new_id], |r| r.get(0))
+            .unwrap();
+        let content = content.unwrap_or_default();
+        // Rendered builtin template should NOT contain the raw stub comment
+        assert!(!content.contains("<!-- applied template:"), "should use real rendering, got: {content}");
+        // Should contain the title at minimum
+        assert!(content.contains("My Note"), "rendered content should include the title");
     }
 
     // ── Explain search test ───────────────────────────────────────────────────
