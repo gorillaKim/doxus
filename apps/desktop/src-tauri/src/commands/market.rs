@@ -906,8 +906,8 @@ pub async fn get_workspaces(
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<serde_json::Value, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
-    let repo = doxus_core::workspace::WorkspaceRepo::new(&conn);
-    let workspaces = repo.list().map_err(|e| e.to_string())?;
+    let workspaces = doxus_core::workspace::list_workspace_projects(&conn)
+        .map_err(|e| e.to_string())?;
     Ok(serde_json::json!({ "workspaces": workspaces }))
 }
 

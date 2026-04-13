@@ -298,7 +298,7 @@ function PluginSettingsModal({ plugin, onClose, onAuthChange, currentEmoji, onEm
                   if (e.key === 'Escape') setEditingEmoji(false);
                 }}
                 onChange={(e) => {
-                  const emoji = [...e.target.value].at(-1) ?? '';
+                  const arr = [...e.target.value]; const emoji = arr[arr.length - 1] ?? '';
                   if (emoji) {
                     setEmojiInput(emoji);
                     onEmojiChange(plugin.id, emoji);
