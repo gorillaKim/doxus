@@ -151,6 +151,8 @@ impl McpServer {
             "doxus_delete_document" => self.tool_delete_workspace_document(id, args),
             "doxus_list_workspace_documents" => self.tool_list_workspace_documents(id, args),
             "doxus_apply_template" => self.tool_apply_template(id, args),
+            "doxus_list_templates" => self.tool_list_templates(id),
+            "doxus_get_template" => self.tool_get_template(id, args),
 
             // ── Diagnostics ───────────────────────────────────────────────────
             "doxus_diagnose" => self.tool_diagnose(id),
@@ -166,7 +168,7 @@ impl McpServer {
     fn tool_status(&self, id: Value) -> McpResponse {
         let projects: i64 = self
             .conn
-            .query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM projects WHERE source_type != 'workspace'", [], |r| r.get(0))
             .unwrap_or(0);
         let documents: i64 = self
             .conn
@@ -182,7 +184,7 @@ impl McpServer {
 
     fn tool_list_projects(&self, id: Value) -> McpResponse {
         let mut stmt = match self.conn.prepare(
-            "SELECT name, display_name, status, path FROM projects ORDER BY name",
+            "SELECT name, display_name, status, path FROM projects WHERE source_type != 'workspace' ORDER BY name",
         ) {
             Ok(s) => s,
             Err(e) => return McpResponse::err(id, -32603, e.to_string()),
@@ -1650,29 +1652,45 @@ impl McpServer {
 
     // ── Workspace documents ───────────────────────────────────────────────────
 
+    /// 디폴트 워크스페이스의 project_id 조회 (없으면 생성)
+    fn workspace_project_id(&self) -> Result<i64, String> {
+        self.conn.query_row(
+            "SELECT id FROM projects WHERE source_type='workspace' AND is_default=1 LIMIT 1",
+            [],
+            |r| r.get(0),
+        ).or_else(|_| {
+            // 디폴트 워크스페이스가 없으면 첫 번째 workspace 사용
+            self.conn.query_row(
+                "SELECT id FROM projects WHERE source_type='workspace' LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+        }).map_err(|e| format!("workspace project not found: {e}. Run ensure_default_workspace first."))
+    }
+
     fn tool_create_workspace_document(&self, id: Value, args: &Value) -> McpResponse {
         let title = match args["title"].as_str() {
             Some(t) => t,
             None => return McpResponse::err(id, -32602, "missing required arg: title"),
         };
         let doc_type = args["doc_type"].as_str().unwrap_or("note");
-        let template = args["template"].as_str().unwrap_or("");
+
+        let project_id = match self.workspace_project_id() {
+            Ok(pid) => pid,
+            Err(e) => return McpResponse::err(id, -32603, e),
+        };
 
         let slug: String = title.chars().map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' }).collect();
         let file_path = format!("workspace/{slug}.md");
-
-        let content = if template.is_empty() {
-            format!("# {title}\n\n")
-        } else {
-            format!("# {title}\n\n<!-- template: {template} -->\n\n")
-        };
-
+        let source_doc_id = format!("ws-{slug}-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis());
+        let content = format!("# {title}\n\n");
         let hash = format!("{:x}", Sha256::digest(content.as_bytes()));
+        let metadata = serde_json::json!({"doc_type": doc_type}).to_string();
 
         let result = self.conn.execute(
-            "INSERT INTO workspace_documents(file_path, title, doc_type, content, content_hash, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, unixepoch(), unixepoch())",
-            params![file_path, title, doc_type, content, hash],
+            "INSERT INTO documents(project_id, source_doc_id, file_path, title, content, content_hash, metadata_json, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, unixepoch(), unixepoch())",
+            params![project_id, source_doc_id, file_path, title, content, hash, metadata],
         );
 
         match result {
@@ -1704,7 +1722,7 @@ impl McpServer {
         let hash = format!("{:x}", Sha256::digest(content.as_bytes()));
 
         let n = self.conn.execute(
-            "UPDATE workspace_documents SET content=?2, content_hash=?3, updated_at=unixepoch() WHERE id=?1",
+            "UPDATE documents SET content=?2, content_hash=?3, updated_at=unixepoch() WHERE id=?1",
             params![doc_id, content, hash],
         );
 
@@ -1721,7 +1739,7 @@ impl McpServer {
             None => return McpResponse::err(id, -32602, "missing required arg: id (integer)"),
         };
 
-        let n = self.conn.execute("DELETE FROM workspace_documents WHERE id=?1", params![doc_id]);
+        let n = self.conn.execute("DELETE FROM documents WHERE id=?1", params![doc_id]);
         match n {
             Ok(0) => McpResponse::err(id, -32602, format!("workspace document #{doc_id} not found")),
             Ok(_) => McpResponse::text(id, format!("Document #{doc_id} deleted.")),
@@ -1731,38 +1749,44 @@ impl McpServer {
 
     fn tool_list_workspace_documents(&self, id: Value, args: &Value) -> McpResponse {
         let type_filter = args["doc_type"].as_str();
-        let status_filter = args["status"].as_str();
 
-        let sql = match (type_filter, status_filter) {
-            (Some(_), Some(_)) => "SELECT id, file_path, title, doc_type, status, priority, created_at FROM workspace_documents WHERE doc_type=?1 AND status=?2 ORDER BY created_at DESC",
-            (Some(_), None) => "SELECT id, file_path, title, doc_type, status, priority, created_at FROM workspace_documents WHERE doc_type=?1 AND 1=1 ORDER BY created_at DESC",
-            (None, Some(_)) => "SELECT id, file_path, title, doc_type, status, priority, created_at FROM workspace_documents WHERE status=?1 ORDER BY created_at DESC",
-            (None, None) => "SELECT id, file_path, title, doc_type, status, priority, created_at FROM workspace_documents ORDER BY created_at DESC",
+        // documents 테이블에서 workspace 문서만 조회 (metadata_json의 doc_type 기반)
+        let (sql, use_filter) = if let Some(dt) = type_filter {
+            (format!(
+                "SELECT d.id, d.file_path, d.title, d.metadata_json, d.created_at
+                 FROM documents d
+                 JOIN projects p ON d.project_id = p.id
+                 WHERE p.source_type='workspace'
+                 AND json_extract(d.metadata_json, '$.doc_type') = '{dt}'
+                 ORDER BY d.created_at DESC"
+            ), true)
+        } else {
+            ("SELECT d.id, d.file_path, d.title, d.metadata_json, d.created_at
+              FROM documents d
+              JOIN projects p ON d.project_id = p.id
+              WHERE p.source_type='workspace'
+              ORDER BY d.created_at DESC".to_string(), false)
         };
+        let _ = use_filter;
 
-        let mut stmt = match self.conn.prepare(sql) {
+        let mut stmt = match self.conn.prepare(&sql) {
             Ok(s) => s,
             Err(e) => return McpResponse::err(id, -32603, e.to_string()),
         };
 
         let map_row = |r: &rusqlite::Row<'_>| -> rusqlite::Result<Value> {
+            let meta: String = r.get::<_, Option<String>>(3)?.unwrap_or_else(|| "{}".to_string());
+            let meta_val: Value = serde_json::from_str(&meta).unwrap_or(json!({}));
             Ok(json!({
                 "id": r.get::<_, i64>(0)?,
-                "file_path": r.get::<_, String>(1)?,
+                "file_path": r.get::<_, Option<String>>(1)?,
                 "title": r.get::<_, Option<String>>(2)?,
-                "doc_type": r.get::<_, String>(3)?,
-                "status": r.get::<_, String>(4)?,
-                "priority": r.get::<_, String>(5)?,
-                "created_at": r.get::<_, i64>(6)?,
+                "doc_type": meta_val["doc_type"],
+                "created_at": r.get::<_, Option<i64>>(4)?,
             }))
         };
 
-        let rows: Result<Vec<_>, _> = match (type_filter, status_filter) {
-            (Some(t), Some(s)) => stmt.query_map(params![t, s], map_row).and_then(|it| it.collect()),
-            (Some(t), None) => stmt.query_map(params![t], map_row).and_then(|it| it.collect()),
-            (None, Some(s)) => stmt.query_map(params![s], map_row).and_then(|it| it.collect()),
-            (None, None) => stmt.query_map([], map_row).and_then(|it| it.collect()),
-        };
+        let rows: Result<Vec<_>, _> = stmt.query_map([], map_row).and_then(|it| it.collect());
 
         match rows {
             Err(e) => McpResponse::err(id, -32603, e.to_string()),
@@ -1778,31 +1802,58 @@ impl McpServer {
             Some(t) => t,
             None => return McpResponse::err(id, -32602, "missing required arg: template"),
         };
-        let variables = args.get("variables").cloned().unwrap_or(json!({}));
-        let title = variables["title"].as_str().unwrap_or(template_name);
+        // frontmatter와 variables를 분리 수신 후 합쳐서 렌더링
+        let frontmatter_in = args.get("frontmatter").cloned().unwrap_or(json!({}));
+        let mut variables = args.get("variables").cloned().unwrap_or(json!({}));
+        // frontmatter 값을 variables에 병합 (렌더링 컨텍스트 통합)
+        if let Some(fm_obj) = frontmatter_in.as_object() {
+            if let Some(vars_obj) = variables.as_object_mut() {
+                for (k, v) in fm_obj {
+                    vars_obj.entry(k).or_insert(v.clone());
+                }
+            }
+        }
+        let title = variables["title"].as_str().unwrap_or(template_name).to_string();
 
-        // 1. 내장 템플릿 먼저 시도 (TemplateEngine::with_builtins)
+        // 자동 주입: created / updated (미전달 시 현재 날짜, SQLite date() 활용)
+        let now: String = self.conn
+            .query_row("SELECT date('now')", [], |r| r.get(0))
+            .unwrap_or_else(|_| "2026-01-01".to_string());
+        if variables["created"].is_null() || variables["created"].as_str().map(|s| s.is_empty()).unwrap_or(false) {
+            variables["created"] = json!(now);
+        }
+        if variables["updated"].is_null() || variables["updated"].as_str().map(|s| s.is_empty()).unwrap_or(false) {
+            variables["updated"] = json!(now);
+        }
+
+        // 1. 내장 템플릿 먼저 시도
         let mut engine = doxus_core::workspace::TemplateEngine::with_builtins();
 
         // 2. DB에서 사용자 정의 템플릿 조회 후 엔진에 등록
-        let db_config: Option<String> = self.conn.query_row(
-            "SELECT config_json FROM workspace_templates WHERE name=?1",
+        let db_content: Option<String> = self.conn.query_row(
+            "SELECT content FROM templates WHERE name=?1",
             params![template_name],
             |r| r.get(0),
         ).ok();
-        if let Some(ref config) = db_config {
-            // config_json을 Handlebars 템플릿으로 등록
-            engine.register(template_name, config).ok();
+        if let Some(ref src) = db_content {
+            engine.register(template_name, src).ok();
         }
 
         // 3. 렌더링
         let content = match engine.render(template_name, &variables) {
             Ok(rendered) => rendered,
-            Err(_) => {
-                // 렌더링 실패 시 최소 폴백
-                format!("# {title}\n\n<!-- template: {template_name} -->\n\n")
-            }
+            Err(_) => format!("# {title}\n\n<!-- template: {template_name} -->\n\n"),
         };
+
+        // 4. frontmatter / body 파싱
+        let parsed = doxus_core::document::parse_frontmatter(&content);
+        let frontmatter_obj: serde_json::Map<String, Value> = parsed.fields.iter()
+            .map(|(k, v)| {
+                // YAML 값의 외부 따옴표 제거 (e.g. "\"value\"" → "value")
+                let v = v.trim().trim_matches('"').to_string();
+                (k.clone(), Value::String(v))
+            })
+            .collect();
 
         let slug: String = title.chars()
             .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
@@ -1810,10 +1861,21 @@ impl McpServer {
         let file_path = format!("workspace/{slug}.md");
         let hash = format!("{:x}", Sha256::digest(content.as_bytes()));
 
+        // doc_type = template_name (하드코딩 'note' 제거)
+        let doc_type = template_name;
+        let metadata = serde_json::json!({"doc_type": doc_type}).to_string();
+
+        let project_id = match self.workspace_project_id() {
+            Ok(pid) => pid,
+            Err(e) => return McpResponse::err(id, -32603, e),
+        };
+        let source_doc_id = format!("ws-tpl-{slug}-{}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis());
+
         let result = self.conn.execute(
-            "INSERT INTO workspace_documents(file_path, title, doc_type, content, content_hash, created_at, updated_at)
-             VALUES (?1, ?2, 'note', ?3, ?4, unixepoch(), unixepoch())",
-            params![file_path, title, content, hash],
+            "INSERT INTO documents(project_id, source_doc_id, file_path, title, content, content_hash, metadata_json, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, unixepoch(), unixepoch())",
+            params![project_id, source_doc_id, file_path, title, content, hash, metadata],
         );
         match result {
             Ok(_) => {
@@ -1824,11 +1886,82 @@ impl McpServer {
                         "file_path": file_path,
                         "title": title,
                         "content": content,
+                        "frontmatter": frontmatter_obj,
+                        "body": parsed.body,
                     })).unwrap_or_default() }]
                 }))
             }
             Err(e) => McpResponse::err(id, -32603, e.to_string()),
         }
+    }
+
+    fn tool_list_templates(&self, id: Value) -> McpResponse {
+        use doxus_core::workspace::TemplateEngine;
+
+        // 내장 템플릿 목록
+        let engine = TemplateEngine::with_builtins();
+        let mut items: Vec<Value> = engine.list_templates().into_iter().map(|t| json!({
+            "name": t.name,
+            "description": t.description,
+            "source": "builtin",
+        })).collect();
+
+        // DB 사용자 정의 템플릿
+        if let Ok(mut stmt) = self.conn.prepare(
+            "SELECT name, description FROM templates ORDER BY name"
+        ) {
+            let db_items: Vec<Value> = stmt.query_map([], |r| {
+                Ok(json!({
+                    "name": r.get::<_, String>(0)?,
+                    "description": r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                    "source": "custom",
+                }))
+            }).ok()
+              .and_then(|rows| rows.collect::<Result<Vec<_>, _>>().ok())
+              .unwrap_or_default();
+            items.extend(db_items);
+        }
+
+        McpResponse::ok(id, json!({
+            "content": [{ "type": "text", "text": serde_json::to_string_pretty(&json!({"templates": items})).unwrap_or_default() }]
+        }))
+    }
+
+    fn tool_get_template(&self, id: Value, args: &Value) -> McpResponse {
+        use doxus_core::workspace::{TemplateEngine, extract_frontmatter_variables, extract_body_variables};
+
+        let name = match args["name"].as_str() {
+            Some(n) => n,
+            None => return McpResponse::err(id, -32602, "missing required arg: name"),
+        };
+
+        let engine = TemplateEngine::with_builtins();
+
+        // 내장 먼저, 없으면 DB 조회
+        let source = if let Some(src) = engine.get_template_source(name) {
+            src
+        } else {
+            match self.conn.query_row(
+                "SELECT content FROM templates WHERE name=?1",
+                params![name],
+                |r| r.get::<_, String>(0),
+            ) {
+                Ok(src) => src,
+                Err(_) => return McpResponse::err(id, -32602, format!("template '{name}' not found")),
+            }
+        };
+
+        let frontmatter_fields = extract_frontmatter_variables(&source);
+        let body_variables = extract_body_variables(&source);
+
+        McpResponse::ok(id, json!({
+            "content": [{ "type": "text", "text": serde_json::to_string_pretty(&json!({
+                "name": name,
+                "content": source,
+                "frontmatter_fields": frontmatter_fields,
+                "body_variables": body_variables,
+            })).unwrap_or_default() }]
+        }))
     }
 
     // ── Diagnostics ───────────────────────────────────────────────────────────
@@ -2058,9 +2191,13 @@ pub fn tool_list() -> Value {
                 param_opt("doc_type", "string", "Filter by type"),
                 param_opt("status", "string", "Filter by status"),
             ]),
-            tool("doxus_apply_template", "Apply a template to create a document", &[
-                param("template", "string", "Template name"),
-                param_opt("variables", "object", "Template variables"),
+            tool("doxus_apply_template", "Apply a template to create a document with frontmatter auto-generated", &[
+                param("template", "string", "Template name (use doxus_list_templates to discover)"),
+                param_opt("variables", "object", "Template variables (use doxus_get_template to see required variables)"),
+            ]),
+            tool("doxus_list_templates", "List all available templates (builtin + custom). Returns name and description only — use doxus_get_template for content and variables.", &[]),
+            tool("doxus_get_template", "Get a template's content and variable list. Variables are auto-extracted from {{placeholder}} syntax.", &[
+                param("name", "string", "Template name"),
             ]),
             // Diagnostics
             tool("doxus_diagnose", "Interactive troubleshooting guide", &[
@@ -2144,6 +2281,12 @@ mod tests {
         let conn = Connection::open_in_memory().expect("in-memory db");
         doxus_core::db::apply_pragmas(&conn).expect("pragmas");
         doxus_core::db::migrate(&conn).expect("migrate");
+        // 테스트용 디폴트 워크스페이스 프로젝트 seed
+        conn.execute(
+            "INSERT OR IGNORE INTO projects(name, display_name, path, status, source_type, config_json, is_default, created_at, updated_at)
+             VALUES ('default-workspace', '기본 워크스페이스', '/tmp/ws', 'active', 'workspace', '{}', 1, unixepoch(), unixepoch())",
+            [],
+        ).expect("seed workspace project");
         McpServer::new(conn, None, std::path::PathBuf::from("/tmp/doxus-test-plugins"))
     }
 
@@ -2598,7 +2741,7 @@ mod tests {
         let server = test_server();
         server.dispatch_tool("doxus_create_document", json!(1), &json!({"title": "Update Me"}));
         let new_id: i64 = server.conn
-            .query_row("SELECT id FROM workspace_documents ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
+            .query_row("SELECT id FROM documents ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
             .unwrap();
 
         let resp = server.dispatch_tool(
@@ -2614,14 +2757,14 @@ mod tests {
         let server = test_server();
         server.dispatch_tool("doxus_create_document", json!(1), &json!({"title": "Delete Me"}));
         let new_id: i64 = server.conn
-            .query_row("SELECT id FROM workspace_documents ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
+            .query_row("SELECT id FROM documents ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
             .unwrap();
 
         let resp = server.dispatch_tool("doxus_delete_document", json!(2), &json!({"id": new_id}));
         assert!(resp.error.is_none());
 
         let count: i64 = server.conn
-            .query_row("SELECT COUNT(*) FROM workspace_documents WHERE id=?1", params![new_id], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM documents WHERE id=?1", params![new_id], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0);
     }
@@ -2654,7 +2797,7 @@ mod tests {
         let server = test_server();
         server.dispatch_tool("doxus_create_document", json!(1), &json!({"title": "Hash Test", "doc_type": "note"}));
         let hash: String = server.conn
-            .query_row("SELECT content_hash FROM workspace_documents ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
+            .query_row("SELECT content_hash FROM documents ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
             .unwrap();
         assert_eq!(hash.len(), 64, "content_hash must be SHA-256 (64 hex chars), got: {hash}");
     }
@@ -2665,7 +2808,7 @@ mod tests {
         let server = test_server();
         server.dispatch_tool("doxus_create_document", json!(1), &json!({"title": "Persist Test"}));
         let new_id: i64 = server.conn
-            .query_row("SELECT id FROM workspace_documents ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
+            .query_row("SELECT id FROM documents ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
             .unwrap();
 
         server.dispatch_tool(
@@ -2675,7 +2818,7 @@ mod tests {
         );
 
         let stored: Option<String> = server.conn
-            .query_row("SELECT content FROM workspace_documents WHERE id=?1", params![new_id], |r| r.get(0))
+            .query_row("SELECT content FROM documents WHERE id=?1", params![new_id], |r| r.get(0))
             .unwrap();
         assert_eq!(stored.as_deref(), Some("persisted content"), "content must be stored after update");
     }
@@ -2686,7 +2829,7 @@ mod tests {
         let server = test_server();
         server.dispatch_tool("doxus_create_document", json!(1), &json!({"title": "Hash Update Test"}));
         let new_id: i64 = server.conn
-            .query_row("SELECT id FROM workspace_documents ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
+            .query_row("SELECT id FROM documents ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
             .unwrap();
 
         server.dispatch_tool(
@@ -2696,7 +2839,7 @@ mod tests {
         );
 
         let hash: String = server.conn
-            .query_row("SELECT content_hash FROM workspace_documents WHERE id=?1", params![new_id], |r| r.get(0))
+            .query_row("SELECT content_hash FROM documents WHERE id=?1", params![new_id], |r| r.get(0))
             .unwrap();
         assert_eq!(hash.len(), 64, "content_hash after update must be SHA-256 (64 hex chars), got: {hash}");
     }
@@ -2725,10 +2868,10 @@ mod tests {
         );
         assert!(resp.error.is_none());
         let new_id: i64 = server.conn
-            .query_row("SELECT id FROM workspace_documents ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
+            .query_row("SELECT id FROM documents ORDER BY id DESC LIMIT 1", [], |r| r.get(0))
             .unwrap();
         let content: Option<String> = server.conn
-            .query_row("SELECT content FROM workspace_documents WHERE id=?1", params![new_id], |r| r.get(0))
+            .query_row("SELECT content FROM documents WHERE id=?1", params![new_id], |r| r.get(0))
             .unwrap();
         let content = content.unwrap_or_default();
         // Rendered builtin template should NOT contain the raw stub comment
@@ -3146,5 +3289,98 @@ mod tests {
         assert!(resp.error.is_none(), "unexpected error: {:?}", resp.error);
         let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
         assert!(text.contains("Synced"), "got: {text}");
+    }
+
+    // ── doxus_list_templates / doxus_get_template 테스트 ─────────────────────
+
+    #[test]
+    fn test_list_templates_returns_builtins() {
+        let server = test_server();
+        let resp = server.dispatch_tool("doxus_list_templates", json!(1), &json!({}));
+        assert!(resp.error.is_none());
+        let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let templates = parsed["templates"].as_array().unwrap();
+        assert!(templates.len() >= 10, "at least 10 builtins expected, got {}", templates.len());
+        // content field must NOT be present (token economy)
+        let first = &templates[0];
+        assert!(first.get("content").is_none(), "list_templates must not include content");
+        assert!(first.get("name").is_some());
+        assert!(first.get("description").is_some());
+    }
+
+    #[test]
+    fn test_get_template_returns_frontmatter_and_body_fields() {
+        let server = test_server();
+        let resp = server.dispatch_tool("doxus_get_template", json!(1), &json!({"name": "devlog"}));
+        assert!(resp.error.is_none(), "unexpected error: {:?}", resp.error);
+        let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        // frontmatter_fields contains title, date
+        let fm = parsed["frontmatter_fields"].as_array().unwrap();
+        let fm_names: Vec<&str> = fm.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(fm_names.contains(&"title"), "frontmatter_fields should contain title");
+        assert!(fm_names.contains(&"date"), "frontmatter_fields should contain date");
+        // body_variables contains work_summary, learnings, next_steps
+        let body = parsed["body_variables"].as_array().unwrap();
+        let body_names: Vec<&str> = body.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(body_names.contains(&"work_summary"));
+        assert!(body_names.contains(&"learnings"));
+        assert!(body_names.contains(&"next_steps"));
+        // auto-injected must NOT appear
+        assert!(!body_names.contains(&"created"));
+        assert!(!body_names.contains(&"updated"));
+        // content must be present
+        assert!(parsed["content"].as_str().is_some());
+    }
+
+    #[test]
+    fn test_get_template_unknown_returns_error() {
+        let server = test_server();
+        let resp = server.dispatch_tool("doxus_get_template", json!(1), &json!({"name": "nonexistent"}));
+        assert!(resp.error.is_some());
+    }
+
+    // ── doxus_apply_template frontmatter/variables 분리 테스트 ───────────────
+
+    #[test]
+    fn test_apply_template_with_frontmatter_and_variables() {
+        let server = test_server();
+        let resp = server.dispatch_tool(
+            "doxus_apply_template",
+            json!(1),
+            &json!({
+                "template": "devlog",
+                "frontmatter": { "title": "TDD 구현일지", "date": "2026-04-13" },
+                "variables": { "work_summary": "템플릿 분리 구현", "learnings": "TDD 좋다", "next_steps": "UI 연동" }
+            }),
+        );
+        assert!(resp.error.is_none(), "unexpected error: {:?}", resp.error);
+        let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        // frontmatter object in response
+        let fm = &parsed["frontmatter"];
+        assert_eq!(fm["title"].as_str().unwrap(), "TDD 구현일지");
+        // body string in response
+        assert!(parsed["body"].as_str().is_some());
+        // rendered content contains both
+        let content = parsed["content"].as_str().unwrap_or("");
+        assert!(content.contains("TDD 구현일지"));
+        assert!(content.contains("템플릿 분리 구현"));
+    }
+
+    #[test]
+    fn test_apply_template_legacy_variables_still_works() {
+        // 기존 variables-only 호출도 하위 호환 유지
+        let server = test_server();
+        let resp = server.dispatch_tool(
+            "doxus_apply_template",
+            json!(1),
+            &json!({"template": "note", "variables": {"title": "Legacy Note", "content": "hello"}}),
+        );
+        assert!(resp.error.is_none(), "legacy call must still work: {:?}", resp.error);
+        let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
+        let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(parsed["content"].as_str().unwrap().contains("Legacy Note"));
     }
 }

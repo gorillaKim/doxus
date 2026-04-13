@@ -114,7 +114,10 @@ static MIGRATIONS: &[(&str, &str)] = &[
     ("V10__plugin_kv",         include_str!("migrations/V10__plugin_kv.sql")),
     ("V11__project_source",    include_str!("migrations/V11__project_source.sql")),
     ("V12__content_cache",     include_str!("migrations/V12__content_cache.sql")),
-    ("V13__document_meta",     include_str!("migrations/V13__document_meta.sql")),
+    ("V13__document_meta",          include_str!("migrations/V13__document_meta.sql")),
+    ("V14__workspace_unification",  include_str!("migrations/V14__workspace_unification.sql")),
+    ("V15__drop_legacy_workspace",  include_str!("migrations/V15__drop_legacy_workspace_tables.sql")),
+    ("V16__expand_doc_type",        include_str!("migrations/V16__expand_doc_type.sql")),
 ];
 
 // ── Test helper ──────────────────────────────────────────────────────────────
@@ -282,5 +285,117 @@ mod tests {
 
         assert_eq!(chunk_id, 1);
         assert!(distance < 0.001, "identical vectors should have near-zero distance");
+    }
+
+    // ── V14 워크스페이스 통합 마이그레이션 테스트 ────────────────────────────
+
+    #[test]
+    fn v14_templates_table_exists() {
+        let db = TestDb::new();
+        let exists: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='templates'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(exists, 1, "templates 테이블이 존재해야 함");
+    }
+
+    #[test]
+    fn v14_projects_has_is_default_column() {
+        let db = TestDb::new();
+        // is_default 컬럼이 있으면 INSERT가 성공해야 함
+        db.conn.execute(
+            "INSERT INTO projects(name, display_name, path, source_type, is_default, created_at, updated_at)
+             VALUES ('ws-test', '테스트 워크스페이스', '/tmp/ws', 'workspace', 0, unixepoch(), unixepoch())",
+            [],
+        ).expect("is_default 컬럼이 projects에 존재해야 함");
+    }
+
+    #[test]
+    fn v14_only_one_default_workspace_allowed() {
+        let db = TestDb::new();
+        db.conn.execute(
+            "INSERT INTO projects(name, display_name, path, source_type, is_default, created_at, updated_at)
+             VALUES ('ws-a', 'WS A', '/tmp/a', 'workspace', 1, unixepoch(), unixepoch())",
+            [],
+        ).expect("첫 번째 is_default=1 허용");
+
+        let result = db.conn.execute(
+            "INSERT INTO projects(name, display_name, path, source_type, is_default, created_at, updated_at)
+             VALUES ('ws-b', 'WS B', '/tmp/b', 'workspace', 1, unixepoch(), unixepoch())",
+            [],
+        );
+        assert!(result.is_err(), "두 번째 is_default=1은 UNIQUE INDEX 위반이어야 함");
+    }
+
+    #[test]
+    fn v14_templates_supports_global_and_project_scoped() {
+        let db = TestDb::new();
+        db.conn.execute(
+            "INSERT INTO projects(name, display_name, path, source_type, created_at, updated_at)
+             VALUES ('proj-a', 'Proj A', '/tmp/a', 'obsidian', unixepoch(), unixepoch())",
+            [],
+        ).unwrap();
+        let pid: i64 = db.conn.query_row(
+            "SELECT id FROM projects WHERE name='proj-a'", [], |r| r.get(0),
+        ).unwrap();
+
+        // 전역 템플릿 (project_id NULL)
+        db.conn.execute(
+            "INSERT INTO templates(name, doc_type, content, created_at) VALUES ('전역 메모', 'note', '# 메모', unixepoch())",
+            [],
+        ).expect("전역 템플릿 허용");
+
+        // 프로젝트 전용 템플릿
+        db.conn.execute(
+            "INSERT INTO templates(project_id, name, doc_type, content, created_at)
+             VALUES (?1, '프로젝트 템플릿', 'meeting', '# 회의록', unixepoch())",
+            [pid],
+        ).expect("프로젝트 전용 템플릿 허용");
+
+        let count: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM templates", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn v14_templates_cascade_delete_with_project() {
+        let db = TestDb::new();
+        db.conn.execute(
+            "INSERT INTO projects(name, display_name, path, source_type, created_at, updated_at)
+             VALUES ('proj-del', 'Del Proj', '/tmp/del', 'workspace', unixepoch(), unixepoch())",
+            [],
+        ).unwrap();
+        let pid: i64 = db.conn.query_row(
+            "SELECT id FROM projects WHERE name='proj-del'", [], |r| r.get(0),
+        ).unwrap();
+
+        db.conn.execute(
+            "INSERT INTO templates(project_id, name, doc_type, content, created_at)
+             VALUES (?1, '삭제될 템플릿', 'note', '', unixepoch())",
+            [pid],
+        ).unwrap();
+
+        db.conn.execute("DELETE FROM projects WHERE id=?1", [pid]).unwrap();
+
+        let count: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM templates WHERE project_id=?1", [pid], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 0, "프로젝트 삭제 시 템플릿도 CASCADE 삭제되어야 함");
+    }
+
+    #[test]
+    fn v14_workspace_documents_no_longer_exist_after_v15() {
+        let db = TestDb::new();
+        // V15에서 workspace_documents, workspaces, workspace_templates DROP
+        let old_tables: Vec<String> = {
+            let mut stmt = db.conn.prepare(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('workspaces','workspace_documents','workspace_templates')"
+            ).unwrap();
+            stmt.query_map([], |r| r.get(0)).unwrap()
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        assert!(old_tables.is_empty(), "V15 이후 구 워크스페이스 테이블이 없어야 함: {:?}", old_tables);
     }
 }

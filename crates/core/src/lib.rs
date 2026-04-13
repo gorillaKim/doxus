@@ -4,6 +4,7 @@ pub mod chunker;
 pub mod conflict;
 pub mod secrets;
 pub mod db;
+pub mod document;
 pub mod embedding;
 pub mod marketplace;
 pub mod observability;
