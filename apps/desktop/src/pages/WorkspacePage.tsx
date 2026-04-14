@@ -218,11 +218,18 @@ function EditDocModal({
   const { updateDocument, getSections, updateSection } = useWorkspaceStore();
   const [mode, setMode] = useState<EditMode>('full');
   const [title, setTitle] = useState(doc.title);
-  const [content, setContent] = useState(doc.content_preview ?? '');
+  const [content, setContent] = useState('');
   const [sections, setSections] = useState<DocumentSection[]>([]);
   const [selectedHeading, setSelectedHeading] = useState('');
   const [sectionContent, setSectionContent] = useState('');
   const [saving, setSaving] = useState(false);
+
+  // 모달 열릴 때 전체 content 로드 (content_preview는 100자만이라 사용 X)
+  useEffect(() => {
+    invoke<{ content: string }>('get_workspace_document', { docId: doc.id })
+      .then((res) => setContent(res.content ?? ''))
+      .catch((e) => console.error('[load doc content]', e));
+  }, [doc.id]);
 
   useEffect(() => {
     if (mode === 'section') {

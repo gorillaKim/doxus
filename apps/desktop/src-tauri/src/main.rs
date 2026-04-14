@@ -134,6 +134,7 @@ fn main() {
             doxus_desktop_lib::commands::workspace::create_workspace_document,
             doxus_desktop_lib::commands::workspace::update_workspace_document,
             doxus_desktop_lib::commands::workspace::delete_workspace_document,
+            doxus_desktop_lib::commands::workspace::get_workspace_document,
             doxus_desktop_lib::commands::workspace::get_document_sections,
             doxus_desktop_lib::commands::workspace::update_document_section,
             doxus_desktop_lib::commands::workspace::insert_document_section,

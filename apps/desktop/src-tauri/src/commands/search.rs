@@ -394,6 +394,18 @@ pub async fn remove_project(
     name: String,
 ) -> Result<serde_json::Value, String> {
     let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+    // 기본 워크스페이스는 삭제 금지 (비활성화는 status 변경으로만)
+    let is_default_workspace: bool = conn
+        .query_row(
+            "SELECT COALESCE(is_default, 0) FROM projects WHERE name = ?1 AND source_type = 'workspace'",
+            rusqlite::params![name],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|v| v == 1)
+        .unwrap_or(false);
+    if is_default_workspace {
+        return Err("기본 워크스페이스는 삭제할 수 없습니다. 비활성화만 가능합니다.".to_string());
+    }
     let affected = conn.execute(
         "DELETE FROM projects WHERE name = ?1",
         rusqlite::params![name],
@@ -976,7 +988,7 @@ pub async fn get_document_content(
                 }));
             }
             _ => {
-                // Obsidian: 로컬 파일 직접 읽기
+                // Obsidian/Workspace: 로컬 파일 직접 읽기 (워크스페이스도 같은 경로)
                 use doxus_plugin_obsidian::ObsidianPlugin;
                 let mut plugin = ObsidianPlugin::new();
                 let mut config = PluginConfig::default();

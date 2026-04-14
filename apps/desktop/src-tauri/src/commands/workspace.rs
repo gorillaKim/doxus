@@ -105,8 +105,9 @@ pub async fn create_workspace_document(
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let now = now_secs();
-    let source_doc_id = format!("ws-doc-{now}-{seq:06}");
-    let file_name = format!("{source_doc_id}.md");
+    // source_doc_id = 파일명 (Obsidian 플러그인이 vault 상대경로로 해석)
+    let file_name = format!("ws-doc-{now}-{seq:06}.md");
+    let source_doc_id = file_name.clone();
 
     // 템플릿 내용 결정: DB 템플릿 우선, 없으면 빌트인
     let initial_content = resolve_template_content(&conn, template_id.as_deref());
@@ -192,6 +193,26 @@ pub async fn delete_workspace_document(
 }
 
 // ── 섹션 커맨드 ──────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn get_workspace_document(
+    state: tauri::State<'_, crate::AppState>,
+    doc_id: i64,
+) -> Result<serde_json::Value, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    let (title, content): (Option<String>, String) = conn
+        .query_row(
+            "SELECT title, content FROM documents WHERE id=?1",
+            [doc_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|_| format!("문서를 찾을 수 없습니다: id={doc_id}"))?;
+    Ok(serde_json::json!({
+        "id": doc_id,
+        "title": title.unwrap_or_default(),
+        "content": content,
+    }))
+}
 
 #[tauri::command]
 pub async fn get_document_sections(
@@ -430,7 +451,9 @@ pub async fn apply_template(
         .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
         .collect();
     let hash = format!("{:x}", Sha256::digest(content.as_bytes()));
-    let file_path = format!("workspace/{slug}.md");
+    let file_name = format!("ws-tpl-{slug}-{}.md", std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis());
+    let file_path = file_name.clone();
 
     // frontmatter 파싱 (응답용)
     let parsed = doxus_core::document::parse_frontmatter(&content);
@@ -442,14 +465,20 @@ pub async fn apply_template(
         .collect();
 
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
-    let project_id: i64 = conn.query_row(
-        "SELECT id FROM projects WHERE source_type='workspace' AND is_default=1 LIMIT 1",
+    let (project_id, project_path): (i64, String) = conn.query_row(
+        "SELECT id, path FROM projects WHERE source_type='workspace' AND is_default=1 LIMIT 1",
         [],
-        |r| r.get(0),
+        |r| Ok((r.get(0)?, r.get(1)?)),
     ).map_err(|_| "기본 워크스페이스를 찾을 수 없습니다".to_string())?;
 
-    let source_doc_id = format!("ws-tpl-{slug}-{}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis());
+    let source_doc_id = file_name.clone();
+
+    // 파일 시스템에도 저장 (Obsidian 플러그인이 읽을 수 있도록)
+    if let Ok(dir) = std::path::PathBuf::from(&project_path).canonicalize().or_else(|_| {
+        std::fs::create_dir_all(&project_path).map(|_| std::path::PathBuf::from(&project_path))
+    }) {
+        let _ = std::fs::write(dir.join(&file_name), &content);
+    }
 
     conn.execute(
         "INSERT INTO documents(project_id, source_doc_id, file_path, title, content, content_hash, metadata_json, created_at, updated_at)
