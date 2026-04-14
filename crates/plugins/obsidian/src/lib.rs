@@ -7,12 +7,6 @@ use doxus_plugin_sdk::{
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-/// Extract wikilinks `[[target]]`, `[[target|alias]]`, and relative markdown
-/// links `[text](path.md)` from content. Returns deduplicated target strings.
-/// Absolute URLs (http/https/obsidian://) are excluded.
-fn parse_links(content: &str) -> Vec<String> {
-    parse_links_for_doc(content, "")
-}
 
 /// Same as `parse_links` but also excludes links equal to `self_id`.
 fn parse_links_for_doc(content: &str, self_id: &str) -> Vec<String> {
@@ -68,8 +62,7 @@ fn parse_tags(content: &str) -> Vec<String> {
     let mut body = content;
 
     // Extract frontmatter between leading `---` delimiters
-    if content.starts_with("---") {
-        let rest = &content[3..];
+    if let Some(rest) = content.strip_prefix("---") {
         let rest = rest.strip_prefix('\n').unwrap_or(rest);
         if let Some(end) = rest.find("\n---") {
             let fm = &rest[..end];
@@ -99,8 +92,8 @@ fn parse_frontmatter_meta(fm: &str) -> (Vec<String>, Option<i64>) {
     while let Some(line) = lines.next() {
         let trimmed = line.trim();
         // aliases: [a, b] or block list
-        if trimmed.starts_with("aliases:") {
-            let after = trimmed["aliases:".len()..].trim();
+        if let Some(after) = trimmed.strip_prefix("aliases:") {
+            let after = after.trim();
             if after.starts_with('[') {
                 let inner = after.trim_start_matches('[').trim_end_matches(']');
                 for item in inner.split(',') {
@@ -123,7 +116,7 @@ fn parse_frontmatter_meta(fm: &str) -> (Vec<String>, Option<i64>) {
         }
         // created: / date: → Unix timestamp (ISO 8601 or YYYY-MM-DD)
         if trimmed.starts_with("created:") || trimmed.starts_with("date:") {
-            let val = trimmed.splitn(2, ':').nth(1).unwrap_or("").trim();
+            let val = trimmed.split_once(':').map(|x| x.1).unwrap_or("").trim();
             let val = val.trim_matches('"').trim_matches('\'');
             // Try ISO 8601 parsing via simple heuristic (YYYY-MM-DD prefix)
             if val.len() >= 10 {
@@ -136,7 +129,6 @@ fn parse_frontmatter_meta(fm: &str) -> (Vec<String>, Option<i64>) {
                         parts[2].parse::<u32>(),
                     ) {
                         // Rough Unix timestamp: days since epoch
-                        use std::time::{SystemTime, UNIX_EPOCH};
                         let _ = (y, m, d); // suppress unused warnings
                         // Simple approximation: (y-1970)*365.25 + day_of_year
                         let days = (y - 1970) * 365 + (y - 1969) / 4
@@ -160,8 +152,8 @@ fn parse_frontmatter_tags(fm: &str) -> Vec<String> {
     let mut lines = fm.lines().peekable();
     while let Some(line) = lines.next() {
         let trimmed = line.trim();
-        if trimmed.starts_with("tags:") {
-            let after = trimmed["tags:".len()..].trim();
+        if let Some(after) = trimmed.strip_prefix("tags:") {
+            let after = after.trim();
             if after.starts_with('[') {
                 // Inline list: tags: [rust, doxus]
                 let inner = after.trim_start_matches('[').trim_end_matches(']');
@@ -271,8 +263,7 @@ impl ObsidianPlugin {
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs() as i64));
 
         // frontmatter aliases + created_at
-        let (aliases, fm_created_at) = if content.starts_with("---") {
-            let rest = &content[3..];
+        let (aliases, fm_created_at) = if let Some(rest) = content.strip_prefix("---") {
             let rest = rest.strip_prefix('\n').unwrap_or(rest);
             if let Some(end) = rest.find("\n---") {
                 parse_frontmatter_meta(&rest[..end])
@@ -307,11 +298,6 @@ impl ObsidianPlugin {
             created_at,
             updated_at,
         })
-    }
-
-    fn read_markdown_files(&self, path: &PathBuf) -> Result<Vec<RawDocument>, std::io::Error> {
-        let paths = self.collect_markdown_paths(path);
-        paths.iter().map(|p| self.read_markdown_file(path, p)).collect()
     }
 }
 

@@ -1,0 +1,54 @@
+use doxus_core::embedding::EmbeddingProvider;
+use rusqlite::Connection;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+pub struct McpServer {
+    pub(crate) conn: Connection,
+    pub(crate) embedder: Option<Arc<dyn EmbeddingProvider>>,
+    pub(crate) plugins_dir: PathBuf,
+    pub(crate) allow_file_scheme: bool,
+}
+
+impl McpServer {
+    pub fn new(
+        conn: Connection,
+        embedder: Option<Arc<dyn EmbeddingProvider>>,
+        plugins_dir: PathBuf,
+    ) -> Self {
+        Self {
+            conn,
+            embedder,
+            plugins_dir,
+            allow_file_scheme: false,
+        }
+    }
+
+    pub fn new_with_file_scheme(
+        conn: Connection,
+        embedder: Option<Arc<dyn EmbeddingProvider>>,
+        plugins_dir: PathBuf,
+    ) -> Self {
+        Self {
+            conn,
+            embedder,
+            plugins_dir,
+            allow_file_scheme: true,
+        }
+    }
+
+    /// Provides access to the underlying SQLite connection.
+    pub fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
+    /// Provides access to the embedding provider, if available.
+    pub fn embedder(&self) -> Option<&Arc<dyn EmbeddingProvider>> {
+        self.embedder.as_ref()
+    }
+
+    /// Provides access to the plugin directory path.
+    pub fn plugins_dir(&self) -> &std::path::Path {
+        &self.plugins_dir
+    }
+}
