@@ -28,27 +28,11 @@ pub enum WasmError {
     HostFn(String),
 }
 
-/// HTTP request payload sent by a WASM plugin via the `http_request` host function.
-#[derive(Debug, serde::Deserialize)]
-pub struct HttpRequest {
-    pub url: String,
-    pub method: Option<String>,
-    pub headers: Option<HashMap<String, String>>,
-    pub body: Option<String>,
-}
-
-/// HTTP response returned to the WASM plugin.
-#[derive(Debug, serde::Serialize)]
-pub struct HttpResponse {
-    pub status: u16,
-    pub body: String,
-    pub headers: HashMap<String, String>,
-}
-
 // ── SecretBackend trait ───────────────────────────────────────────────────────
 
-pub(crate) trait SecretBackend: Send + Sync {
+pub trait SecretBackend: Send + Sync {
     fn get_secret(&self, service: &str, key: &str) -> Option<String>;
+    fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), WasmError>;
 }
 
 pub(crate) struct KeyringBackend;
@@ -56,6 +40,13 @@ pub(crate) struct KeyringBackend;
 impl SecretBackend for KeyringBackend {
     fn get_secret(&self, service: &str, key: &str) -> Option<String> {
         keyring::Entry::new(service, key).ok()?.get_password().ok()
+    }
+
+    fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), WasmError> {
+        keyring::Entry::new(service, key)
+            .map_err(|e| WasmError::HostFn(format!("keyring entry error: {e}")))?
+            .set_password(value)
+            .map_err(|e| WasmError::HostFn(format!("keyring set error: {e}")))
     }
 }
 
@@ -88,15 +79,25 @@ impl<B: SecretBackend + Send + Sync> SecretBackend for CachedKeyringBackend<B> {
         self.cache.write().unwrap().insert(cache_key, value.clone());
         Some(value)
     }
+
+    fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), WasmError> {
+        self.inner.set_secret(service, key, value)?;
+        let cache_key = (service.to_string(), key.to_string());
+        self.cache.write().unwrap().insert(cache_key, value.to_string());
+        Ok(())
+    }
 }
 
-#[cfg(test)]
-pub(crate) struct MemoryBackend(pub std::collections::HashMap<String, String>);
+pub struct MemoryBackend(pub Arc<Mutex<std::collections::HashMap<String, String>>>);
 
-#[cfg(test)]
 impl SecretBackend for MemoryBackend {
     fn get_secret(&self, _service: &str, key: &str) -> Option<String> {
-        self.0.get(key).cloned()
+        self.0.lock().unwrap().get(key).cloned()
+    }
+
+    fn set_secret(&self, _service: &str, key: &str, value: &str) -> Result<(), WasmError> {
+        self.0.lock().unwrap().insert(key.to_string(), value.to_string());
+        Ok(())
     }
 }
 
@@ -107,8 +108,6 @@ pub struct WasmDocSourceAdapter {
     plugin: Arc<Mutex<Plugin>>,
     manifest: PluginManifest,
     kv_store: KvStore,
-    allowed_domains: Vec<String>,
-    http_client: reqwest::Client,
     progress_tx: Option<broadcast::Sender<ProgressEvent>>,
     secret_backend: Arc<dyn SecretBackend>,
 }
@@ -129,15 +128,44 @@ impl WasmDocSourceAdapter {
 
         let bytes = wasm_bytes.into();
         let wasm = Wasm::data(bytes);
-        let extism_manifest = Manifest::new([wasm]);
-        let plugin = Plugin::new(&extism_manifest, [], true)
+        
+        // Extism PDK의 http::request()가 사용하는 built-in HTTP는
+        // Manifest의 allowed_hosts를 통해 도메인을 검증함.
+        let mut extism_manifest = Manifest::new([wasm]);
+        for domain in &manifest.http_domains {
+            extism_manifest = extism_manifest.with_allowed_host(domain.as_str());
+        }
+
+        // Define host functions
+        let secret_backend_inner = secret_backend.clone().unwrap_or_else(|| Arc::new(CachedKeyringBackend::new(KeyringBackend)));
+        let plugin_id_inner = manifest.plugin_id.clone();
+        let secrets_manifest = manifest.secrets.clone();
+
+        use extism::{Function, ValType, CurrentPlugin, Val, UserData};
+
+        let set_secret_fn = Function::new(
+            "__doxus_set_secret",
+            [ValType::I64, ValType::I64],
+            [],
+            UserData::new(()),
+            move |plugin: &mut CurrentPlugin, inputs: &[Val], _outputs: &mut [Val], _user_data: UserData<()>| {
+                let key_h = plugin.memory_from_val(&inputs[0]).ok_or_else(|| extism::Error::msg("invalid key handle"))?;
+                let val_h = plugin.memory_from_val(&inputs[1]).ok_or_else(|| extism::Error::msg("invalid val handle"))?;
+                let key = plugin.memory_str(key_h).unwrap_or_default().to_string();
+                let value = plugin.memory_str(val_h).unwrap_or_default().to_string();
+                
+                if secrets_manifest.contains(&key.to_string()) {
+                    let service = format!("doxus-{}", plugin_id_inner);
+                    secret_backend_inner.set_secret(&service, &key, &value)
+                        .map_err(|e| extism::Error::msg(e.to_string()))?;
+                }
+                Ok(())
+            }
+        );
+
+        let plugin = Plugin::new(&extism_manifest, [set_secret_fn], true)
             .map_err(|e| PluginError::Internal(format!("wasm load failed: {e}")))?;
 
-        let allowed_domains = manifest.http_domains.clone();
-        let http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|e| PluginError::Internal(format!("http client init failed: {e}")))?;
         let kv_conn = rusqlite::Connection::open_in_memory()
             .map_err(|e| PluginError::Internal(format!("kv db init: {e}")))?;
         let kv_store = KvStore::with_connection(
@@ -160,56 +188,9 @@ impl WasmDocSourceAdapter {
             plugin: Arc::new(Mutex::new(plugin)),
             manifest,
             kv_store,
-            allowed_domains,
-            http_client,
             progress_tx,
             secret_backend,
         })
-    }
-
-    /// Create an adapter with an explicit domain allowlist (useful for testing).
-    #[cfg(test)]
-    pub fn new_with_domains(allowed_domains: Vec<String>) -> Self {
-        let manifest = PluginManifest {
-            plugin_id: "com.test.stub".into(),
-            display_name: "Stub".into(),
-            version: "0.0.0".into(),
-            abi_version: 1,
-            http_domains: allowed_domains.clone(),
-            kv_namespaces: vec![],
-            secrets: vec![],
-        };
-        // Minimal valid WASM module bytes
-        let wasm_bytes: Vec<u8> = vec![
-            0x00, 0x61, 0x73, 0x6d, // magic
-            0x01, 0x00, 0x00, 0x00, // version
-        ];
-        let wasm = Wasm::data(wasm_bytes);
-        let extism_manifest = Manifest::new([wasm]);
-        let plugin = Plugin::new(&extism_manifest, [], true).expect("minimal wasm load failed");
-        let kv_store = KvStore::with_connection(
-            Arc::new(Mutex::new(
-                rusqlite::Connection::open_in_memory().expect("kv db"),
-            )),
-            manifest.plugin_id.clone(),
-            manifest.kv_namespaces.clone(),
-        );
-        kv_store.init_table().expect("kv table");
-        Self {
-            meta: PluginMetadata {
-                id: manifest.plugin_id.clone(),
-                name: manifest.display_name.clone(),
-                version: manifest.version.clone(),
-                kind: PluginKind::External,
-            },
-            plugin: Arc::new(Mutex::new(plugin)),
-            manifest,
-            kv_store,
-            allowed_domains,
-            http_client: reqwest::Client::new(),
-            progress_tx: None,
-            secret_backend: Arc::new(CachedKeyringBackend::new(KeyringBackend)),
-        }
     }
 
     /// Get a value from the plugin KV store (namespace-isolated).
@@ -284,80 +265,6 @@ impl WasmDocSourceAdapter {
         normalized
     }
 
-    pub fn is_http_allowed(&self, url: &str) -> bool {
-        self.manifest.is_domain_allowed(url)
-    }
-
-    /// Execute an HTTP request on behalf of a WASM plugin.
-    /// Enforces the domain allowlist from the plugin manifest (SSRF protection).
-    pub async fn http_request(&self, req: &HttpRequest) -> Result<HttpResponse, WasmError> {
-        let url = url::Url::parse(&req.url)
-            .map_err(|e| WasmError::HostFn(format!("invalid URL: {e}")))?;
-        let host = url
-            .host_str()
-            .ok_or_else(|| WasmError::HostFn("URL has no host".into()))?;
-
-        if !self.is_domain_allowed(host) {
-            return Err(WasmError::HostFn(format!(
-                "domain '{host}' not in plugin allowlist"
-            )));
-        }
-
-        let method = req.method.as_deref().unwrap_or("GET").to_uppercase();
-        let client = &self.http_client;
-        let mut builder = match method.as_str() {
-            "GET" => client.get(url.as_str()),
-            "POST" => client.post(url.as_str()),
-            "PUT" => client.put(url.as_str()),
-            "PATCH" => client.patch(url.as_str()),
-            "DELETE" => client.delete(url.as_str()),
-            m => return Err(WasmError::HostFn(format!("unsupported method: {m}"))),
-        };
-        if let Some(headers) = &req.headers {
-            for (k, v) in headers {
-                builder = builder.header(k.as_str(), v.as_str());
-            }
-        }
-        if let Some(body) = &req.body {
-            builder = builder.body(body.clone());
-        }
-
-        let resp = builder
-            .send()
-            .await
-            .map_err(|e| WasmError::HostFn(format!("request failed: {e}")))?;
-        let status = resp.status().as_u16();
-        let resp_headers = resp
-            .headers()
-            .iter()
-            .filter_map(|(k, v)| v.to_str().ok().map(|vs| (k.to_string(), vs.to_string())))
-            .collect();
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| WasmError::HostFn(format!("failed to read body: {e}")))?;
-
-        Ok(HttpResponse {
-            status,
-            body,
-            headers: resp_headers,
-        })
-    }
-
-    fn is_domain_allowed(&self, host: &str) -> bool {
-        if self.allowed_domains.is_empty() {
-            return false;
-        }
-        self.allowed_domains.iter().any(|pattern| {
-            if let Some(suffix) = pattern.strip_prefix("*.") {
-                host == suffix || host.ends_with(&format!(".{suffix}"))
-            } else {
-                host == pattern.as_str()
-            }
-        })
-    }
-
-    /// Call a WASM function with JSON input, get JSON output
     async fn call_wasm<I, O>(&self, func: &str, input: &I) -> Result<O, PluginError>
     where
         I: Serialize + Send + Sync,
@@ -368,18 +275,24 @@ impl WasmDocSourceAdapter {
             .map_err(|e| PluginError::Internal(format!("serialize: {e}")))?;
         let func = func.to_string();
 
-        tokio::task::spawn_blocking(move || {
+        let result: Result<O, PluginError> = tokio::task::spawn_blocking(move || {
             let mut guard = plugin
                 .lock()
                 .map_err(|_| PluginError::Internal("mutex poisoned".into()))?;
             let output = guard
                 .call::<&[u8], &[u8]>(&func, &input_bytes)
                 .map_err(|e| PluginError::Internal(format!("wasm call '{func}' failed: {e}")))?;
-            serde_json::from_slice::<O>(output)
-                .map_err(|e| PluginError::Internal(format!("deserialize: {e}")))
+            
+            if output.is_empty() {
+                serde_json::from_str("null")
+            } else {
+                serde_json::from_slice::<O>(output)
+            }.map_err(|e| PluginError::Internal(format!("deserialize: {e}")))
         })
         .await
-        .map_err(|e| PluginError::Internal(format!("spawn_blocking: {e}")))?
+        .map_err(|e| PluginError::Internal(format!("spawn_blocking: {e}")))?;
+
+        result
     }
 }
 
@@ -423,10 +336,32 @@ impl DocSource for WasmDocSourceAdapter {
 
     async fn initialize(
         &mut self,
-        _config: PluginConfig,
-        _secrets: PluginSecrets,
+        config: PluginConfig,
+        secrets: PluginSecrets,
     ) -> Result<(), PluginError> {
-        Ok(())
+        #[derive(Serialize)]
+        struct InitOpts {
+            config: HashMap<String, serde_json::Value>,
+            secrets: HashMap<String, String>,
+        }
+
+        let mut wasm_secrets = HashMap::new();
+        for key in &self.manifest.secrets {
+            if let Some(v) = secrets.fields.get(key) {
+                let val_str = match v {
+                    doxus_plugin_sdk::SecretValue::Text(t) => t.clone(),
+                    doxus_plugin_sdk::SecretValue::Token { value, .. } => value.clone(),
+                };
+                wasm_secrets.insert(key.clone(), val_str);
+            }
+        }
+
+        let opts = InitOpts {
+            config: config.fields,
+            secrets: wasm_secrets,
+        };
+
+        self.call_wasm::<InitOpts, ()>("initialize", &opts).await
     }
 
     async fn fetch_all(&self, opts: FetchAllOpts) -> Result<DocumentStream, PluginError> {
@@ -480,6 +415,52 @@ impl DocSource for WasmDocSourceAdapter {
             deleted_ids: result.deleted.into_iter().map(SourceDocId).collect(),
             next_cursor: result.next_cursor,
         })
+    }
+
+    fn supports_write(&self) -> bool {
+        // WASM 플러그인이 create_document 함수를 내보내는지 확인
+        let guard = self.plugin.lock().ok();
+        guard.map_or(false, |g| g.function_exists("create_document"))
+    }
+
+    async fn create_document(
+        &self,
+        title: &str,
+        content: &str,
+        metadata: Option<&HashMap<String, serde_json::Value>>,
+    ) -> Result<SourceDocId, PluginError> {
+        use doxus_plugin_sdk::wasm_types::{CreateDocumentOptsWasm, CreateDocumentResultWasm};
+
+        let opts = CreateDocumentOptsWasm {
+            title: title.to_string(),
+            content: content.to_string(),
+            metadata: metadata.cloned().unwrap_or_default(),
+        };
+        let result: CreateDocumentResultWasm = self.call_wasm("create_document", &opts).await?;
+        Ok(SourceDocId(result.id))
+    }
+
+    async fn update_document(
+        &self,
+        id: &SourceDocId,
+        content: Option<&str>,
+        metadata: Option<&HashMap<String, serde_json::Value>>,
+    ) -> Result<(), PluginError> {
+        use doxus_plugin_sdk::wasm_types::UpdateDocumentOptsWasm;
+
+        let opts = UpdateDocumentOptsWasm {
+            id: id.0.clone(),
+            content: content.map(|s| s.to_string()),
+            metadata: metadata.cloned(),
+        };
+        self.call_wasm::<UpdateDocumentOptsWasm, ()>("update_document", &opts).await
+    }
+
+    async fn delete_document(&self, id: &SourceDocId) -> Result<(), PluginError> {
+        use doxus_plugin_sdk::wasm_types::DeleteDocumentOptsWasm;
+
+        let opts = DeleteDocumentOptsWasm { id: id.0.clone() };
+        self.call_wasm::<DeleteDocumentOptsWasm, ()>("delete_document", &opts).await
     }
 }
 
@@ -626,151 +607,6 @@ mod tests {
         // test_manifest has kv_namespaces: vec![]
         let err = adapter.kv_set("forbidden", "k", b"v".to_vec()).unwrap_err();
         assert!(matches!(err, crate::plugin::kv_store::KvError::NamespaceNotAllowed(_)));
-    }
-
-    #[test]
-    fn http_allowed_respects_manifest() {
-        let manifest = PluginManifest {
-            http_domains: vec!["example.com".into()],
-            ..test_manifest()
-        };
-        let adapter =
-            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), manifest, None, None).unwrap();
-        assert!(adapter.is_http_allowed("https://example.com/api"));
-        assert!(!adapter.is_http_allowed("https://evil.com/api"));
-    }
-
-    #[tokio::test]
-    async fn http_request_allowed_domain_succeeds() {
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path("/api/data"))
-            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("hello"))
-            .mount(&server)
-            .await;
-
-        let host = url::Url::parse(&server.uri())
-            .unwrap()
-            .host_str()
-            .unwrap()
-            .to_string();
-        let adapter = WasmDocSourceAdapter::new_with_domains(vec![host.clone()]);
-        let req = HttpRequest {
-            url: format!("{}/api/data", server.uri()),
-            method: Some("GET".into()),
-            headers: None,
-            body: None,
-        };
-        let resp = adapter.http_request(&req).await.unwrap();
-        assert_eq!(resp.status, 200);
-        assert_eq!(resp.body, "hello");
-    }
-
-    #[tokio::test]
-    async fn http_request_blocked_domain_returns_error() {
-        let adapter =
-            WasmDocSourceAdapter::new_with_domains(vec!["allowed.example.com".into()]);
-        let req = HttpRequest {
-            url: "http://evil.example.com/steal".into(),
-            method: None,
-            headers: None,
-            body: None,
-        };
-        let result = adapter.http_request(&req).await;
-        assert!(matches!(result, Err(WasmError::HostFn(_))));
-    }
-
-    #[tokio::test]
-    async fn http_request_wildcard_domain_allowed() {
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .respond_with(wiremock::ResponseTemplate::new(204))
-            .mount(&server)
-            .await;
-
-        let host = url::Url::parse(&server.uri())
-            .unwrap()
-            .host_str()
-            .unwrap()
-            .to_string();
-        let adapter = WasmDocSourceAdapter::new_with_domains(vec![
-            "*.example.com".into(),
-            host.clone(),
-        ]);
-        let req = HttpRequest {
-            url: format!("{}/", server.uri()),
-            method: None,
-            headers: None,
-            body: None,
-        };
-        let resp = adapter.http_request(&req).await.unwrap();
-        assert_eq!(resp.status, 204);
-    }
-
-    #[tokio::test]
-    async fn http_request_empty_allowlist_blocks_all() {
-        let adapter = WasmDocSourceAdapter::new_with_domains(vec![]);
-        let req = HttpRequest {
-            url: "http://example.com/api".into(),
-            method: None,
-            headers: None,
-            body: None,
-        };
-        let result = adapter.http_request(&req).await;
-        assert!(matches!(result, Err(WasmError::HostFn(_))));
-    }
-
-    #[tokio::test]
-    async fn http_request_invalid_url_returns_error() {
-        let adapter =
-            WasmDocSourceAdapter::new_with_domains(vec!["example.com".into()]);
-        let req = HttpRequest {
-            url: "not a valid url".into(),
-            method: None,
-            headers: None,
-            body: None,
-        };
-        let result = adapter.http_request(&req).await;
-        assert!(matches!(result, Err(WasmError::HostFn(_))));
-    }
-
-    #[tokio::test]
-    async fn http_request_unsupported_method_returns_error() {
-        let adapter =
-            WasmDocSourceAdapter::new_with_domains(vec!["example.com".into()]);
-        let req = HttpRequest {
-            url: "http://example.com/api".into(),
-            method: Some("TRACE".into()),
-            headers: None,
-            body: None,
-        };
-        let result = adapter.http_request(&req).await;
-        assert!(matches!(result, Err(WasmError::HostFn(_))));
-    }
-
-    #[tokio::test]
-    async fn http_request_patch_method_supported() {
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
-            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("patched"))
-            .mount(&server)
-            .await;
-
-        let host = url::Url::parse(&server.uri())
-            .unwrap()
-            .host_str()
-            .unwrap()
-            .to_string();
-        let adapter = WasmDocSourceAdapter::new_with_domains(vec![host]);
-        let req = HttpRequest {
-            url: format!("{}/resource", server.uri()),
-            method: Some("PATCH".into()),
-            headers: None,
-            body: Some("update".into()),
-        };
-        let resp = adapter.http_request(&req).await.unwrap();
-        assert_eq!(resp.status, 200);
-        assert_eq!(resp.body, "patched");
     }
 
     #[test]
@@ -974,9 +810,45 @@ mod tests {
             minimal_wasm_bytes(),
             manifest,
             None,
-            Some(Arc::new(MemoryBackend(map))),
+            Some(Arc::new(MemoryBackend(Arc::new(Mutex::new(map))))),
         )
         .unwrap();
         assert_eq!(adapter.secrets_get("api_token"), Some("secret123".to_string()));
+    }
+
+    #[tokio::test]
+    async fn supports_write_false_for_minimal_wasm() {
+        let adapter = WasmDocSourceAdapter::from_bytes(
+            minimal_wasm_bytes(),
+            test_manifest(),
+            None,
+            None,
+        ).unwrap();
+        assert!(!adapter.supports_write());
+    }
+
+    #[tokio::test]
+    async fn write_methods_fail_if_function_missing() {
+        let adapter = WasmDocSourceAdapter::from_bytes(
+            minimal_wasm_bytes(),
+            test_manifest(),
+            None,
+            None,
+        ).unwrap();
+
+        let res = adapter.create_document("title", "content", None).await;
+        assert!(res.is_err());
+        let err = res.unwrap_err().to_string();
+        assert!(err.contains("wasm call 'create_document' failed"));
+
+        let res = adapter.update_document(&SourceDocId("id".into()), None, None).await;
+        assert!(res.is_err());
+        let err = res.unwrap_err().to_string();
+        assert!(err.contains("wasm call 'update_document' failed"));
+
+        let res = adapter.delete_document(&SourceDocId("id".into())).await;
+        assert!(res.is_err());
+        let err = res.unwrap_err().to_string();
+        assert!(err.contains("wasm call 'delete_document' failed"));
     }
 }

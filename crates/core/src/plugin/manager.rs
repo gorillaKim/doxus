@@ -39,6 +39,16 @@ impl PluginManager {
         Self { plugins_dir, installer, factories: HashMap::new() }
     }
 
+    /// Normalize short plugin names to official IDs (e.g., "obsidian" -> "com.doxus.obsidian")
+    pub fn normalize_id(id: &str) -> String {
+        match id {
+            "obsidian" | "workspace" => "com.doxus.obsidian".to_string(),
+            "confluence" => "com.doxus.confluence".to_string(),
+            "github" => "com.doxus.github".to_string(),
+            _ => id.to_string(),
+        }
+    }
+
     /// Register a factory function for a plugin ID.
     /// When `get_source` is called with the same ID, the factory is invoked to
     /// produce a fresh `DocSource` instance.
@@ -73,6 +83,7 @@ impl PluginManager {
     /// Install without signature verification (for testing / unsigned plugins).
     /// WARNING: Only use when signature is not available (e.g. local dev).
     /// Restricted to crate-internal use to prevent bypassing signature checks in production.
+    #[allow(dead_code)]
     pub(crate) fn install_from_bytes(
         &self,
         entry: &RegistryEntry,

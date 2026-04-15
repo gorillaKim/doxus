@@ -44,3 +44,27 @@ pub struct ChangeSetWasm {
     pub deleted: Vec<String>,
     pub next_cursor: Option<String>,
 }
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct CreateDocumentOptsWasm {
+    pub title: String,
+    pub content: String,
+    pub metadata: HashMap<String, serde_json::Value>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct CreateDocumentResultWasm {
+    pub id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct UpdateDocumentOptsWasm {
+    pub id: String,
+    pub content: Option<String>,
+    pub metadata: Option<HashMap<String, serde_json::Value>>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct DeleteDocumentOptsWasm {
+    pub id: String,
+}

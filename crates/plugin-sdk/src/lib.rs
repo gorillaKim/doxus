@@ -1,3 +1,4 @@
+#[cfg(feature = "native")]
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -259,6 +260,7 @@ fn is_ipv6_blocked(ip: std::net::Ipv6Addr) -> bool {
 
 // ── DocSource trait ───────────────────────────────────────────────────────────
 
+#[cfg(feature = "native")]
 #[async_trait]
 pub trait DocSource: Send + Sync {
     fn metadata(&self) -> &PluginMetadata;
@@ -283,6 +285,42 @@ pub trait DocSource: Send + Sync {
     async fn fetch_document(&self, id: &SourceDocId) -> Result<RawDocument, PluginError>;
 
     async fn health_check(&self) -> HealthStatus;
+
+    /// Returns true if the source supports active write operations (create/update/delete).
+    fn supports_write(&self) -> bool {
+        false
+    }
+
+    /// Creates a new document in the target system.
+    async fn create_document(
+        &self,
+        _title: &str,
+        _content: &str,
+        _metadata: Option<&HashMap<String, serde_json::Value>>,
+    ) -> Result<SourceDocId, PluginError> {
+        Err(PluginError::Internal(
+            "create_document not supported by this plugin".to_string(),
+        ))
+    }
+
+    /// Updates an existing document. Content and metadata can be updated independently.
+    async fn update_document(
+        &self,
+        _id: &SourceDocId,
+        _content: Option<&str>,
+        _metadata: Option<&HashMap<String, serde_json::Value>>,
+    ) -> Result<(), PluginError> {
+        Err(PluginError::Internal(
+            "update_document not supported by this plugin".to_string(),
+        ))
+    }
+
+    /// Deletes a document from the target system.
+    async fn delete_document(&self, _id: &SourceDocId) -> Result<(), PluginError> {
+        Err(PluginError::Internal(
+            "delete_document not supported by this plugin".to_string(),
+        ))
+    }
 
     async fn oauth_start(&self) -> Option<String> {
         None
