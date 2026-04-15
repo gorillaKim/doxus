@@ -4,9 +4,15 @@ use doxus_plugin_sdk::{
     FetchChangesOpts, HealthStatus, PluginConfig, PluginError, PluginKind, PluginMetadata,
     PluginSecrets, RawDocument, SourceDocId,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+
+/// Helper for tests to parse links without a self_id
+#[cfg(test)]
+fn parse_links(content: &str) -> Vec<String> {
+    parse_links_for_doc(content, "")
+}
 
 /// Same as `parse_links` but also excludes links equal to `self_id`.
 fn parse_links_for_doc(content: &str, self_id: &str) -> Vec<String> {
@@ -426,6 +432,160 @@ impl DocSource for ObsidianPlugin {
                 }
             }
         }
+    }
+
+    fn supports_write(&self) -> bool {
+        true
+    }
+
+    async fn create_document(
+        &self,
+        title: &str,
+        content: &str,
+        metadata: Option<&HashMap<String, serde_json::Value>>,
+    ) -> Result<SourceDocId, PluginError> {
+        let vault = self.vault()?;
+        let safe_title = title.replace(|c: char| !c.is_alphanumeric() && c != ' ' && c != '-' && c != '_', "");
+        let filename = format!("{}.md", safe_title.trim());
+        let path = vault.join(&filename);
+
+        if path.exists() {
+            return Err(PluginError::Internal(format!("file already exists: {}", filename)));
+        }
+
+        // Convert metadata to YAML frontmatter
+        let final_content = if let Some(meta) = metadata {
+            if !meta.is_empty() {
+                let mut fm = String::from("---\n");
+                for (key, val) in meta {
+                    let val_str = match val {
+                        serde_json::Value::String(s) => s.clone(),
+                        serde_json::Value::Array(arr) => {
+                            let items: Vec<String> = arr.iter()
+                                .map(|v| v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string()))
+                                .collect();
+                            format!("\n  - {}", items.join("\n  - "))
+                        }
+                        _ => val.to_string(),
+                    };
+                    fm.push_str(&format!("{}: {}\n", key, val_str));
+                }
+                fm.push_str("---\n");
+                format!("{}{}", fm, content)
+            } else {
+                content.to_string()
+            }
+        } else {
+            content.to_string()
+        };
+
+        std::fs::write(&path, final_content).map_err(|e| PluginError::Internal(e.to_string()))?;
+
+        Ok(SourceDocId(filename))
+    }
+
+    async fn update_document(
+        &self,
+        id: &SourceDocId,
+        content: Option<&str>,
+        metadata: Option<&std::collections::HashMap<String, serde_json::Value>>,
+    ) -> Result<(), PluginError> {
+        let vault = self.vault()?;
+        let path = vault.join(&id.0);
+
+        if !path.exists() {
+            return Err(PluginError::NotFound(id.0.clone()));
+        }
+
+        let current_raw = std::fs::read_to_string(&path)
+            .map_err(|e| PluginError::Internal(e.to_string()))?;
+
+        // Split current file into frontmatter and body
+        let (mut fm_text, mut body_text) = if current_raw.starts_with("---") {
+            if let Some(end_idx) = current_raw[3..].find("\n---") {
+                let fm = &current_raw[3..end_idx + 3];
+                let body = &current_raw[end_idx + 7..];
+                (fm.to_string(), body.to_string())
+            } else {
+                ("".into(), current_raw)
+            }
+        } else {
+            ("".into(), current_raw)
+        };
+
+        // Update body if provided
+        if let Some(new_body) = content {
+            body_text = new_body.to_string();
+        }
+
+        // Update metadata if provided
+        if let Some(new_meta) = metadata {
+            for (key, val) in new_meta {
+                let val_str = match val {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Array(arr) => {
+                        let mut list = String::new();
+                        for v in arr {
+                            let item = v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string());
+                            list.push_str(&format!("\n  - {}", item));
+                        }
+                        list
+                    }
+                    _ => val.to_string(),
+                };
+
+                let mut new_lines = Vec::new();
+                let mut skipping = false;
+                let mut found = false;
+                for line in fm_text.lines() {
+                    let trimmed = line.trim_start();
+                    if trimmed.starts_with(&format!("{}:", key)) {
+                        skipping = true;
+                        found = true;
+                        if val_str.contains('\n') {
+                            new_lines.push(format!("{}:{}", key, val_str));
+                        } else {
+                            new_lines.push(format!("{}: {}", key, val_str));
+                        }
+                    } else if skipping && (trimmed.starts_with("- ") || (trimmed.is_empty() && !line.is_empty())) {
+                        continue;
+                    } else {
+                        skipping = false;
+                        new_lines.push(line.to_string());
+                    }
+                }
+                if !found {
+                    if val_str.contains('\n') {
+                        new_lines.push(format!("{}:{}", key, val_str));
+                    } else {
+                        new_lines.push(format!("{}: {}", key, val_str));
+                    }
+                }
+                fm_text = new_lines.join("\n");
+            }
+        }
+
+        // Reconstruct file
+        let final_content = if fm_text.is_empty() {
+            body_text
+        } else {
+            format!("---\n{}\n---\n{}", fm_text.trim(), body_text)
+        };
+
+        std::fs::write(&path, final_content).map_err(|e| PluginError::Internal(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn delete_document(&self, id: &SourceDocId) -> Result<(), PluginError> {
+        let vault = self.vault()?;
+        let path = vault.join(&id.0);
+
+        if !path.exists() {
+            return Err(PluginError::NotFound(id.0.clone()));
+        }
+
+        std::fs::remove_file(&path).map_err(|e| PluginError::Internal(e.to_string()))?;
+        Ok(())
     }
 
     async fn fetch_changes(&self, opts: FetchChangesOpts) -> Result<ChangeSet, PluginError> {
@@ -871,5 +1031,114 @@ mod tests {
             .unwrap();
         assert_eq!(page2.documents.len(), 2);
         assert!(page2.next_cursor.is_none());
+    }
+
+    #[tokio::test]
+    async fn supports_write_is_true() {
+        let plugin = ObsidianPlugin::new();
+        assert!(plugin.supports_write());
+    }
+
+    #[tokio::test]
+    async fn create_document_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut plugin = ObsidianPlugin::new();
+        let mut config = PluginConfig::default();
+        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
+        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+
+        let id = plugin.create_document("New Note", "# New Note\nBody content", None).await.unwrap();
+        assert_eq!(id.0, "New Note.md");
+        
+        let path = dir.path().join("New Note.md");
+        assert!(path.exists());
+        let content = std::fs::read_to_string(path).unwrap();
+        assert!(content.contains("Body content"));
+    }
+
+    #[tokio::test]
+    async fn create_document_conflict_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Existing.md"), "already here").unwrap();
+
+        let mut plugin = ObsidianPlugin::new();
+        let mut config = PluginConfig::default();
+        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
+        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+
+        let result = plugin.create_document("Existing", "new content", None).await;
+        assert!(result.is_err());
+        if let Err(PluginError::Internal(msg)) = result {
+            assert!(msg.contains("exists"));
+        } else {
+            panic!("Expected conflict error, got {:?}", result);
+        }
+    }
+
+    #[tokio::test]
+    async fn create_document_with_metadata_creates_frontmatter() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut plugin = ObsidianPlugin::new();
+        let mut config = PluginConfig::default();
+        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
+        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+
+        let mut metadata = HashMap::new();
+        metadata.insert("tags".into(), serde_json::json!(["rust", "testing"]));
+        metadata.insert("status".into(), serde_json::json!("draft"));
+
+        let id = plugin.create_document("Metadata Test", "Body here", Some(&metadata)).await.unwrap();
+        assert_eq!(id.0, "Metadata Test.md");
+
+        let path = dir.path().join("Metadata Test.md");
+        let content = std::fs::read_to_string(path).unwrap();
+
+        assert!(content.starts_with("---\n"), "Must start with frontmatter delimiter");
+        assert!(content.contains("status: draft"), "Must contain status metadata");
+        // Body must appear after frontmatter
+        assert!(content.contains("Body here"), "Must contain body content");
+    }
+    #[tokio::test]
+    async fn update_document_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let note_path = dir.path().join("Note.md");
+        std::fs::write(&note_path, "---\ntags: [old]\n---\n# Note\nOld body").unwrap();
+
+        let mut plugin = ObsidianPlugin::new();
+        let mut config = PluginConfig::default();
+        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
+        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+
+        let mut new_meta = std::collections::HashMap::new();
+        new_meta.insert("tags".into(), serde_json::json!(["new", "tags"]));
+        new_meta.insert("status".into(), serde_json::json!("updated"));
+
+        plugin.update_document(
+            &SourceDocId("Note.md".into()),
+            Some("# Note\nNew body"),
+            Some(&new_meta)
+        ).await.unwrap();
+
+        let content = std::fs::read_to_string(&note_path).unwrap();
+        assert!(content.contains("New body"));
+        assert!(content.contains("status: updated"));
+        assert!(content.contains("- new"));
+        assert!(content.contains("- tags"));
+        assert!(!content.contains("- old"));
+    }
+
+    #[tokio::test]
+    async fn delete_document_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let note_path = dir.path().join("DeleteMe.md");
+        std::fs::write(&note_path, "to be deleted").unwrap();
+
+        let mut plugin = ObsidianPlugin::new();
+        let mut config = PluginConfig::default();
+        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
+        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+
+        plugin.delete_document(&SourceDocId("DeleteMe.md".into())).await.unwrap();
+        assert!(!note_path.exists());
     }
 }
