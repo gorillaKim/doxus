@@ -8,9 +8,12 @@ members = [
     "crates/mcp-server",
     "crates/agent",
     "crates/extism-poc",
+    "apps/desktop/src-tauri",
+]
+
+exclude = [
     "crates/plugins/confluence",
     "crates/plugins/github",
-    "apps/desktop/src-tauri",
 ]
 
 [workspace.package]

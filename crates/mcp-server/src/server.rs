@@ -6,6 +6,7 @@ use std::sync::Arc;
 pub struct McpServer {
     pub(crate) conn: Connection,
     pub(crate) embedder: Option<Arc<dyn EmbeddingProvider>>,
+    pub(crate) plugin_manager: Arc<doxus_core::plugin::PluginManager>,
     pub(crate) plugins_dir: PathBuf,
     pub(crate) allow_file_scheme: bool,
 }
@@ -14,11 +15,13 @@ impl McpServer {
     pub fn new(
         conn: Connection,
         embedder: Option<Arc<dyn EmbeddingProvider>>,
+        plugin_manager: Arc<doxus_core::plugin::PluginManager>,
         plugins_dir: PathBuf,
     ) -> Self {
         Self {
             conn,
             embedder,
+            plugin_manager,
             plugins_dir,
             allow_file_scheme: false,
         }
@@ -27,11 +30,13 @@ impl McpServer {
     pub fn new_with_file_scheme(
         conn: Connection,
         embedder: Option<Arc<dyn EmbeddingProvider>>,
+        plugin_manager: Arc<doxus_core::plugin::PluginManager>,
         plugins_dir: PathBuf,
     ) -> Self {
         Self {
             conn,
             embedder,
+            plugin_manager,
             plugins_dir,
             allow_file_scheme: true,
         }
@@ -50,5 +55,10 @@ impl McpServer {
     /// Provides access to the plugin directory path.
     pub fn plugins_dir(&self) -> &std::path::Path {
         &self.plugins_dir
+    }
+
+    /// Provides access to the plugin manager.
+    pub fn plugin_manager(&self) -> &Arc<doxus_core::plugin::PluginManager> {
+        &self.plugin_manager
     }
 }

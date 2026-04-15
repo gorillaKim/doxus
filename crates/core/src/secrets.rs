@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Mutex, RwLock};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -157,6 +157,7 @@ pub fn store_plugin_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     // ── Test double: counts get() calls to verify cache hits ─────────────────

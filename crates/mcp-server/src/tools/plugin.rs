@@ -43,7 +43,7 @@ pub fn list(server: &McpServer, id: Value) -> McpResponse {
     }
 }
 
-pub fn install(server: &McpServer, id: Value, args: &Value) -> McpResponse {
+pub async fn install(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     let plugin_id = match args["id"].as_str() {
         Some(i) => i,
         None => return McpResponse::err(id, -32602, "missing required arg: id"),
@@ -58,13 +58,7 @@ pub fn install(server: &McpServer, id: Value, args: &Value) -> McpResponse {
             Ok(c) => c,
             Err(e) => return McpResponse::err(id, -32603, e.to_string()),
         };
-        let entry = match tokio::runtime::Handle::try_current()
-            .map(|h| tokio::task::block_in_place(|| h.block_on(client.fetch_entry(plugin_id))))
-            .unwrap_or_else(|_| {
-                tokio::runtime::Runtime::new()
-                    .map_err(|e| doxus_core::marketplace::registry::RegistryError::Network(e.to_string()))
-                    .and_then(|rt| rt.block_on(client.fetch_entry(plugin_id)))
-            }) {
+        let entry = match client.fetch_entry(plugin_id).await {
             Ok(Some(e)) => e,
             Ok(None) => return McpResponse::err(id, -32603, format!("plugin '{plugin_id}' not found in registry")),
             Err(e) => return McpResponse::err(id, -32603, e.to_string()),

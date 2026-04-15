@@ -180,7 +180,7 @@ fn detect_frontmatter_end(lines: &[&str]) -> usize {
 
 fn is_fence_delimiter(line: &str) -> bool {
     let trimmed = line.trim_start();
-    (trimmed.starts_with("```") || trimmed.starts_with("~~~"))
+    trimmed.starts_with("```") || trimmed.starts_with("~~~")
 }
 
 /// ATX 헤딩 파싱. 성공 시 (level, title_text) 반환.

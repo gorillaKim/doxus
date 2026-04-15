@@ -1,6 +1,7 @@
 use doxus_mcp::McpServer;
 use rusqlite::Connection;
 use serde_json::json;
+use std::sync::Arc;
 use tempfile::TempDir;
 
 fn setup_path_db() -> (Connection, TempDir) {
@@ -70,8 +71,8 @@ fn insert_link(conn: &Connection, source_id: i64, target_id: i64) {
 }
 
 /// Reproduces H-1: doc-1 in trail falsely excludes doc-10 via LIKE '%doc-1%'
-#[test]
-fn find_path_no_false_positive_on_prefix_ids() {
+#[tokio::test]
+async fn find_path_no_false_positive_on_prefix_ids() {
     let (conn, tmp) = setup_path_db();
     let proj_id = insert_project(&conn);
 
@@ -82,13 +83,14 @@ fn find_path_no_false_positive_on_prefix_ids() {
     // doc-1 -> doc-10 -> doc-100
     insert_link(&conn, id1, id10);
     insert_link(&conn, id10, id100);
-
-    let server = McpServer::new(conn, None, tmp.path().to_path_buf());
+ 
+    let pm = Arc::new(doxus_core::plugin::PluginManager::new(tmp.path().to_path_buf()));
+    let server = McpServer::new(conn, None, pm, tmp.path().to_path_buf());
     let resp = server.dispatch_tool(
         "doxus_find_path",
         json!(1),
         &json!({"from": "doc-1", "to": "doc-100"}),
-    );
+    ).await;
 
     assert!(resp.error.is_none(), "find_path should succeed: {:?}", resp.error);
     let text = resp.result
@@ -103,26 +105,27 @@ fn find_path_no_false_positive_on_prefix_ids() {
 }
 
 /// Real cycles should not cause infinite loops — BFS terminates
-#[test]
-fn find_path_detects_real_cycle_and_avoids_infinite_loop() {
+#[tokio::test]
+async fn find_path_detects_real_cycle_and_avoids_infinite_loop() {
     let (conn, tmp) = setup_path_db();
     let proj_id = insert_project(&conn);
-
+ 
     let ida = insert_doc(&conn, proj_id, "doc-a");
     let idb = insert_doc(&conn, proj_id, "doc-b");
     let _idc = insert_doc(&conn, proj_id, "doc-c");
-
+ 
     // doc-a -> doc-b -> doc-a (cycle), doc-c is unreachable
     insert_link(&conn, ida, idb);
     insert_link(&conn, idb, ida);
-
-    let server = McpServer::new(conn, None, tmp.path().to_path_buf());
+ 
+    let pm = Arc::new(doxus_core::plugin::PluginManager::new(tmp.path().to_path_buf()));
+    let server = McpServer::new(conn, None, pm, tmp.path().to_path_buf());
     let resp = server.dispatch_tool(
         "doxus_find_path",
         json!(1),
         &json!({"from": "doc-a", "to": "doc-c"}),
-    );
-
+    ).await;
+ 
     // Should return a response (not hang), with no path found
     let text = resp.result
         .as_ref()

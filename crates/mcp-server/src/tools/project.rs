@@ -1,7 +1,7 @@
 use crate::server::McpServer;
 use crate::types::McpResponse;
 use rusqlite::params;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 pub fn list_projects(server: &McpServer, id: Value) -> McpResponse {
     let mut stmt = match server.conn().prepare(

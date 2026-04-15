@@ -3,7 +3,7 @@ use crate::tools;
 use crate::types::McpResponse;
 use serde_json::{json, Value};
 
-pub fn dispatch(
+pub async fn dispatch(
     server: &McpServer,
     method: &str,
     id: Value,
@@ -18,7 +18,7 @@ pub fn dispatch(
                 .and_then(|p| p.get("arguments"))
                 .cloned()
                 .unwrap_or(json!({}));
-            dispatch_tool(server, name, id, &args)
+            dispatch_tool(server, name, id, &args).await
         }
 
         "initialize" => McpResponse::ok(
@@ -34,7 +34,7 @@ pub fn dispatch(
     }
 }
 
-pub fn dispatch_tool(server: &McpServer, name: &str, id: Value, args: &Value) -> McpResponse {
+pub async fn dispatch_tool(server: &McpServer, name: &str, id: Value, args: &Value) -> McpResponse {
     match name {
         // ── Core tools ────────────────────────────────────────────────────
         "doxus_status" => tools::core::status(server, id),
@@ -69,7 +69,7 @@ pub fn dispatch_tool(server: &McpServer, name: &str, id: Value, args: &Value) ->
 
         // ── Plugin management ─────────────────────────────────────────────
         "doxus_plugin_list" => tools::plugin::list(server, id),
-        "doxus_plugin_install" => tools::plugin::install(server, id, args),
+        "doxus_plugin_install" => tools::plugin::install(server, id, args).await,
         "doxus_plugin_remove" => tools::plugin::remove(server, id, args),
         "doxus_plugin_update" => tools::plugin::update(server, id, args),
         "doxus_plugin_search" => tools::plugin::search(server, id, args),
@@ -78,11 +78,11 @@ pub fn dispatch_tool(server: &McpServer, name: &str, id: Value, args: &Value) ->
         "doxus_plugin_info" => tools::plugin::info(server, id, args),
 
         // ── Workspace ─────────────────────────────────────────────────────
-        "doxus_create_document" => tools::workspace::create_document(server, id, args),
-        "doxus_update_document" => tools::workspace::update_document(server, id, args),
-        "doxus_delete_document" => tools::workspace::delete_document(server, id, args),
+        "doxus_create_document" => tools::workspace::create_document(server, id, args).await,
+        "doxus_update_document" => tools::workspace::update_document(server, id, args).await,
+        "doxus_delete_document" => tools::workspace::delete_document(server, id, args).await,
         "doxus_list_workspace_documents" => tools::workspace::list_documents(server, id, args),
-        "doxus_apply_template" => tools::workspace::apply_template(server, id, args),
+        "doxus_apply_template" => tools::workspace::apply_template(server, id, args).await,
         "doxus_list_templates" => tools::workspace::list_templates(server, id),
         "doxus_get_template" => tools::workspace::get_template(server, id, args),
 
@@ -213,22 +213,28 @@ pub fn tool_list() -> Value {
             // Workspace
             tool("doxus_create_document", "Create a workspace document", &[
                 param("title", "string", "Document title"),
+                param_opt("project", "string", "Target project name (optional, defaults to internal workspace)"),
                 param_opt("template", "string", "Template name"),
                 param_opt("doc_type", "string", "note|meeting|decision|journal"),
             ]),
             tool("doxus_update_document", "Update a workspace document", &[
                 param("id", "string", "Document ID"),
                 param("content", "string", "New content"),
+                param_opt("project", "string", "Target project name (required if not internal workspace)"),
+                param_opt("metadata", "object", "Metadata updates (optional)"),
             ]),
             tool("doxus_delete_document", "Delete a workspace document", &[
                 param("id", "string", "Document ID"),
+                param_opt("project", "string", "Target project name (required if not internal workspace)"),
             ]),
             tool("doxus_list_workspace_documents", "List workspace documents", &[
+                param_opt("project", "string", "Project name"),
                 param_opt("doc_type", "string", "Filter by type"),
                 param_opt("status", "string", "Filter by status"),
             ]),
             tool("doxus_apply_template", "Apply a template to create a document with frontmatter auto-generated", &[
                 param("template", "string", "Template name (use doxus_list_templates to discover)"),
+                param_opt("project", "string", "Target project name"),
                 param_opt("variables", "object", "Template variables (use doxus_get_template to see required variables)"),
             ]),
             tool("doxus_list_templates", "List all available templates (builtin + custom). Returns name and description only — use doxus_get_template for content and variables.", &[]),

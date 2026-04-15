@@ -434,7 +434,7 @@ fn handle_workspace(conn: &rusqlite::Connection, action: WorkspaceAction) -> Res
     match action {
         WorkspaceAction::List => {
             let mut stmt = conn.prepare(
-                "SELECT name, description FROM workspaces ORDER BY name",
+                "SELECT name, display_name FROM projects WHERE source_type='workspace' ORDER BY name",
             )?;
             let rows = stmt.query_map([], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
@@ -447,13 +447,16 @@ fn handle_workspace(conn: &rusqlite::Connection, action: WorkspaceAction) -> Res
             }
         }
         WorkspaceAction::Create { name, description } => {
+            let display_name = description.unwrap_or_else(|| name.clone());
+            // CLI의 경우 실행 디렉토리 기준 .doxus/workspace/{name} 사용이 바람직함
+            let ws_path = std::env::current_dir()?.join(".doxus").join("workspace").join(&name);
             conn.execute(
-                "INSERT INTO workspaces(name, description, created_at, updated_at)
-                 VALUES (?1, ?2, unixepoch(), unixepoch())",
-                rusqlite::params![name, description],
+                "INSERT INTO projects(name, display_name, path, source_type, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 'workspace', unixepoch(), unixepoch())",
+                rusqlite::params![name, display_name, ws_path.to_string_lossy().to_string()],
             )
             .context("failed to create workspace")?;
-            println!("Created workspace '{name}'");
+            println!("Created workspace '{name}' at {:?}", ws_path);
         }
     }
     Ok(())
@@ -595,7 +598,7 @@ mod tests {
         .unwrap();
 
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM workspaces WHERE name='my-ws'", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM projects WHERE name='my-ws' AND source_type='workspace'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1);
 
@@ -613,7 +616,7 @@ mod tests {
         .unwrap();
 
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM workspaces WHERE name='bare-ws'", [], |r| r.get(0))
+            .query_row("SELECT COUNT(*) FROM projects WHERE name='bare-ws' AND source_type='workspace'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1);
     }

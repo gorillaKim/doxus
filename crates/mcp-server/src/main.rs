@@ -47,7 +47,7 @@ async fn main() -> Result<()> {
     });
     let plugin_manager = std::sync::Arc::new(plugin_manager);
 
-    let sync_handle = spawn_sync_loop(sync_conn, plugin_manager, interval_secs);
+    let sync_handle = spawn_sync_loop(sync_conn, Arc::clone(&plugin_manager), interval_secs);
 
     // Attempt to initialize OnnxEmbedder via shared path resolution; fall back gracefully.
     let embedder: Option<std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider>> =
@@ -70,7 +70,7 @@ async fn main() -> Result<()> {
     let plugins_dir = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".doxus/plugins");
-    let server = McpServer::new(conn, embedder, plugins_dir);
+    let server = McpServer::new(conn, embedder, Arc::clone(&plugin_manager), plugins_dir);
 
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
@@ -96,7 +96,7 @@ async fn main() -> Result<()> {
                 let response = match serde_json::from_str::<McpRequest>(&line) {
                     Ok(req) => {
                         let id = req.id.clone();
-                        server.dispatch(&req.method, id, req.params.as_ref())
+                        server.dispatch(&req.method, id, req.params.as_ref()).await
                     }
                     Err(e) => McpResponse::err(json!(null), -32700, format!("parse error: {e}")),
                 };
