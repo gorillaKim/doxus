@@ -88,7 +88,7 @@ pub fn spawn_background_reader(
 
         // 사이드카 종료 시 대기 중인 모든 세션 해제
         if let Ok(mut pending) = pending.lock() {
-            for (sid, tx) in pending.drain() {
+            for (_sid, tx) in pending.drain() {
                 let _ = tx.send(false);
             }
         }

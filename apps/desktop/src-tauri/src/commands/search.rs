@@ -1,16 +1,16 @@
 use doxus_core::search::{SearchEngine, SearchQuery};
 
+#[cfg(test)]
 /// Index all active projects using their registered plugin. Returns count of indexed documents.
-pub(crate) fn run_reindex(conn: &rusqlite::Connection) -> Result<usize, String> {
-    use doxus_plugin_obsidian::ObsidianPlugin;
-    use doxus_plugin_sdk::{DocSource, FetchAllOpts, PluginConfig, PluginSecrets};
+pub(crate) fn run_reindex(conn: &rusqlite::Connection, plugin_manager: &doxus_core::plugin::PluginManager) -> Result<usize, String> {
+    use doxus_plugin_sdk::{FetchAllOpts, PluginConfig, PluginSecrets};
 
     let mut stmt = conn
-        .prepare("SELECT id, name, path FROM projects WHERE status = 'active'")
+        .prepare("SELECT id, name, path, COALESCE(source_type, 'obsidian') FROM projects WHERE status = 'active'")
         .map_err(|e| e.to_string())?;
 
-    let projects: Vec<(i64, String, String)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+    let projects: Vec<(i64, String, String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
@@ -23,8 +23,11 @@ pub(crate) fn run_reindex(conn: &rusqlite::Connection) -> Result<usize, String> 
         .build()
         .map_err(|e: std::io::Error| e.to_string())?;
 
-    for (project_id, name, path) in projects {
-        let mut plugin = ObsidianPlugin::new();
+    for (project_id, name, path, source_type) in projects {
+        let plugin_id = doxus_core::plugin::PluginManager::normalize_id(&source_type);
+        let mut plugin = plugin_manager.get_source(&plugin_id)
+            .ok_or_else(|| format!("플러그인을 찾을 수 없습니다 ({plugin_id})"))?;
+
         let mut config = PluginConfig::default();
         config.fields.insert("path".to_string(), serde_json::json!(path));
 
@@ -210,7 +213,13 @@ mod tests {
             .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
             .unwrap();
 
-        let indexed = super::run_reindex(&conn).unwrap();
+        let mut plugin_manager = doxus_core::plugin::PluginManager::new(dir.path().to_path_buf());
+        let plugin_id = doxus_core::plugin::PluginManager::normalize_id("obsidian");
+        plugin_manager.register_factory(&plugin_id, || {
+            Box::new(doxus_plugin_obsidian::ObsidianPlugin::new())
+        });
+
+        let indexed = super::run_reindex(&conn, &plugin_manager).unwrap();
         assert!(indexed >= 1, "at least 1 document should be indexed");
 
         let count: i64 = conn
@@ -312,6 +321,16 @@ mod tests {
         let conn = make_conn();
         let err = super::get_document_content_impl(&conn, "/nonexistent.md").unwrap_err();
         assert!(err.contains("문서를 찾을 수 없음"));
+    }
+
+    #[test]
+    fn test_list_installed_plugins() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let plugins_dir = std::path::PathBuf::from(&home).join(".doxus/plugins");
+        let mgr = doxus_core::plugin::PluginManager::new(plugins_dir);
+        let list = mgr.list_installed().unwrap();
+        println!("Installed plugins: {:?}", list);
+        // We don't assert on specific plugins because environment varies, but it should not error
     }
 
     #[test]
@@ -531,7 +550,7 @@ pub async fn index_project(
     state: tauri::State<'_, crate::AppState>,
     name: String,
 ) -> Result<serde_json::Value, String> {
-    use doxus_plugin_sdk::{DocSource, FetchAllOpts, PluginConfig, PluginSecrets};
+    use doxus_plugin_sdk::{FetchAllOpts, PluginConfig, PluginSecrets};
 
     let (project_id, path, source_type, config_json_str) = {
         let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
@@ -551,8 +570,10 @@ pub async fn index_project(
 
     match source_type.as_str() {
         "confluence" => {
-            use doxus_plugin_confluence::ConfluencePlugin;
-            let mut plugin = ConfluencePlugin::new();
+            let plugin_id = doxus_core::plugin::PluginManager::normalize_id("confluence");
+            let mut plugin = state.plugin_manager.get_source(&plugin_id)
+                .ok_or_else(|| format!("Confluence 플러그인을 찾을 수 없습니다 ({plugin_id})"))?;
+            
             let mut config = PluginConfig::default();
             if let Some(base_url) = config_map.get("base_url").and_then(|v| v.as_str()) {
                 config.fields.insert("base_url".to_string(), serde_json::json!(base_url));
@@ -625,8 +646,10 @@ pub async fn index_project(
             }
         }
         "github" => {
-            use doxus_plugin_github::GitHubPlugin;
-            let mut plugin = GitHubPlugin::new();
+            let plugin_id = doxus_core::plugin::PluginManager::normalize_id("github");
+            let mut plugin = state.plugin_manager.get_source(&plugin_id)
+                .ok_or_else(|| format!("GitHub 플러그인을 찾을 수 없습니다 ({plugin_id})"))?;
+
             let mut config = PluginConfig::default();
             if let Some(repo) = config_map.get("repo").and_then(|v| v.as_str()) {
                 config.fields.insert("repo".to_string(), serde_json::json!(repo));
@@ -667,8 +690,10 @@ pub async fn index_project(
             }
         }
         _ => {
-            use doxus_plugin_obsidian::ObsidianPlugin;
-            let mut plugin = ObsidianPlugin::new();
+            let plugin_id = doxus_core::plugin::PluginManager::normalize_id(&source_type);
+            let mut plugin = state.plugin_manager.get_source(&plugin_id)
+                .ok_or_else(|| format!("플러그인을 찾을 수 없습니다 ({plugin_id})"))?;
+
             let mut config = PluginConfig::default();
             config.fields.insert("path".to_string(), serde_json::json!(path));
             plugin.initialize(config, PluginSecrets::default()).await
@@ -710,8 +735,7 @@ pub async fn index_project(
 pub async fn trigger_reindex(
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<serde_json::Value, String> {
-    use doxus_plugin_obsidian::ObsidianPlugin;
-    use doxus_plugin_sdk::{DocSource, FetchAllOpts, PluginConfig, PluginSecrets};
+    use doxus_plugin_sdk::{FetchAllOpts, PluginConfig, PluginSecrets};
 
     // active 프로젝트 목록만 락으로 가져온 후 즉시 해제
     let projects: Vec<(i64, String, String)> = {
@@ -728,7 +752,10 @@ pub async fn trigger_reindex(
 
     let mut total = 0usize;
     for (project_id, name, path) in projects {
-        let mut plugin = ObsidianPlugin::new();
+        let plugin_id = doxus_core::plugin::PluginManager::normalize_id("obsidian");
+        let mut plugin = state.plugin_manager.get_source(&plugin_id)
+            .ok_or_else(|| format!("플러그인을 찾을 수 없습니다 ({plugin_id})"))?;
+
         let mut config = PluginConfig::default();
         config.fields.insert("path".to_string(), serde_json::json!(path));
 
@@ -833,7 +860,7 @@ pub async fn get_document_content(
     project_name: Option<String>,
     force_refresh: Option<bool>,
 ) -> Result<serde_json::Value, String> {
-    use doxus_plugin_sdk::{DocSource, PluginConfig, PluginSecrets, SourceDocId};
+    use doxus_plugin_sdk::{PluginConfig, PluginSecrets, SourceDocId};
 
     // project_name이 있으면 플러그인을 통해 실시간으로 가져옴
     if let Some(ref pname) = project_name {
@@ -855,8 +882,7 @@ pub async fn get_document_content(
         match source_type.as_str() {
             "confluence" => {
                 use doxus_core::cache::ContentCache;
-                use doxus_plugin_confluence::ConfluencePlugin;
-
+    
                 let force = force_refresh.unwrap_or(false);
                 // TTL은 plugin_kv["com.doxus.confluence"]["settings"]["cache_ttl_minutes"]에서 읽음
                 // None = 캐시 비활성화 (opt-in), 최소 10분
@@ -895,7 +921,10 @@ pub async fn get_document_content(
                     }
                 }
 
-                let mut plugin = ConfluencePlugin::new();
+                let plugin_id = doxus_core::plugin::PluginManager::normalize_id("confluence");
+                let mut plugin = state.plugin_manager.get_source(&plugin_id)
+                    .ok_or_else(|| format!("Confluence 플러그인을 찾을 수 없습니다 ({plugin_id})"))?;
+
                 let mut config = PluginConfig::default();
                 if let Some(base_url) = config_map.get("base_url").and_then(|v| v.as_str()) {
                     config.fields.insert("base_url".to_string(), serde_json::json!(base_url));
@@ -953,9 +982,12 @@ pub async fn get_document_content(
                 }));
             }
             "github" => {
-                use doxus_plugin_github::GitHubPlugin;
-                let mut plugin = GitHubPlugin::new();
+                let plugin_id = doxus_core::plugin::PluginManager::normalize_id("github");
+                let mut plugin = state.plugin_manager.get_source(&plugin_id)
+                    .ok_or_else(|| format!("GitHub 플러그인을 찾을 수 없습니다 ({plugin_id})"))?;
+
                 let mut config = PluginConfig::default();
+
                 if let Some(repo) = config_map.get("repo").and_then(|v| v.as_str()) {
                     config.fields.insert("repo".to_string(), serde_json::json!(repo));
                 }
@@ -989,8 +1021,10 @@ pub async fn get_document_content(
             }
             _ => {
                 // Obsidian/Workspace: 로컬 파일 직접 읽기 (워크스페이스도 같은 경로)
-                use doxus_plugin_obsidian::ObsidianPlugin;
-                let mut plugin = ObsidianPlugin::new();
+                let plugin_id = doxus_core::plugin::PluginManager::normalize_id(&source_type);
+                let mut plugin = state.plugin_manager.get_source(&plugin_id)
+                    .ok_or_else(|| format!("플러그인을 찾을 수 없습니다 ({plugin_id})"))?;
+
                 let mut config = PluginConfig::default();
                 config.fields.insert("path".to_string(), serde_json::json!(path));
                 plugin.initialize(config, PluginSecrets::default()).await

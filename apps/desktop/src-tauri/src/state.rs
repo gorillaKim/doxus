@@ -44,9 +44,14 @@ impl AppState {
                 }
             }
         }
+        let mut plugin_manager = PluginManager::new(plugins_dir.clone());
+        plugin_manager.register_factory(&PluginManager::normalize_id("obsidian"), || {
+            Box::new(doxus_plugin_obsidian::ObsidianPlugin::new())
+        });
+
         Self {
             conn: Arc::new(Mutex::new(conn)),
-            plugin_manager: PluginManager::new(plugins_dir.clone()),
+            plugin_manager,
             plugins_dir,
             oauth_pending: Mutex::new(HashMap::new()),
             embedder,

@@ -2,7 +2,7 @@ use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use doxus_core::document::{parse_sections, replace_section, insert_section_after, delete_section};
 use doxus_core::workspace::{
-    ensure_default_workspace, get_workspace_project, WorkspaceProject,
+    ensure_default_workspace, get_workspace_project,
 };
 
 fn sha256_hex(s: &str) -> String {
@@ -50,13 +50,9 @@ fn resolve_project_id(conn: &Connection, workspace_id: Option<i64>) -> Result<i6
     }
 }
 
-#[tauri::command]
-pub async fn list_workspace_documents(
-    state: tauri::State<'_, crate::AppState>,
-    workspace_id: Option<i64>,
-) -> Result<serde_json::Value, String> {
-    let conn = state.conn.lock().map_err(|e| e.to_string())?;
-    let pid = resolve_project_id(&conn, workspace_id)?;
+pub fn 
+ list_workspace_documents_impl(conn: &Connection, workspace_id: Option<i64>) -> Result<Vec<serde_json::Value>, String> {
+    let pid = resolve_project_id(conn, workspace_id)?;
 
     let mut stmt = conn
         .prepare(
@@ -82,24 +78,39 @@ pub async fn list_workspace_documents(
         .filter_map(|r| r.ok())
         .collect();
 
-    Ok(serde_json::json!(docs))
+    Ok(docs)
 }
 
 #[tauri::command]
-pub async fn create_workspace_document(
+pub async fn list_workspace_documents(
     state: tauri::State<'_, crate::AppState>,
-    title: String,
-    template_id: Option<String>,
     workspace_id: Option<i64>,
 ) -> Result<serde_json::Value, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
-    let pid = resolve_project_id(&conn, workspace_id)?;
+    let docs = list_workspace_documents_impl(&conn, workspace_id)?;
+    Ok(serde_json::json!(docs))
+}
+
+pub fn create_workspace_document_impl(
+    conn: &Connection,
+    title: String,
+    template_id: Option<String>,
+    workspace_id: Option<i64>,
+    base_path: &std::path::Path,
+) -> Result<serde_json::Value, String> {
+    let pid = resolve_project_id(conn, workspace_id)?;
 
     // 프로젝트 존재 확인
     let project_path: Option<String> = conn
         .query_row("SELECT path FROM projects WHERE id=?1", [pid], |r| r.get(0))
         .ok();
-    let project_path = project_path.ok_or_else(|| format!("프로젝트를 찾을 수 없습니다: id={pid}"))?;
+
+    // 만약 프로젝트 경로가 비어있으면(신규 생성 등) base_path 하위로 지정
+    let project_path = project_path.unwrap_or_else(|| {
+        let name: String = conn.query_row("SELECT name FROM projects WHERE id=?1", [pid], |r| r.get(0)).unwrap_or_else(|_| "default".into());
+        base_path.join(format!("ws-{}", name)).to_string_lossy().to_string()
+    });
+
 
     // source_doc_id 생성
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -110,7 +121,7 @@ pub async fn create_workspace_document(
     let source_doc_id = file_name.clone();
 
     // 템플릿 내용 결정: DB 템플릿 우선, 없으면 빌트인
-    let initial_content = resolve_template_content(&conn, template_id.as_deref());
+    let initial_content = resolve_template_content(conn, template_id.as_deref());
     let content_hash = sha256_hex(&initial_content);
     let doc_type = template_id_to_doc_type(template_id.as_deref());
 
@@ -135,15 +146,32 @@ pub async fn create_workspace_document(
 
     let doc_id = conn.last_insert_rowid();
 
-    // 즉시 재인덱싱 (비동기 백그라운드)
-    enqueue_reindex(state.inner(), doc_id);
-
     Ok(serde_json::json!({
         "id": doc_id,
         "title": title,
         "created_at": now,
         "content_preview": initial_content.chars().take(100).collect::<String>(),
     }))
+}
+
+#[tauri::command]
+pub async fn create_workspace_document(
+    state: tauri::State<'_, crate::AppState>,
+    title: String,
+    template_id: Option<String>,
+    workspace_id: Option<i64>,
+) -> Result<serde_json::Value, String> {
+    let base_path = state.plugins_dir.parent().unwrap_or(&state.plugins_dir);
+    let doc = {
+        let conn = state.conn.lock().map_err(|e| e.to_string())?;
+        create_workspace_document_impl(&conn, title, template_id, workspace_id, base_path)?
+    };
+
+    // 즉시 재인덱싱 (비동기 백그라운드)
+    let doc_id = doc["id"].as_i64().unwrap_or(0);
+    enqueue_reindex(state.inner(), doc_id);
+
+    Ok(doc)
 }
 
 #[tauri::command]
@@ -177,18 +205,24 @@ pub async fn update_workspace_document(
     Ok(serde_json::json!({ "ok": true }))
 }
 
-#[tauri::command]
-pub async fn delete_workspace_document(
-    state: tauri::State<'_, crate::AppState>,
-    id: i64,
-) -> Result<serde_json::Value, String> {
-    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+pub fn 
+ delete_workspace_document_impl(conn: &Connection, id: i64) -> Result<(), String> {
     let affected = conn
         .execute("DELETE FROM documents WHERE id=?1", [id])
         .map_err(|e| e.to_string())?;
     if affected == 0 {
         return Err(format!("문서를 찾을 수 없습니다: id={id}"));
     }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_workspace_document(
+    state: tauri::State<'_, crate::AppState>,
+    id: i64,
+) -> Result<serde_json::Value, String> {
+    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    delete_workspace_document_impl(&conn, id)?;
     Ok(serde_json::json!({ "ok": true }))
 }
 
@@ -654,7 +688,7 @@ fn sync_document_to_file(conn: &Connection, doc_id: i64, content: &str) {
 /// 즉시 재인덱싱 요청 (백그라운드 tokio::spawn)
 fn enqueue_reindex(state: &crate::AppState, doc_id: i64) {
     let conn_arc = state.conn.clone();
-    let embedder = state.embedder.clone();
+    let _embedder = state.embedder.clone();
     tokio::spawn(async move {
         let result = tokio::task::spawn_blocking(move || {
             let conn = conn_arc.lock().map_err(|e| e.to_string())?;
