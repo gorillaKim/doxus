@@ -62,3 +62,6 @@ tempfile = "3"
 wiremock = { workspace = true }
 mockito = "1"
 serial_test = "3"
+
+[[test]]
+name = "wasm_confluence_refresh_test"
