@@ -1,8 +1,10 @@
-/target
+**/target/
 *.onnx
-node_modules/
-dist/
+**/node_modules/
+**/dist/
 !apps/desktop/dist/
 .DS_Store
 .omc/
 .claude/worktrees/
+**/Cargo.lock
+!/Cargo.lock
