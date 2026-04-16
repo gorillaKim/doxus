@@ -413,18 +413,6 @@ pub async fn remove_project(
     name: String,
 ) -> Result<serde_json::Value, String> {
     let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
-    // 기본 워크스페이스는 삭제 금지 (비활성화는 status 변경으로만)
-    let is_default_workspace: bool = conn
-        .query_row(
-            "SELECT COALESCE(is_default, 0) FROM projects WHERE name = ?1 AND source_type = 'workspace'",
-            rusqlite::params![name],
-            |r| r.get::<_, i64>(0),
-        )
-        .map(|v| v == 1)
-        .unwrap_or(false);
-    if is_default_workspace {
-        return Err("기본 워크스페이스는 삭제할 수 없습니다. 비활성화만 가능합니다.".to_string());
-    }
     let affected = conn.execute(
         "DELETE FROM projects WHERE name = ?1",
         rusqlite::params![name],
@@ -444,84 +432,160 @@ pub async fn search_documents(
     source_types: Option<Vec<String>>,
     project_names: Option<Vec<String>>,
 ) -> Result<serde_json::Value, String> {
-    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
-
-    // source_types / project_names → project_ids 변환
-    let mut filter_ids: std::collections::HashSet<i64> = std::collections::HashSet::new();
-    let mut has_filter = false;
-
-    if let Some(ref types) = source_types {
-        if !types.is_empty() {
-            has_filter = true;
-            let placeholders = types.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
-            let sql = format!("SELECT id FROM projects WHERE COALESCE(source_type,'obsidian') IN ({}) AND status='active'", placeholders);
-            let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-            let params: Vec<&dyn rusqlite::ToSql> = types.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
-            let ids: Vec<i64> = stmt.query_map(params.as_slice(), |r| r.get(0))
-                .map_err(|e| e.to_string())?
-                .filter_map(|r| r.ok()).collect();
-            filter_ids.extend(ids);
+    // 1. Resolve filters into project IDs in a scoped block
+    let filter_ids: Vec<i64> = {
+        let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ids = std::collections::HashSet::new();
+        
+        if let Some(ref types) = source_types {
+            if !types.is_empty() {
+                let placeholders = types.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
+                let sql = format!("SELECT id FROM projects WHERE COALESCE(source_type,'obsidian') IN ({}) AND status='active'", placeholders);
+                if let Ok(mut stmt) = conn.prepare(&sql) {
+                    let params: Vec<&dyn rusqlite::ToSql> = types.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+                    if let Ok(rows) = stmt.query_map(params.as_slice(), |r| r.get(0)) {
+                        for id in rows.flatten() {
+                            ids.insert(id);
+                        }
+                    }
+                }
+            }
         }
-    }
-    if let Some(ref names) = project_names {
-        if !names.is_empty() {
-            has_filter = true;
-            let placeholders = names.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
-            let sql = format!("SELECT id FROM projects WHERE name IN ({}) AND status='active'", placeholders);
-            let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-            let params: Vec<&dyn rusqlite::ToSql> = names.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
-            let ids: Vec<i64> = stmt.query_map(params.as_slice(), |r| r.get(0))
-                .map_err(|e| e.to_string())?
-                .filter_map(|r| r.ok()).collect();
-            filter_ids.extend(ids);
+        
+        if let Some(ref names) = project_names {
+            if !names.is_empty() {
+                let placeholders = names.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
+                let sql = format!("SELECT id FROM projects WHERE name IN ({}) AND status='active'", placeholders);
+                if let Ok(mut stmt) = conn.prepare(&sql) {
+                    let params: Vec<&dyn rusqlite::ToSql> = names.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+                    if let Ok(rows) = stmt.query_map(params.as_slice(), |r| r.get(0)) {
+                        for id in rows.flatten() {
+                            ids.insert(id);
+                        }
+                    }
+                }
+            }
         }
-    }
+        ids.into_iter().collect()
+    };
 
-    let engine = SearchEngine::new(&conn);
+    let has_filter = source_types.is_some() || project_names.is_some();
+
+    let engine = SearchEngine::with_embedder(state.conn.clone(), state.embedder.clone());
     let mut q = SearchQuery::new(&query).with_limit(limit.unwrap_or(20));
     if has_filter {
-        q = q.with_projects(filter_ids.into_iter().collect());
+        q = q.with_projects(filter_ids);
     }
-    let hits = engine.search(&q).map_err(|e| e.to_string())?;
-    // document_id 목록으로 project_name / source_type 일괄 조회
+    let hits = engine.search_async(&q).await.map_err(|e| e.to_string())?;
+    
+    // document_id 목록으로 project_name / source_type / metadata 일괄 조회
     let doc_ids: Vec<i64> = hits.iter().map(|h| h.document_id).collect();
-    let mut project_info: std::collections::HashMap<i64, (String, String, String)> = std::collections::HashMap::new();
-    for chunk in doc_ids.chunks(50) {
-        let placeholders = chunk.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
-        let sql = format!(
-            "SELECT d.id, p.name, COALESCE(p.source_type, 'obsidian'), d.source_doc_id \
-             FROM documents d JOIN projects p ON d.project_id = p.id \
-             WHERE d.id IN ({})",
-            placeholders
-        );
-        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-        let params: Vec<&dyn rusqlite::ToSql> = chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
-        let rows = stmt.query_map(params.as_slice(), |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
-        }).map_err(|e| e.to_string())?;
-        for row in rows.filter_map(|r| r.ok()) {
-            project_info.insert(row.0, (row.1, row.2, row.3));
+    
+    // 3. Document metadata batch fetching (scoped lock)
+    let mut doc_info: std::collections::HashMap<i64, (String, String, String, Vec<String>, i64, serde_json::Value, String)> = std::collections::HashMap::new();
+    {
+        let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+        for chunk in doc_ids.chunks(50) {
+            let placeholders = chunk.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT d.id, p.name, COALESCE(p.source_type, 'obsidian'), d.source_doc_id, \
+                        COALESCE(d.updated_at, d.last_indexed), COALESCE(d.metadata_json, '{{}}'), p.path \
+                 FROM documents d JOIN projects p ON d.project_id = p.id \
+                 WHERE d.id IN ({})",
+                placeholders
+            );
+            let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+            let params: Vec<&dyn rusqlite::ToSql> = chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+            let rows = stmt.query_map(params.as_slice(), |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, i64>(4).unwrap_or(0),
+                    r.get::<_, String>(5).unwrap_or_else(|_| "{}".to_string()),
+                    r.get::<_, String>(6).unwrap_or_default(),
+                ))
+            }).map_err(|e| e.to_string())?;
+
+            for row_res in rows {
+                if let Ok(row) = row_res {
+                    let doc_id = row.0;
+                    let project_name = row.1;
+                    let source_type = row.2;
+                    let source_doc_id = row.3;
+                    let updated_at = row.4;
+                    let metadata: serde_json::Value = serde_json::from_str(&row.5).unwrap_or(serde_json::json!({}));
+                    let project_path = row.6;
+                    
+                    // Tags look up
+                    let mut tag_stmt = conn.prepare("SELECT tag FROM document_tags WHERE document_id = ?1").map_err(|e| e.to_string())?;
+                    let tags: Vec<String> = tag_stmt.query_map([doc_id], |tr| tr.get(0)).map_err(|e| e.to_string())?
+                        .filter_map(|tr| tr.ok()).collect();
+
+                    doc_info.insert(doc_id, (project_name, source_type, source_doc_id, tags, updated_at, metadata, project_path));
+                }
+            }
         }
     }
 
     let hits_json: Vec<serde_json::Value> = hits
         .into_iter()
         .map(|h| {
-            let (project_name, source_type, source_doc_id) = project_info
-                .get(&h.document_id)
-                .cloned()
-                .unwrap_or_else(|| ("".to_string(), "".to_string(), "".to_string()));
+            let info = doc_info.get(&h.document_id);
+            let project_name = info.map(|i| i.0.clone()).unwrap_or_default();
+            let source_type = info.map(|i| i.1.clone()).unwrap_or_default();
+            let source_doc_id = info.map(|i| i.2.clone()).unwrap_or_default();
+            let tags = info.map(|i| i.3.clone()).unwrap_or_default();
+            let updated_at = info.map(|i| i.4).unwrap_or(0);
+            let metadata = info.map(|i| i.5.clone()).unwrap_or(serde_json::json!({}));
+            let project_path = info.map(|i| i.6.as_str()).unwrap_or("");
+
+            // Normalize file_path for UI tree: strip project_path if it's an absolute path
+            // Also strip "virtual root" if it matches name part (e.g. '컨플/테크스펙' -> strip '테크스펙/')
+            let display_file_path = if let Some(ref path) = h.file_path {
+                let mut p = path.as_str();
+                
+                // 1. Absolute path stripping (Local projects)
+                if !project_path.is_empty() && p.starts_with(project_path) {
+                    p = p.strip_prefix(project_path).unwrap_or(p);
+                }
+
+                p = p.trim_start_matches('/');
+
+                // 2. Virtual root stripping (Web/Confluence projects)
+                // Project '컨플/테크스펙' should strip '테크스펙/' from the start of its virtual paths
+                if project_name.contains('/') {
+                    if let Some(virtual_root) = project_name.split('/').last() {
+                        if !virtual_root.is_empty() && p.starts_with(virtual_root) {
+                            let next = p.strip_prefix(virtual_root).unwrap_or(p);
+                            if next.starts_with('/') {
+                                p = next.trim_start_matches('/');
+                            }
+                        }
+                    }
+                }
+
+                p.to_string()
+            } else {
+                source_doc_id.clone()
+            };
+
             serde_json::json!({
                 "document_id": h.document_id,
                 "chunk_id": h.chunk_id,
                 "title": h.title,
-                "file_path": h.file_path,
+                "file_path": display_file_path,
                 "source_doc_id": source_doc_id,
                 "heading_path": h.heading_path,
-                "snippet": h.snippet,
+                "snippet": h.snippet.as_deref().unwrap_or_default(),
+                "context_content": h.context_content,
                 "score": h.score,
                 "project_name": project_name,
                 "source_type": source_type,
+                "tags": tags,
+                "updated_at": updated_at,
+                "metadata": metadata,
             })
         })
         .collect();
@@ -1258,22 +1322,59 @@ pub fn reindex_if_stale(
 
 pub fn list_all_documents_impl(conn: &rusqlite::Connection) -> Result<serde_json::Value, String> {
     let mut stmt = conn.prepare(
-        "SELECT MIN(d.id), MIN(d.title), MIN(d.source_doc_id), p.name, COALESCE(p.source_type, 'obsidian'), MIN(d.file_path)
+        "SELECT MIN(d.id), MIN(d.title), MIN(d.source_doc_id), p.name, COALESCE(p.source_type, 'obsidian'), MIN(d.file_path), p.path
          FROM documents d
          JOIN projects p ON d.project_id = p.id
          WHERE p.status = 'active'
-         GROUP BY d.source_doc_id, d.project_id
+         GROUP BY d.source_doc_id, d.project_id, p.name, p.source_type, p.path
          ORDER BY p.name, MIN(d.title)"
     ).map_err(|e| e.to_string())?;
     let docs: Vec<_> = stmt
         .query_map([], |r| {
+            let document_id = r.get::<_, i64>(0)?;
+            let title = r.get::<_, Option<String>>(1)?.unwrap_or_else(|| "(제목 없음)".to_string());
+            let source_doc_id = r.get::<_, String>(2)?;
+            let project_name = r.get::<_, String>(3)?;
+            let source_type = r.get::<_, String>(4)?;
+            let file_path = r.get::<_, Option<String>>(5)?;
+            let project_path = r.get::<_, String>(6).unwrap_or_default();
+
+            // Normalize file_path for UI tree: strip project_path if it's an absolute path
+            // Also strip "virtual root" if it matches name part (e.g. '컨플/테크스펙' -> strip '테크스펙/')
+            let display_file_path = if let Some(ref path) = file_path {
+                let mut p = path.as_str();
+                
+                // 1. Absolute path stripping (Local projects)
+                if !project_path.is_empty() && p.starts_with(&project_path) {
+                    p = p.strip_prefix(&project_path).unwrap_or(p);
+                }
+
+                p = p.trim_start_matches('/');
+
+                // 2. Virtual root stripping (Web/Confluence projects)
+                if project_name.contains('/') {
+                    if let Some(virtual_root) = project_name.split('/').last() {
+                        if !virtual_root.is_empty() && p.starts_with(virtual_root) {
+                            let next = p.strip_prefix(virtual_root).unwrap_or(p);
+                            if next.starts_with('/') {
+                                p = next.trim_start_matches('/');
+                            }
+                        }
+                    }
+                }
+
+                p.to_string()
+            } else {
+                source_doc_id.clone()
+            };
+
             Ok(serde_json::json!({
-                "document_id": r.get::<_, i64>(0)?,
-                "title": r.get::<_, Option<String>>(1)?.unwrap_or_else(|| "(제목 없음)".to_string()),
-                "source_doc_id": r.get::<_, String>(2)?,
-                "project_name": r.get::<_, String>(3)?,
-                "source_type": r.get::<_, String>(4)?,
-                "file_path": r.get::<_, Option<String>>(5)?,
+                "document_id": document_id,
+                "title": title,
+                "source_doc_id": source_doc_id,
+                "project_name": project_name,
+                "source_type": source_type,
+                "file_path": display_file_path,
             }))
         })
         .map_err(|e| e.to_string())?
