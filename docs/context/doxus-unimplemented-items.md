@@ -37,7 +37,7 @@ doxus는 **Phase 1 수준의 인프라**가 갖춰진 상태다. Phase 2-8의 �
 | 4 | 플러그인 마켓 | **미시작** |
 | 5 | GitHub 플러그인 | **stub** |
 | 6 | 동기화 스케줄러 | **미시작** |
-| 7 | 워크스페이스 + 템플릿 | **stub** |
+| 7 | 워크스페이스 + 템플릿 | **❌ 제거됨** | 아키텍처 단순화를 위해 폐지 |
 | 8 | Desktop UI 고도화 | **백엔드 완료 대기 중** |
 
 ---
@@ -86,7 +86,7 @@ doxus는 **Phase 1 수준의 인프라**가 갖춰진 상태다. Phase 2-8의 �
 **파일:** `crates/mcp-server/src/lib.rs` (2,454줄)
 
 **완전 구현된 도구:**
-`doxus_status`, `doxus_list_projects`, `doxus_add_project`, `doxus_remove_project`, `doxus_search`, `doxus_get_document`, `doxus_get_section`, `doxus_get_metadata`, `doxus_get_toc`, `doxus_get_ranking`, `doxus_get_backlinks`, `doxus_get_links`, `doxus_find_related`, `doxus_find_path`, `doxus_get_cluster`, `doxus_create_workspace_document`, `doxus_update_workspace_document`, `doxus_delete_workspace_document`, `doxus_list_workspace_documents`, `doxus_apply_template`, `doxus_diagnose`, `doxus_system_report`
+`doxus_status`, `doxus_list_projects`, `doxus_add_project`, `doxus_remove_project`, `doxus_search`, `doxus_get_document`, `doxus_get_section`, `doxus_get_metadata`, `doxus_get_toc`, `doxus_get_ranking`, `doxus_get_backlinks`, `doxus_get_links`, `doxus_find_related`, `doxus_find_path`, `doxus_get_cluster`, `doxus_diagnose`, `doxus_system_report`
 
 **부분/stub 구현:**
 | 도구 | 상태 | 문제 | 라인 |
@@ -237,7 +237,7 @@ doxus는 **Phase 1 수준의 인프라**가 갖춰진 상태다. Phase 2-8의 �
 | SearchPage.tsx | **작동** | `doxus_search` MCP 도구 사용 |
 | ProjectsPage.tsx | **부분** | 목록 작동, enable/disable stub |
 | SettingsPage.tsx | **Stub** | 설정 영속성 없음 |
-| WorkspacePage.tsx | **TODO** | 라인 23: "TODO 목록" 선언만 있음 |
+| WorkspacePage.tsx | **❌ 제거됨** | Obsidian 플러그인 연동으로 대체 |
 | MarketPage.tsx | **Mock** | 하드코딩된 `MOCK_PLUGINS` 배열, 실제 마켓플레이스 없음 |
 
 **ChatDrawer (에이전트 채팅):**

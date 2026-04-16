@@ -24,7 +24,7 @@ tags:
 |------|------|
 | **핵심 가치** | 로컬 퍼스트 + WASM 플러그인 기반 + 에이전트 친화적 |
 | **데이터 저장** | `~/.doxus/db/nexus.db` (SQLite 단일 파일) |
-| **주요 기능** | 하이브리드 검색(FTS5+sqlite-vec), ONNX 임베딩, 플러그인 마켓, 워크스페이스, 에이전트 sidecar |
+| **주요 기능** | 하이브리드 검색(FTS5+sqlite-vec), ONNX 임베딩, 플러그인 마켓, 에이전트 sidecar |
 | **대상 사용자** | AI 에이전트 + 개발자 |
 
 ---
@@ -85,8 +85,6 @@ tags:
 | **sync/runner.rs** | 343 | SyncRunner, conflict 해결(last-indexed-wins+content_hash), record_conflict |
 | **sync/scheduler.rs** | 126 | SyncScheduler |
 | **db/mod.rs** | 283 | DB 초기화, V1~V10 마이그레이션 자동 적용 |
-| **workspace/mod.rs** | 308 | WorkspaceManager, CRUD |
-| **workspace/template.rs** | 277 | WorkspaceTemplate |
 
 #### `crates/plugin-sdk` — DocSource trait + 공유 타입
 ```rust
@@ -132,7 +130,6 @@ pub trait DocSource: Send + Sync {
 **서브커맨드:**
 - `search`, `add-project`, `remove-project`, `list-projects`
 - `index-project`, `sync-project`, `sync-all`
-- `workspace create/list/delete`
 - `plugin list/info/install/remove/update`
 - `agent start`
 
@@ -213,11 +210,9 @@ WASM 플러그인 로드/실행 검증용 PoC
 | `doxus_plugin_status` | 플러그인 상태 |
 | `doxus_plugin_logs` | 플러그인 로그 |
 
-### 워크스페이스/시스템 (7개)
+### 시스템 및 도움말 (4개)
 | 도구 | 설명 |
 |------|------|
-| `doxus_list_workspace_documents` | 워크스페이스 문서 목록 |
-| `doxus_apply_template` | 워크스페이스 템플릿 적용 |
 | `doxus_onboard` | 신규 프로젝트 온보딩 |
 | `doxus_help` | 도구 설명서 |
 | `doxus_status` | 서버 상태 |
@@ -247,24 +242,22 @@ WASM 플러그인 로드/실행 검증용 PoC
 
 ## Desktop UI (Tauri v2 + React 19)
 
-### Pages (6개)
+### Pages (5개)
 
 | 페이지 | LOC | 기능 |
 |--------|-----|------|
 | **DashboardPage** | ~8.5K | 메인 대시보드, Tauri 이벤트 리스너(sync:progress/complete/error) |
 | **SearchPage** | ~11.4K | 검색 UI, 결과 표시, 하이라이트, 필터 |
 | **ProjectsPage** | ~13.2K | 프로젝트 CRUD, Active/Disabled 토글 |
-| **WorkspacePage** | ~15.0K | 워크스페이스 CRUD, 템플릿 적용, 문서 추가/제거 |
 | **SettingsPage** | ~17.2K | 앱 설정(임베딩 모델, 언어, 테마), localStorage 영속화 |
 | **MarketPage** | ~20.3K | 플러그인 마켓, 검색, 설치, 업데이트 |
 
-### Zustand 스토어 (6개)
+### Zustand 스토어 (5개)
 
 | 스토어 | 역할 |
 |--------|------|
 | `useSearchStore` | 쿼리, 결과, 필터, 하이라이트 |
 | `useProjectStore` | 프로젝트 목록, Active/Disabled 상태 |
-| `useWorkspaceStore` | 현재 워크스페이스, 템플릿, documents CRUD |
 | `usePluginStore` | 설치된 플러그인, 설정 |
 | `useChatStore` | 에이전트 대화 히스토리, ChatDrawer 열림 상태 |
 | `useSettingsStore` | 앱 전역 설정 |
@@ -276,9 +269,6 @@ WASM 플러그인 로드/실행 검증용 PoC
 
 #### 프로젝트 (4개)
 `list_projects`, `add_project`, `remove_project`, `index_project`
-
-#### 워크스페이스 (5개)
-`create_workspace`, `list_workspaces`, `delete_workspace`, `add_document_to_workspace`, `list_workspace_documents`
 
 #### 에이전트 (5개)
 `start_agent_session`, `send_agent_message`, `cancel_agent_session`, `get_agent_history`, `get_cli_info`
@@ -368,7 +358,7 @@ WASM 플러그인 로드/실행 검증용 PoC
 | **Phase 4** | 플러그인 마켓 | ✅ 완료 | UI, 레지스트리, 체크섬 검증 |
 | **Phase 5** | GitHub + 배포 | ✅ 구현 완료 | CI 파이프라인 미완 |
 | **Phase 6** | 동기화 안정화 | ✅ 완료 | retry, backoff, conflict 해결 |
-| **Phase 7** | 워크스페이스 | ✅ 완료 | CRUD, 템플릿 |
+| **Phase 7** | 워크스페이스 | ❌ 제거됨 | 아키텍처 단순화를 위해 폐지 (Obsidian 플러그인으로 대체) |
 | **Phase 8** | Desktop UI 고도화 | ✅ 완료 | Settings 영속화, 이벤트 리스너 |
 
 ---
@@ -378,13 +368,13 @@ WASM 플러그인 로드/실행 검증용 PoC
 | 항목 | 수량 | 비고 |
 |------|------|------|
 | **Cargo 크레이트** | 11개 | core, plugin-sdk, obsidian, confluence, github, cli, mcp-server, agent, extism-poc, + 라이브러리 |
-| **MCP 도구** | 40개 | 모두 `doxus_` prefix |
-| **Tauri 커맨드** | 36개 | 데스크톱 UI ↔ Rust 백엔드 IPC |
-| **DB 마이그레이션** | 10개 | V1~V10, 멱등성 보장 |
+| **MCP 도구** | 32개 | 모두 `doxus_` prefix |
+| **Tauri 커맨드** | 31개 | 데스크톱 UI ↔ Rust 백엔드 IPC |
+| **DB 마이그레이션** | 11개 | V1~V18 (일부 구 테이블 제거 포함) |
 | **Host Function** | 6개 | http_request, log, kv_get/set, progress, secrets_get, content_transform |
 | **플러그인** | 3개 | Obsidian(in-process), Confluence(WASM), GitHub(WASM) |
-| **Desktop Pages** | 6개 | Dashboard, Search, Projects, Workspace, Settings, Market |
-| **Zustand 스토어** | 6개 | Search, Project, Workspace, Plugin, Chat, Settings |
+| **Desktop Pages** | 5개 | Dashboard, Search, Projects, Settings, Market |
+| **Zustand 스토어** | 5개 | Search, Project, Plugin, Chat, Settings |
 | **테스트 파일** | 8개 | 단위/통합, 플러그인, MCP, Tauri |
 
 ---
@@ -447,8 +437,7 @@ retry_with_backoff(
 - ✅ OAuth 2.0 플로우
 - ✅ 플러그인 마켓 레지스트리 + 서명
 - ✅ 동기화 retry/backoff/conflict 해결
-- ✅ 워크스페이스 + 템플릿
-- ✅ Desktop UI (6개 페이지, Zustand 상태 관리)
+- ✅ Desktop UI (5개 페이지, Zustand 상태 관리)
 
 ### 미완료 항목
 - 🔶 GitHub 마켓 배포 CI/CD 파이프라인
