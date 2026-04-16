@@ -444,15 +444,55 @@ impl DocSource for ObsidianPlugin {
         &self,
         title: &str,
         content: &str,
+        folder: Option<&str>,
         metadata: Option<&HashMap<String, serde_json::Value>>,
     ) -> Result<SourceDocId, PluginError> {
         let vault = self.vault()?;
-        let safe_title = title.replace(|c: char| !c.is_alphanumeric() && c != ' ' && c != '-' && c != '_', "");
-        let filename = format!("{}.md", safe_title.trim());
-        let path = vault.join(&filename);
+        
+        // 1. Standardize hierarchical path using SDK utility
+        let segments = doxus_plugin_sdk::path_utils::parse_hierarchical_path(folder, title)?;
+        let folder_segments = if segments.len() > 1 {
+            &segments[..segments.len()-1]
+        } else {
+            &[]
+        };
+        let base_title = segments.last().unwrap();
 
-        if path.exists() {
-            return Err(PluginError::Internal(format!("file already exists: {}", filename)));
+        // 2. Ensure target directory exists
+        let mut target_dir = vault.clone();
+        for segment in folder_segments {
+            target_dir = target_dir.join(segment);
+        }
+        
+        if !target_dir.exists() {
+            std::fs::create_dir_all(&target_dir)
+                .map_err(|e| PluginError::Internal(format!("Failed to create directory: {}", e)))?;
+        }
+
+        // 3. Resolve 'Option B' (Auto-suffixing) for Obsidian
+        let mut attempts = 0;
+        let final_path;
+        let mut current_title = base_title.clone();
+
+        loop {
+            attempts += 1;
+            if attempts > 10 {
+                return Err(PluginError::Internal(format!("Failed to find unique filename for '{}' after 10 attempts", title)));
+            }
+
+            // Sanitize title for filesystem
+            let safe_title = current_title.replace(|c: char| !c.is_alphanumeric() && c != ' ' && c != '-' && c != '_', "");
+            let filename = format!("{}.md", safe_title.trim());
+            let path = target_dir.join(&filename);
+
+            if path.exists() {
+                // Conflict -> suffix and retry (Option B)
+                current_title = format!("{} ({})", base_title, attempts);
+                continue;
+            } else {
+                final_path = path;
+                break;
+            }
         }
 
         // Convert metadata to YAML frontmatter
@@ -481,9 +521,10 @@ impl DocSource for ObsidianPlugin {
             content.to_string()
         };
 
-        std::fs::write(&path, final_content).map_err(|e| PluginError::Internal(e.to_string()))?;
+        std::fs::write(&final_path, final_content).map_err(|e| PluginError::Internal(e.to_string()))?;
 
-        Ok(SourceDocId(filename))
+        let rel_path = final_path.strip_prefix(vault).unwrap_or(&final_path);
+        Ok(SourceDocId(rel_path.to_string_lossy().to_string()))
     }
 
     async fn update_document(
@@ -1049,7 +1090,7 @@ mod tests {
         config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
         plugin.initialize(config, PluginSecrets::default()).await.unwrap();
 
-        let id = plugin.create_document("New Note", "# New Note\nBody content", None).await.unwrap();
+        let id = plugin.create_document("New Note", "# New Note\nBody content", None, None).await.unwrap();
         assert_eq!(id.0, "New Note.md");
         
         let path = dir.path().join("New Note.md");
@@ -1068,7 +1109,7 @@ mod tests {
         config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
         plugin.initialize(config, PluginSecrets::default()).await.unwrap();
 
-        let result = plugin.create_document("Existing", "new content", None).await;
+        let result = plugin.create_document("Existing", "new content", None, None).await;
         assert!(result.is_err());
         if let Err(PluginError::Internal(msg)) = result {
             assert!(msg.contains("exists"));
@@ -1089,7 +1130,7 @@ mod tests {
         metadata.insert("tags".into(), serde_json::json!(["rust", "testing"]));
         metadata.insert("status".into(), serde_json::json!("draft"));
 
-        let id = plugin.create_document("Metadata Test", "Body here", Some(&metadata)).await.unwrap();
+        let id = plugin.create_document("Metadata Test", "Body here", None, Some(&metadata)).await.unwrap();
         assert_eq!(id.0, "Metadata Test.md");
 
         let path = dir.path().join("Metadata Test.md");

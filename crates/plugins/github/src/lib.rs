@@ -4,6 +4,7 @@ use doxus_plugin_sdk::{
     FetchAllOpts, FetchChangesOpts, HealthStatus, PluginConfig, PluginError, PluginKind,
     PluginMetadata, PluginSecrets, RawDocument, SecretValue, SourceDocId,
 };
+use base64::prelude::*;
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -145,6 +146,7 @@ impl GitHubPlugin {
             metadata.insert("relative_path".to_string(), serde_json::json!(rel_path));
         }
 
+        let rel_path = metadata.get("relative_path").and_then(|v| v.as_str()).map(|s| s.to_string());
         RawDocument {
             id: SourceDocId(format!("issue:{}", issue.number)),
             title: Some(issue.title),
@@ -155,7 +157,8 @@ impl GitHubPlugin {
             tags: vec!["issue".into(), issue.state],
             aliases: vec![],
             created_at: None,
-            updated_at, relative_path: metadata.get("relative_path").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            updated_at,
+            relative_path: rel_path,
         }
     }
 
@@ -176,6 +179,7 @@ impl GitHubPlugin {
             metadata.insert("relative_path".to_string(), serde_json::json!(rel_path));
         }
 
+        let rel_path = metadata.get("relative_path").and_then(|v| v.as_str()).map(|s| s.to_string());
         RawDocument {
             id: SourceDocId(format!("wiki:{slug}")),
             title: Some(page.title),
@@ -187,7 +191,7 @@ impl GitHubPlugin {
             aliases: vec![],
             created_at: None,
             updated_at: None,
-            relative_path: metadata.get("relative_path").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            relative_path: rel_path,
         }
     }
 
@@ -204,6 +208,7 @@ impl GitHubPlugin {
             metadata.insert("relative_path".to_string(), serde_json::json!(rel_path));
         }
 
+        let rel_path = metadata.get("relative_path").and_then(|v| v.as_str()).map(|s| s.to_string());
         RawDocument {
             id: SourceDocId(format!("discussion:{}", d.number)),
             title: Some(d.title),
@@ -214,7 +219,8 @@ impl GitHubPlugin {
             tags: vec!["discussion".into()],
             aliases: vec![],
             created_at: None,
-            updated_at, relative_path: metadata.get("relative_path").and_then(|v| v.as_str()).map(|s| s.to_string()),
+            updated_at,
+            relative_path: rel_path,
         }
     }
 
@@ -444,6 +450,93 @@ impl DocSource for GitHubPlugin {
             oauth: false,
             native_search: false,
         }
+    }
+
+    fn supports_write(&self) -> bool {
+        true
+    }
+
+    async fn create_document(
+        &self,
+        title: &str,
+        content: &str,
+        folder: Option<&str>,
+        _metadata: Option<&HashMap<String, serde_json::Value>>,
+    ) -> Result<SourceDocId, PluginError> {
+        let cfg = self.cfg()?;
+        if cfg.token.is_none() {
+            return Err(PluginError::AuthRequired);
+        }
+
+        // 1. Standardize hierarchical path using SDK utility
+        let segments = doxus_plugin_sdk::path_utils::parse_hierarchical_path(folder, title)?;
+        let folder_part = if segments.len() > 1 {
+            segments[..segments.len()-1].join("/")
+        } else {
+            "".to_string()
+        };
+        let base_title = segments.last().unwrap();
+        
+        let mut attempts = 0;
+        let final_path;
+        let mut current_title = base_title.clone();
+
+        // 2. Resolve 'Option B' (Auto-suffixing) for GitHub
+        loop {
+            attempts += 1;
+            if attempts > 10 {
+                return Err(PluginError::Internal(format!("Failed to find unique path for '{}' after 10 attempts", title)));
+            }
+
+            let path = if folder_part.is_empty() {
+                format!("{}.md", current_title)
+            } else {
+                format!("{}/{}.md", folder_part, current_title)
+            };
+
+            // Check if exists
+            let url = format!("{}/repos/{}/{}/contents/{}", cfg.base_url, cfg.owner, cfg.repo, path);
+            let req = self.client.get(&url);
+            let req = self.add_auth(req, cfg.token.as_deref());
+            let resp = req.send().await.map_err(|e| PluginError::NetworkError(e.to_string()))?;
+
+            if resp.status().is_success() {
+                // Already exists -> suffix and retry (Option B)
+                current_title = format!("{} ({})", base_title, attempts);
+                continue;
+            } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
+                // Good to go
+                final_path = path;
+                break;
+            } else {
+                let status = resp.status();
+                return Err(PluginError::NetworkError(format!("Unexpected status checking existence: HTTP {}", status)));
+            }
+        }
+
+        // 3. Create Final Page
+        let url = format!("{}/repos/{}/{}/contents/{}", cfg.base_url, cfg.owner, cfg.repo, final_path);
+        let encoded_content = BASE64_STANDARD.encode(content);
+        
+        let body = serde_json::json!({
+            "message": format!("Create document: {}", title),
+            "content": encoded_content,
+        });
+
+        let req = self.client.put(&url)
+            .json(&body);
+        let req = self.add_auth(req, cfg.token.as_deref());
+        
+        let resp = req.send().await
+            .map_err(|e| PluginError::NetworkError(e.to_string()))?;
+            
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let error_text = resp.text().await.unwrap_or_default();
+            return Err(PluginError::NetworkError(format!("HTTP {}: {}", status, error_text)));
+        }
+        
+        Ok(SourceDocId(final_path))
     }
 
     async fn validate_config(&self, config: &PluginConfig) -> Result<(), PluginError> {
