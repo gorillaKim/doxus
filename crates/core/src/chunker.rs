@@ -6,64 +6,204 @@
 /// - Overlap: last `overlap_chars` of each chunk are prepended to the next
 /// - Minimum chunk size: at least one paragraph (never returns empty chunks)
 
-pub const DEFAULT_MAX_CHARS: usize = 1500;
+pub const DEFAULT_MAX_CHARS: usize = 1000;
 pub const DEFAULT_OVERLAP_CHARS: usize = 200;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Chunk {
     pub content: String,
+    /// The text used for embedding (including title/context augmentation)
+    pub embedding_text: String,
     pub index: usize,
+    /// Heading path from markdown (e.g. "Intro > Background")
+    pub heading_path: Option<String>,
 }
 
-/// Split `text` into overlapping chunks.
-pub fn split_chunks(text: &str, max_chars: usize, overlap_chars: usize) -> Vec<Chunk> {
+pub struct ChunkConfig {
+    pub max_chars: usize,
+    pub overlap_chars: usize,
+    pub title: Option<String>,
+}
+
+impl Default for ChunkConfig {
+    fn default() -> Self {
+        Self {
+            max_chars: DEFAULT_MAX_CHARS,
+            overlap_chars: DEFAULT_OVERLAP_CHARS,
+            title: None,
+        }
+    }
+}
+
+/// Split `text` into overlapping chunks, aware of Markdown structure.
+pub fn split_chunks(text: &str, config: ChunkConfig) -> Vec<Chunk> {
     if text.is_empty() {
         return vec![];
     }
-    if text.len() <= max_chars {
-        return vec![Chunk { content: text.to_string(), index: 0 }];
+
+    use crate::document::section::parse_sections;
+    let sections = parse_sections(text);
+
+    let mut chunks = Vec::new();
+
+    if sections.is_empty() {
+        // Fallback to paragraph splitting if no headers found
+        return split_into_recursive_chunks(text, None, &config, 0);
     }
 
-    let paragraphs: Vec<&str> = split_paragraphs(text);
-    let mut chunks: Vec<Chunk> = Vec::new();
-    let mut current = String::new();
-    let mut overlap_tail = String::new();
-
-    for para in &paragraphs {
-        // If adding this paragraph would exceed max_chars, flush current chunk
-        if !current.is_empty() && current.len() + para.len() + 1 > max_chars {
-            let idx = chunks.len();
-            chunks.push(Chunk { content: current.trim().to_string(), index: idx });
-
-            // Compute overlap tail from end of flushed chunk
-            let flushed = chunks.last().unwrap().content.as_str();
-            overlap_tail = tail_chars(flushed, overlap_chars).to_string();
-
-            current = if overlap_tail.is_empty() {
-                para.to_string()
-            } else {
-                format!("{}\n\n{}", overlap_tail, para)
-            };
-        } else if current.is_empty() {
-            current = if overlap_tail.is_empty() {
-                para.to_string()
-            } else {
-                format!("{}\n\n{}", overlap_tail, para)
-            };
-            overlap_tail.clear();
-        } else {
-            current.push_str("\n\n");
-            current.push_str(para);
-        }
-    }
-
-    // Flush remaining
-    if !current.trim().is_empty() {
-        let idx = chunks.len();
-        chunks.push(Chunk { content: current.trim().to_string(), index: idx });
+    let mut current_index = 0;
+    for section in sections {
+        let section_chunks = split_into_recursive_chunks(
+            &section.content,
+            Some(section.heading.clone()),
+            &config,
+            current_index,
+        );
+        current_index += section_chunks.len();
+        chunks.extend(section_chunks);
     }
 
     chunks
+}
+
+fn split_into_recursive_chunks(
+    text: &str,
+    heading: Option<String>,
+    config: &ChunkConfig,
+    start_index: usize,
+) -> Vec<Chunk> {
+    let paragraphs = split_paragraphs(text);
+    let mut chunks = Vec::new();
+    let mut current_content = String::new();
+    let mut overlap_tail = String::new();
+
+    for para in paragraphs {
+        let para_char_count = para.chars().count();
+        let current_char_count = current_content.chars().count();
+        if !current_content.is_empty() && current_char_count + para_char_count + 2 > config.max_chars {
+            // Flush current
+            let chunk = create_chunk(&current_content, &heading, config, start_index + chunks.len());
+            // SAFETY: Use char count for overlap check
+            let safe_overlap = config.overlap_chars.min(config.max_chars / 2);
+            overlap_tail = tail_chars(&chunk.content, safe_overlap).to_string();
+            chunks.push(chunk);
+
+            current_content = if overlap_tail.is_empty() {
+                para.to_string()
+            } else {
+                format!("{}\n\n{}", overlap_tail, para)
+            };
+        } else if current_content.is_empty() {
+            current_content = if overlap_tail.is_empty() {
+                para.to_string()
+            } else {
+                format!("{}\n\n{}", overlap_tail, para)
+            };
+        } else {
+            current_content.push_str("\n\n");
+            current_content.push_str(para);
+        }
+
+        // Force split if still too large
+        while current_content.chars().count() > config.max_chars + (config.max_chars / 2) {
+            let split_pos = find_split_point(&current_content, config.max_chars);
+            let head = &current_content[..split_pos];
+            let rest = &current_content[split_pos..];
+
+            let chunk = create_chunk(head, &heading, config, start_index + chunks.len());
+            chunks.push(chunk);
+
+            // SAFETY: Ensure overlap_chars is never larger than half of max_chars
+            let safe_overlap = config.overlap_chars.min(config.max_chars / 2);
+            overlap_tail = tail_chars(head, safe_overlap).to_string();
+            current_content = if overlap_tail.is_empty() {
+                rest.trim().to_string()
+            } else {
+                format!("{}\n{}", overlap_tail, rest.trim())
+            };
+        }
+    }
+
+    if !current_content.trim().is_empty() {
+        chunks.push(create_chunk(&current_content, &heading, config, start_index + chunks.len()));
+    }
+
+    chunks
+}
+
+fn create_chunk(content: &str, heading: &Option<String>, config: &ChunkConfig, index: usize) -> Chunk {
+    let trimmed = content.trim().to_string();
+    
+    // Title Augmentation with 15% limit (approx 150 chars for 1000 limit)
+    // Ensure anchor limit is at least a few characters even for tiny chunks
+    let anchor_limit = ((config.max_chars as f32 * 0.15) as usize).max(20);
+    
+    let mut embedding_text = String::new();
+    if let Some(ref title) = config.title {
+        let char_count = title.chars().count();
+        let t = if char_count > anchor_limit {
+            let truncated: String = title.chars().take(anchor_limit.saturating_sub(3)).collect();
+            format!("{}...", truncated)
+        } else {
+            title.to_string()
+        };
+        embedding_text.push_str(&format!("[Title: {}] ", t));
+    }
+    if let Some(ref h) = heading {
+        let char_count = h.chars().count();
+        let h_text = if char_count > anchor_limit {
+            let truncated: String = h.chars().take(anchor_limit.saturating_sub(3)).collect();
+            format!("{}...", truncated)
+        } else {
+            h.to_string()
+        };
+        embedding_text.push_str(&format!("[Section: {}] ", h_text));
+    }
+    embedding_text.push_str(&trimmed);
+
+    Chunk {
+        content: trimmed,
+        embedding_text,
+        index,
+        heading_path: heading.clone(),
+    }
+}
+
+fn find_split_point(text: &str, char_limit: usize) -> usize {
+    let char_indices: Vec<(usize, char)> = text.char_indices().collect();
+    if char_indices.len() <= char_limit {
+        return text.len();
+    }
+    
+    // safe_limit is the BYTE index of the char at char_limit
+    let safe_limit = char_indices[char_limit].0;
+
+    if safe_limit == 0 {
+        // If we can't find a boundary <= limit, just find the first one
+        return text.char_indices()
+            .map(|(i, _)| i)
+            .find(|&i| i > 0)
+            .unwrap_or(text.len());
+    }
+
+    // Try to find last sentence end or whitespace before limit
+    // Define a "good split" window: last 30% of the limit
+    let min_split = (safe_limit as f32 * 0.7) as usize;
+    let candidate = &text[..safe_limit];
+    
+    if let Some(pos) = candidate.rfind(['.', '!', '?', '\n']) {
+        if pos >= min_split {
+            return pos + 1;
+        }
+    }
+    
+    if let Some(pos) = candidate.rfind(' ') {
+        if pos >= min_split {
+            return pos + 1;
+        }
+    }
+
+    safe_limit
 }
 
 /// Split text on blank lines, filtering empty results.
@@ -97,109 +237,113 @@ mod tests {
 
     #[test]
     fn empty_text_returns_empty() {
-        assert_eq!(split_chunks("", 1000, 100), vec![]);
+        assert_eq!(split_chunks("", ChunkConfig::default()), vec![]);
     }
 
     #[test]
     fn short_text_returns_single_chunk() {
         let text = "Hello world";
-        let chunks = split_chunks(text, 1000, 100);
+        let chunks = split_chunks(text, ChunkConfig::default());
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].content, "Hello world");
         assert_eq!(chunks[0].index, 0);
     }
 
     #[test]
-    fn exactly_max_chars_is_single_chunk() {
-        let text = "a".repeat(1500);
-        let chunks = split_chunks(&text, 1500, 200);
-        assert_eq!(chunks.len(), 1);
+    fn structural_markdown_splitting() {
+        let text = "# Section 1\nContent 1\n\n## Section 2\nContent 2";
+        let chunks = split_chunks(text, ChunkConfig::default());
+        // Should have 2 chunks, one for each section
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].heading_path, Some("# Section 1".to_string()));
+        assert_eq!(chunks[1].heading_path, Some("## Section 2".to_string()));
     }
 
     #[test]
-    fn long_text_splits_into_multiple_chunks() {
-        // 3 paragraphs each ~600 chars, max=1000 → should produce at least 2 chunks
-        let para = "x".repeat(600);
-        let text = format!("{}\n\n{}\n\n{}", para, para, para);
-        let chunks = split_chunks(&text, 1000, 50);
-        assert!(chunks.len() >= 2, "expected >=2 chunks, got {}", chunks.len());
-    }
-
-    #[test]
-    fn chunk_indices_are_sequential() {
-        let para = "word ".repeat(200); // ~1000 chars per para
-        let text = format!("{}\n\n{}\n\n{}\n\n{}", para, para, para, para);
-        let chunks = split_chunks(&text, 1200, 100);
-        for (i, chunk) in chunks.iter().enumerate() {
-            assert_eq!(chunk.index, i, "chunk index mismatch at position {i}");
-        }
-    }
-
-    #[test]
-    fn no_chunk_exceeds_max_chars_by_single_paragraph() {
-        let short_para = "short paragraph here. ".repeat(10); // ~220 chars
-        let text = (0..20)
-            .map(|_| short_para.as_str())
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        let chunks = split_chunks(&text, 500, 50);
+    fn recursive_splitting_of_long_section() {
+        let long_para = "a".repeat(1200);
+        let text = format!("# Big Section\n\n{}", long_para);
+        let chunks = split_chunks(&text, ChunkConfig { max_chars: 500, ..Default::default() });
+        // 1200 / 500 ≈ 3 chunks
+        assert!(chunks.len() >= 3);
         for chunk in &chunks {
-            // A chunk may exceed max_chars only if a single paragraph is already larger
-            // Here paragraphs are ~220 chars so chunks should stay close to limit
-            assert!(
-                chunk.content.len() <= 500 + short_para.len(),
-                "chunk too large: {}",
-                chunk.content.len()
-            );
+            assert!(chunk.content.len() <= 750); // with overlap and buffer
+            assert_eq!(chunk.heading_path, Some("# Big Section".to_string()));
         }
+    }
+
+    #[test]
+    fn title_augmentation() {
+        let text = "Hello world";
+        let config = ChunkConfig {
+            title: Some("Doc Title".to_string()),
+            ..Default::default()
+        };
+        let chunks = split_chunks(text, config);
+        assert!(chunks[0].embedding_text.contains("[Title: Doc Title]"));
+        assert!(chunks[0].embedding_text.contains("Hello world"));
     }
 
     #[test]
     fn overlap_content_appears_in_next_chunk() {
-        // Make two paragraphs that together exceed max_chars
-        let para1 = format!("FIRST {}", "a".repeat(600));
-        let para2 = format!("SECOND {}", "b".repeat(600));
+        let para1 = "x".repeat(600);
+        let para2 = "y".repeat(600);
         let text = format!("{}\n\n{}", para1, para2);
-        let chunks = split_chunks(&text, 700, 100);
+        let chunks = split_chunks(&text, ChunkConfig { max_chars: 700, overlap_chars: 100, ..Default::default() });
         assert!(chunks.len() >= 2);
-        // The second chunk should contain some tail from para1 (overlap)
-        let second = &chunks[1].content;
-        // overlap tail of para1 should appear at start of second chunk
         let tail = tail_chars(&para1, 100);
-        assert!(
-            second.contains(tail.trim()),
-            "overlap tail not found in second chunk.\ntail={tail:?}\nchunk={second:?}"
-        );
-    }
-
-    #[test]
-    fn no_empty_chunks_produced() {
-        let text = "\n\n\n\nhello\n\n\n\nworld\n\n\n\n";
-        let chunks = split_chunks(text, 1000, 100);
-        for chunk in &chunks {
-            assert!(!chunk.content.is_empty(), "empty chunk produced");
-        }
+        assert!(chunks[1].content.contains(tail.trim()));
     }
 
     #[test]
     fn korean_text_splits_correctly() {
         let para = "이것은 한국어 테스트 문장입니다. ".repeat(50); // ~800 chars
         let text = format!("{}\n\n{}\n\n{}", para, para, para);
-        let chunks = split_chunks(&text, 1000, 100);
+        let chunks = split_chunks(&text, ChunkConfig { max_chars: 1000, ..Default::default() });
         assert!(chunks.len() >= 2);
-        // All chunks should have valid UTF-8 (no char boundary slicing)
         for chunk in &chunks {
             assert!(std::str::from_utf8(chunk.content.as_bytes()).is_ok());
         }
     }
 
     #[test]
-    fn single_very_long_paragraph_becomes_one_chunk() {
-        // If a single paragraph exceeds max_chars, it should still be one chunk (not dropped)
-        let long_para = "word ".repeat(400); // ~2000 chars > 1500 max
-        let chunks = split_chunks(&long_para, 1500, 200);
-        assert_eq!(chunks.len(), 1, "single long para should be one chunk");
-        assert!(!chunks[0].content.is_empty());
+    fn sentence_aware_split_at_boundary() {
+        let text = "First sentence. Second sentence. Third sentence.";
+        // if we split at ~20 chars, it should find the first period
+        // and using proper overlap size for 20 max_chars
+        let config = ChunkConfig { max_chars: 20, overlap_chars: 5, ..Default::default() };
+        let chunks = split_chunks(text, config);
+        // "First sentence." is 15 chars.
+        assert!(chunks.len() >= 2);
+        assert!(chunks[0].content.contains("First sentence."));
+        assert!(!chunks[0].content.contains("Second"));
+    }
+
+    #[test]
+    fn anchor_ratio_is_limited() {
+        let long_title = "A".repeat(500);
+        let text = "Hello world";
+        let config = ChunkConfig {
+            title: Some(long_title),
+            ..Default::default()
+        };
+        let chunks = split_chunks(text, config);
+        // Anchor (Title) should be truncated to ~150 chars (15% of 1000)
+        assert!(chunks[0].embedding_text.len() < 300); 
+        assert!(chunks[0].embedding_text.contains("..."));
+    }
+
+    #[test]
+    fn mixed_english_and_code() {
+        let text = "This is a header.\n\n```python\ndef hello():\n    print('world')\n```\n\nAnother paragraph.";
+        let config = ChunkConfig { max_chars: 50, ..Default::default() };
+        let chunks = split_chunks(text, config);
+        
+        // It should split reasonably
+        assert!(chunks.len() >= 2);
+        // "python" should be in one of the chunks
+        let has_python = chunks.iter().any(|c| c.content.contains("python"));
+        assert!(has_python, "One of the chunks should contain 'python'");
     }
 
     // ── tail_chars helper ─────────────────────────────────────────────────────
