@@ -3,7 +3,7 @@ use crate::embedding::{EmbeddingError, EmbeddingProvider};
 use crate::observability::{persist_audit, AuditEvent};
 use rusqlite::{Connection, OptionalExtension};
 use sha2::{Sha256, Digest};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
@@ -36,6 +36,7 @@ pub struct SearchQuery {
     pub text: String,
     pub project_ids: Vec<i64>,
     pub limit: usize,
+    pub offset: usize,
     pub mode: SearchMode,
 }
 
@@ -53,6 +54,7 @@ impl SearchQuery {
             text: text.into(),
             project_ids: vec![],
             limit: 20,
+            offset: 0,
             mode: SearchMode::Hybrid,
         }
     }
@@ -66,6 +68,11 @@ impl SearchQuery {
         self.limit = limit;
         self
     }
+
+    pub fn with_offset(mut self, offset: usize) -> Self {
+        self.offset = offset;
+        self
+    }
 }
 
 /// Simplified search options for convenience API.
@@ -75,14 +82,18 @@ pub struct SearchOpts {
     pub limit: Option<usize>,
 }
 
-/// A ranked search result.
-#[derive(Debug, Clone)]
+/// A ranked search result with optional contextual content.
+#[derive(Debug, Clone, Default)]
 pub struct Hit {
     pub document_id: i64,
+    pub chunk_id: i64,
     pub project_id: i64,
     pub source_doc_id: String,
     pub title: Option<String>,
+    pub file_path: Option<String>,
+    pub heading_path: Option<String>,
     pub snippet: Option<String>,
+    pub context_content: Option<String>,
     pub score: f64,
 }
 
@@ -229,6 +240,23 @@ fn rrf_merge(fts_hits: Vec<SearchHit>, vec_hits: Vec<SearchHit>) -> Vec<SearchHi
     merged
 }
 
+impl From<SearchHit> for Hit {
+    fn from(sh: SearchHit) -> Self {
+        Hit {
+            document_id: sh.document_id,
+            chunk_id: sh.chunk_id,
+            project_id: 0,
+            source_doc_id: String::new(),
+            title: sh.title,
+            file_path: sh.file_path,
+            heading_path: sh.heading_path,
+            snippet: Some(sh.snippet),
+            context_content: sh.context_content,
+            score: sh.score,
+        }
+    }
+}
+
 /// No-op embedder for FTS-only usage (avoids requiring a real model).
 struct NoOpEmbedder;
 
@@ -253,12 +281,12 @@ impl EmbeddingProvider for NoOpEmbedder {
 
 pub struct SearchEngine {
     conn: Arc<Mutex<Connection>>,
-    embedder: Arc<dyn EmbeddingProvider>,
+    embedder: Arc<dyn EmbeddingProvider + Send + Sync>,
 }
 
 impl SearchEngine {
     /// Create a new SearchEngine with an embedding provider.
-    pub fn with_embedder(conn: Arc<Mutex<Connection>>, embedder: Arc<dyn EmbeddingProvider>) -> Self {
+    pub fn with_embedder(conn: Arc<Mutex<Connection>>, embedder: Arc<dyn EmbeddingProvider + Send + Sync>) -> Self {
         Self { conn, embedder }
     }
 
@@ -273,7 +301,7 @@ impl SearchEngine {
     pub fn new_fts_only(conn: Connection) -> Self {
         Self {
             conn: Arc::new(Mutex::new(conn)),
-            embedder: Arc::new(NoOpEmbedder),
+            embedder: Arc::new(NoOpEmbedder) as Arc<dyn EmbeddingProvider + Send + Sync>,
         }
     }
 
@@ -288,7 +316,104 @@ impl SearchEngine {
         self.index_document_async_with_meta(project_id, source_doc_id, title, content, DocMeta::default()).await
     }
 
-    /// Index a document with full metadata.
+}
+ 
+/// 일괄 인덱싱 요청 정보를 담는 구조체.
+#[derive(Debug, Clone)]
+pub struct BatchIndexingRequest {
+    pub project_id: i64,
+    pub source_doc_id: String,
+    pub title: String,
+    pub content: String,
+    pub meta: DocMeta,
+}
+
+impl SearchEngine {
+    pub async fn index_documents_batch_async(
+        &self,
+        requests: Vec<BatchIndexingRequest>,
+    ) -> Result<(), SearchError> {
+        if requests.is_empty() {
+            return Ok(());
+        }
+
+        let num_requests = requests.len();
+        let project_id = requests[0].project_id;
+        tracing::info!(project_id, doc_count = num_requests, "index_documents_batch: starting batch indexing");
+
+        // 1. 문서별 청크 분할 및 플랫화
+        // chunk_counts: 각 문서가 가진 청크의 개수를 저장 (나중에 결과 복원용)
+        let mut all_chunks = Vec::new(); // Vec<(doc_idx, Chunk)>
+        let mut flat_texts = Vec::new();
+        let mut chunk_counts = Vec::with_capacity(num_requests);
+
+        for (doc_idx, req) in requests.iter().enumerate() {
+            let chunks = crate::chunker::split_chunks(
+                &req.content,
+                crate::chunker::ChunkConfig {
+                    title: Some(req.title.clone()),
+                    ..Default::default()
+                },
+            );
+            chunk_counts.push(chunks.len());
+            for chunk in chunks {
+                flat_texts.push(chunk.embedding_text.clone());
+                all_chunks.push((doc_idx, chunk));
+            }
+        }
+
+        if flat_texts.is_empty() {
+            tracing::warn!(project_id, "index_documents_batch: no chunks to index");
+            return Ok(());
+        }
+
+        let total_chunks = flat_texts.len();
+        tracing::info!(project_id, total_chunks, "index_documents_batch: chunking complete, starting embedding");
+
+        // 2. 배치 임베딩 수행
+        // OnnxEmbedder::embed가 내부적으로 CPU 부하를 처리하므로 여기서는 직접 await 합니다.
+        let embedding_vecs = self.embedder.embed(&flat_texts.iter().map(|s| s.as_str()).collect::<Vec<_>>()).await?;
+
+        // 3. 임베딩 벡터 가공 (Vec<f32> -> Vec<u8>)
+        let mut flat_embeddings: Vec<Vec<u8>> = Vec::with_capacity(embedding_vecs.len());
+        for emb in embedding_vecs {
+            let bytes: Vec<u8> = emb.iter().flat_map(|f: &f32| f.to_le_bytes()).collect();
+            flat_embeddings.push(bytes);
+        }
+
+        // 4. DB 일괄 저장 (Transaction 사용)
+        let conn = Arc::clone(&self.conn);
+        tokio::task::spawn_blocking(move || -> Result<(), SearchError> {
+            let mut conn_guard = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
+            let tx = conn_guard.transaction()?;
+
+            persist_audit(&tx, &AuditEvent::IndexStart { project_id });
+
+            let mut current_chunk_offset = 0;
+            for (doc_idx, req) in requests.into_iter().enumerate() {
+                let num_chunks = chunk_counts[doc_idx];
+                let doc_chunks: Vec<_> = all_chunks[current_chunk_offset..current_chunk_offset + num_chunks]
+                    .iter()
+                    .map(|(_, c)| c.clone())
+                    .collect();
+                let doc_embeddings: Vec<_> = flat_embeddings[current_chunk_offset..current_chunk_offset + num_chunks]
+                    .iter()
+                    .cloned()
+                    .collect();
+
+                index_document_sync(&tx, req.project_id, &req.source_doc_id, &req.title, &req.content, &doc_chunks, &doc_embeddings, &req.meta)?;
+                current_chunk_offset += num_chunks;
+            }
+
+            persist_audit(&tx, &AuditEvent::IndexComplete { project_id, docs_indexed: num_requests });
+            tx.commit()?;
+            Ok(())
+        })
+        .await??;
+
+        Ok(())
+    }
+
     pub async fn index_document_async_with_meta(
         &self,
         project_id: i64,
@@ -297,20 +422,30 @@ impl SearchEngine {
         content: &str,
         meta: DocMeta,
     ) -> Result<(), SearchError> {
-        // 1. Generate embedding
-        let embedding_result = self.embedder.embed(&[content]).await;
-        let emb_bytes: Option<Vec<u8>> = match embedding_result {
-            Ok(vecs) => {
-                let emb = vecs.into_iter().next().ok_or_else(|| {
-                    SearchError::Embedding("empty embedding result".into())
-                })?;
-                Some(emb.iter().flat_map(|f| f.to_le_bytes()).collect())
-            }
-            Err(EmbeddingError::Inference(_)) => None,
-            Err(e) => return Err(SearchError::Embedding(e.to_string())),
-        };
+        // 1. Chunk the document first to identify what to embed
+        let chunks = crate::chunker::split_chunks(
+            content,
+            crate::chunker::ChunkConfig {
+                title: Some(title.to_string()),
+                ..Default::default()
+            },
+        );
 
-        // 2. DB writes via spawn_blocking
+        if chunks.is_empty() {
+            return Ok(());
+        }
+
+        // 2. Generate embeddings for all chunks in a batch
+        let texts: Vec<&str> = chunks.iter().map(|c| c.embedding_text.as_str()).collect();
+        let embedding_vecs = self.embedder.embed(&texts).await.unwrap_or_default();
+        
+        let mut chunk_embeddings = Vec::new();
+        for emb in embedding_vecs {
+            let bytes: Vec<u8> = emb.iter().flat_map(|f| f.to_le_bytes()).collect();
+            chunk_embeddings.push(bytes);
+        }
+
+        // 3. DB writes via spawn_blocking
         let conn = Arc::clone(&self.conn);
         let source_doc_id = source_doc_id.to_string();
         let title = title.to_string();
@@ -319,7 +454,7 @@ impl SearchEngine {
         tokio::task::spawn_blocking(move || -> Result<(), SearchError> {
             let conn = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
             persist_audit(&conn, &AuditEvent::IndexStart { project_id });
-            index_document_sync(&conn, project_id, &source_doc_id, &title, &content, emb_bytes.as_deref(), &meta)?;
+            index_document_sync(&conn, project_id, &source_doc_id, &title, &content, &chunks, &chunk_embeddings, &meta)?;
             persist_audit(&conn, &AuditEvent::IndexComplete { project_id, docs_indexed: 1 });
             Ok(())
         })
@@ -329,24 +464,80 @@ impl SearchEngine {
     }
 
     /// Hybrid search: FTS5 + vector similarity, merged via RRF.
-    pub async fn search_async(&self, query: &SearchQuery) -> Result<Vec<SearchHit>, SearchError> {
-        match query.mode {
-            SearchMode::Fts => self.fts_search_async(query).await,
-            SearchMode::Vector => self.vector_search_async(query).await,
+    pub async fn search_async(&self, query: &SearchQuery) -> Result<Vec<Hit>, SearchError> {
+        let hits: Vec<Hit> = match query.mode {
+            SearchMode::Fts => self.fts_search_async(query).await?.into_iter().map(Hit::from).collect(),
+            SearchMode::Vector => self.vector_search_async(query).await?.into_iter().map(Hit::from).collect(),
             SearchMode::Hybrid => {
                 let fts_hits = self.fts_search_async(query).await?;
                 let vec_hits = self.vector_search_async(query).await.unwrap_or_default();
-                Ok(rrf_merge(fts_hits, vec_hits))
+                rrf_merge(fts_hits, vec_hits).into_iter().map(Hit::from).collect()
             }
-        }
+        };
+
+        // Post-process hits: Pagination and Contextual retrieval
+        let conn = Arc::clone(&self.conn);
+        let query = query.clone();
+        
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
+            
+            // 1. Pagination: Skip `offset` and take `limit`
+            let mut paged_hits: Vec<Hit> = hits.into_iter()
+                .skip(query.offset)
+                .take(query.limit)
+                .map(Hit::from)
+                .collect();
+            
+            if paged_hits.is_empty() {
+                return Ok(paged_hits);
+            }
+
+            // 2. Statistical Analysis for Tiered Budgeting
+            // We use all hits (before paging) to get a better distribution if possible,
+            // or just the paged ones. Let's use the paged hits for immediate context.
+            let scores: Vec<f64> = paged_hits.iter().map(|h| h.score).collect();
+            let n = scores.len() as f64;
+            let mean = scores.iter().sum::<f64>() / n;
+            let variance = scores.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / n;
+            let sigma = variance.sqrt();
+            let max_score = scores[0]; // Assuming sorted by score desc
+
+            // 3. Assemble Context and Deduplicate
+            // Deduplication: track sections already loaded in this turn to avoid redundant text if multiple hits in same section
+            let mut loaded_sections: HashMap<(i64, Option<String>), String> = HashMap::new();
+            let mut total_chars = 0;
+            const GLOBAL_CEILING: usize = 15000;
+
+            for hit in paged_hits.iter_mut() {
+                if total_chars >= GLOBAL_CEILING {
+                    break;
+                }
+
+                // Tier 1: Score >= (Max - Sigma) or Rank 1-3
+                // (Since we skip offset, we don't know global rank easily here, so we use the first few of paged_hits)
+                let is_high_confidence = hit.score >= (max_score - sigma);
+                
+                if is_high_confidence {
+                    assemble_context_sync(&conn, hit, &mut loaded_sections, &mut total_chars, GLOBAL_CEILING)?;
+                } else {
+                    // Tier 2: Just use the initial snippet/content
+                    hit.context_content = hit.snippet.clone();
+                    total_chars += hit.context_content.as_ref().map(|s: &String| s.len()).unwrap_or(0);
+                }
+            }
+
+            Ok(paged_hits)
+        })
+        .await?
     }
 
     async fn fts_search_async(&self, query: &SearchQuery) -> Result<Vec<SearchHit>, SearchError> {
         let conn = Arc::clone(&self.conn);
-        let query = query.clone();
+        let query_clone = query.clone();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
-            fts_search_sync(&conn, &query)
+            fts_search_sync(&conn, &query_clone)
         })
         .await?
     }
@@ -359,12 +550,13 @@ impl SearchEngine {
         let emb_bytes: Vec<u8> = emb.iter().flat_map(|f| f.to_le_bytes()).collect();
 
         let conn = Arc::clone(&self.conn);
-        let limit = query.limit as i64;
         let project_ids = query.project_ids.clone();
+        let limit = query.limit as i64;
+        let offset = query.offset as i64;
 
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
-            vector_search_sync(&conn, &emb_bytes, limit, &project_ids)
+            vector_search_sync(&conn, &emb_bytes, limit, offset, &project_ids)
         })
         .await?
     }
@@ -395,7 +587,8 @@ fn index_document_sync(
     source_doc_id: &str,
     title: &str,
     content: &str,
-    emb_bytes: Option<&[u8]>,
+    chunks: &[crate::chunker::Chunk],
+    chunk_embeddings: &[Vec<u8>],
     meta: &DocMeta,
 ) -> Result<(), SearchError> {
     // content 빈값 방어 — 빈 content를 청크/임베딩에 삽입하지 않음
@@ -511,30 +704,21 @@ fn index_document_sync(
     // Delete old chunks (triggers handle FTS cleanup)
     conn.execute("DELETE FROM chunks WHERE document_id = ?1", [doc_id])?;
 
-    // Split content into chunks and insert each one
-    let chunks = crate::chunker::split_chunks(
-        content,
-        crate::chunker::DEFAULT_MAX_CHARS,
-        crate::chunker::DEFAULT_OVERLAP_CHARS,
-    );
-    for chunk in &chunks {
+    // Store chunks and their embeddings
+    for (i, chunk) in chunks.iter().enumerate() {
         conn.execute(
-            "INSERT INTO chunks (document_id, content, chunk_index) VALUES (?1, ?2, ?3)",
-            rusqlite::params![doc_id, chunk.content, chunk.index as i64],
+            "INSERT INTO chunks (document_id, content, chunk_index, heading_path) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![doc_id, chunk.content, chunk.index as i64, chunk.heading_path],
         )?;
-    }
 
-    // Store embedding in chunk_embeddings for first chunk if provided
-    if let Some(bytes) = emb_bytes {
-        let chunk_id: i64 = conn.query_row(
-            "SELECT id FROM chunks WHERE document_id = ?1 AND chunk_index = 0",
-            [doc_id],
-            |row| row.get(0),
-        )?;
-        conn.execute(
-            "INSERT OR REPLACE INTO chunk_embeddings(chunk_id, embedding) VALUES (?1, ?2)",
-            rusqlite::params![chunk_id, bytes],
-        )?;
+        let chunk_id: i64 = conn.last_insert_rowid();
+
+        if let Some(bytes) = chunk_embeddings.get(i) {
+            conn.execute(
+                "INSERT OR REPLACE INTO chunk_embeddings(chunk_id, embedding) VALUES (?1, ?2)",
+                rusqlite::params![chunk_id, bytes],
+            )?;
+        }
     }
 
     Ok(())
@@ -558,7 +742,6 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
     if fts_query.is_empty() {
         return Ok(vec![]);
     }
-    let limit = query.limit as i64;
 
     let (project_filter, base_param_count) = if query.project_ids.is_empty() {
         ("AND p.status = 'active'".to_string(), 2usize)
@@ -581,13 +764,14 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
          WHERE chunks_fts MATCH ?1
          {project_filter}
          ORDER BY score
-         LIMIT ?2"
+         LIMIT ?2 OFFSET ?3"
     );
 
     let mut stmt = conn.prepare(&sql)?;
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
         Box::new(fts_query),
-        Box::new(limit),
+        Box::new((query.limit + query.offset) as i64),
+        Box::new(0i64), // We handle offset in rrf_merge/search_async to keep scores consistent
     ];
     for id in &query.project_ids {
         params.push(Box::new(*id));
@@ -602,6 +786,7 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
                 file_path: row.get(3)?,
                 heading_path: row.get(4)?,
                 snippet: row.get(5)?,
+                context_content: None,
                 score: row.get::<_, f64>(6).unwrap_or(0.0).abs(),
             })
         })?
@@ -614,8 +799,11 @@ fn vector_search_sync(
     conn: &Connection,
     emb_bytes: &[u8],
     limit: i64,
+    offset: i64,
     project_ids: &[i64],
 ) -> Result<Vec<SearchHit>, SearchError> {
+    // We fetch limit + offset candidates to allow proper RRF merging and pagination
+    let k = limit + offset;
     let project_filter = if project_ids.is_empty() {
         "AND p.status = 'active'".to_string()
     } else {
@@ -643,7 +831,7 @@ fn vector_search_sync(
     let mut stmt = conn.prepare(&sql)?;
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
         Box::new(emb_bytes.to_vec()),
-        Box::new(limit),
+        Box::new(k),
     ];
     for id in project_ids {
         params.push(Box::new(*id));
@@ -659,6 +847,7 @@ fn vector_search_sync(
                 file_path: row.get(3)?,
                 heading_path: row.get(4)?,
                 snippet: row.get(5)?,
+                context_content: None,
                 score: 1.0 / (RRF_K as f64 + distance),
             })
         })?
@@ -677,6 +866,90 @@ fn vector_search_sync(
     });
 
     Ok(hits)
+}
+
+fn assemble_context_sync(
+    conn: &Connection,
+    hit: &mut Hit,
+    loaded_sections: &mut HashMap<(i64, Option<String>), String>,
+    total_chars: &mut usize,
+    global_ceiling: usize,
+) -> Result<(), SearchError> {
+    let key = (hit.document_id, hit.heading_path.clone());
+    
+    if let Some(cached) = loaded_sections.get(&key) {
+        hit.context_content = Some(cached.clone());
+        return Ok(());
+    }
+
+    let (target_idx, target_content): (i32, String) = conn.query_row(
+        "SELECT chunk_index, content FROM chunks WHERE id = ?1",
+        rusqlite::params![hit.chunk_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+
+    let mut stmt = conn.prepare(
+        "SELECT chunk_index, content FROM chunks 
+         WHERE document_id = ?1 AND (heading_path IS ?2 OR heading_path = ?2)
+         ORDER BY chunk_index"
+    )?;
+    
+    let section_chunks: Vec<(i32, String)> = stmt.query_map(
+        rusqlite::params![hit.document_id, hit.heading_path],
+        |r| Ok((r.get(0)?, r.get(1)?))
+    )?.collect::<Result<Vec<_>, _>>()?;
+
+    const SOFT_LIMIT: usize = 4000;
+    let pos = section_chunks.iter().position(|(idx, _)| *idx == target_idx).unwrap_or(0);
+    
+    let mut context_parts = VecDeque::new();
+    context_parts.push_back(&section_chunks[pos].1);
+    let mut current_len = section_chunks[pos].1.len();
+    
+    let mut left = pos as i32 - 1;
+    let mut right = pos as i32 + 1;
+    
+    // Greedy center-out assembly
+    while current_len < SOFT_LIMIT && (left >= 0 || right < section_chunks.len() as i32) {
+        if left >= 0 && current_len < SOFT_LIMIT {
+            let s = &section_chunks[left as usize].1;
+            context_parts.push_front(s);
+            current_len += s.len();
+            left -= 1;
+        }
+        if right < section_chunks.len() as i32 && current_len < SOFT_LIMIT {
+            let s = &section_chunks[right as usize].1;
+            context_parts.push_back(s);
+            current_len += s.len();
+            right += 1;
+        }
+    }
+
+    let joined = context_parts.into_iter().cloned().collect::<Vec<_>>().join("\n\n");
+    let mut final_context = joined;
+
+    if left >= 0 {
+        final_context = format!("[... (Preceding content truncated) ...]\n\n{}", final_context);
+    }
+    if right < section_chunks.len() as i32 {
+        final_context = format!("{}\n\n[... (Following content truncated - use get_section for full details) ...]", final_context);
+    }
+
+    if *total_chars + final_context.len() > global_ceiling {
+        let remaining = global_ceiling.saturating_sub(*total_chars);
+        if remaining > 100 {
+            final_context = format!("{}...", &final_context[..remaining.saturating_sub(50)]);
+            final_context.push_str("\n\n[... (Global context ceiling reached) ...]");
+        } else {
+            final_context = target_content;
+        }
+    }
+
+    *total_chars += final_context.len();
+    hit.context_content = Some(final_context.clone());
+    loaded_sections.insert(key, final_context);
+
+    Ok(())
 }
 
 // ── SyncSearchEngine (backward-compatible wrapper) ───────────────────────────
@@ -714,7 +987,14 @@ impl<'a> SyncSearchEngine<'a> {
         content: &str,
         meta: &DocMeta,
     ) -> Result<(), SearchError> {
-        index_document_sync(self.conn, project_id, source_doc_id, title, content, None, meta)
+        let chunks = crate::chunker::split_chunks(
+            content,
+            crate::chunker::ChunkConfig {
+                title: Some(title.to_string()),
+                ..Default::default()
+            },
+        );
+        index_document_sync(self.conn, project_id, source_doc_id, title, content, &chunks, &[], meta)
     }
 
     /// Convenience search: query string + options, returns `Hit` with RRF scoring.
@@ -783,10 +1063,14 @@ impl<'a> SyncSearchEngine<'a> {
         {
             let entry = rrf_map.entry(doc_id).or_insert_with(|| Hit {
                 document_id: doc_id,
+                chunk_id: 0, // Not precisely known in simplify view, but placeholder is fine
                 project_id,
                 source_doc_id,
                 title,
+                file_path: None, // Need to join more tables if we want this here, but None is fine for search_simple
+                heading_path: None,
                 snippet: Some(snippet),
+                context_content: None,
                 score: 0.0,
             });
             entry.score += rrf_score(rank + 1);
@@ -841,10 +1125,14 @@ impl<'a> SyncSearchEngine<'a> {
                     {
                         hits.push(Hit {
                             document_id: doc_id,
+                            chunk_id: 0,
                             project_id,
                             source_doc_id,
                             title,
+                            file_path: None,
+                            heading_path: None,
                             snippet: Some(snippet),
+                            context_content: None,
                             score: rrf_score(base_rank + offset + 1),
                         });
                     }
@@ -1095,10 +1383,50 @@ mod tests {
             text: "content".to_string(),
             project_ids: vec![],
             limit: 10,
+            offset: 0,
             mode: SearchMode::Vector,
         };
         let hits = engine.search_async(&query).await.unwrap();
         assert_eq!(hits.len(), 2, "should find both documents via vector search");
+    }
+
+    #[tokio::test]
+    async fn index_document_stores_embeddings_for_all_chunks() {
+        let (engine, conn, pid) = make_async_engine("multi-chunk-test");
+
+        // Create a document with 2 sections (will result in at least 2 chunks)
+        let content = "# Section 1\nContent 1\n\n# Section 2\nContent 2";
+        engine.index_document_async(pid, "doc1", "Multi", content).await.unwrap();
+
+        let c = conn.lock().unwrap();
+        let chunk_count: i64 = c
+            .query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))
+            .unwrap();
+        let emb_count: i64 = c
+            .query_row("SELECT COUNT(*) FROM chunk_embeddings", [], |r| r.get(0))
+            .unwrap();
+        
+        assert!(chunk_count >= 2, "should have multiple chunks");
+        assert_eq!(emb_count, chunk_count, "all chunks should have embeddings");
+    }
+
+    #[tokio::test]
+    async fn chunking_preserves_heading_path() {
+        let (engine, conn, pid) = make_async_engine("heading-test");
+        let content = "# Intro\nHello\n\n## Details\nWorld";
+        engine.index_document_async(pid, "doc1", "Title", content).await.unwrap();
+
+        let c = conn.lock().unwrap();
+        let paths: Vec<Option<String>> = c.prepare("SELECT heading_path FROM chunks ORDER BY chunk_index")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0], Some("# Intro".to_string()));
+        assert_eq!(paths[1], Some("## Details".to_string()));
     }
 
     #[tokio::test]
@@ -1235,9 +1563,11 @@ mod tests {
     fn title_boost_increases_score_for_title_match() {
         let mut hits = vec![
             Hit { document_id: 1, project_id: 1, source_doc_id: "a".into(),
-                  title: Some("Rust Programming Guide".into()), snippet: None, score: 0.010 },
+                  title: Some("Rust Programming Guide".into()), snippet: None, score: 0.010,
+                  chunk_id: 0, context_content: None, heading_path: None },
             Hit { document_id: 2, project_id: 1, source_doc_id: "b".into(),
-                  title: Some("Something Else".into()), snippet: None, score: 0.010 },
+                  title: Some("Something Else".into()), snippet: None, score: 0.010,
+                  chunk_id: 0, context_content: None, heading_path: None },
         ];
         apply_title_boost(&mut hits, "rust programming");
         assert!(hits[0].document_id == 1, "title match 문서가 1위여야 함");

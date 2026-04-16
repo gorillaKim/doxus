@@ -19,6 +19,7 @@ pub fn apply_pragmas(conn: &Connection) -> SqlResult<()> {
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;
          PRAGMA foreign_keys = ON;
+         PRAGMA busy_timeout = 5000;
          PRAGMA cache_size = -32000;",
     )
 }
@@ -119,6 +120,7 @@ static MIGRATIONS: &[(&str, &str)] = &[
     ("V15__drop_legacy_workspace",  include_str!("migrations/V15__drop_legacy_workspace_tables.sql")),
     ("V16__expand_doc_type",        include_str!("migrations/V16__expand_doc_type.sql")),
     ("V17__content_cache_data",     include_str!("migrations/V17__content_cache_data.sql")),
+    ("V18__remove_default_workspace", include_str!("migrations/V18__remove_default_workspace.sql")),
 ];
 
 // ── Test helper ──────────────────────────────────────────────────────────────

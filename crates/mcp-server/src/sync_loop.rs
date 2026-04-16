@@ -200,7 +200,7 @@ impl SyncLoopHandle {
 
 pub fn spawn_sync_loop(
     conn: Arc<std::sync::Mutex<rusqlite::Connection>>,
-    embedder: Option<Arc<dyn doxus_core::embedding::EmbeddingProvider>>,
+    embedder: Option<Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>>,
     plugin_manager: Arc<PluginManager>,
     interval_secs: u64,
 ) -> SyncLoopHandle {
@@ -210,7 +210,7 @@ pub fn spawn_sync_loop(
 /// Spawn the background sync loop with an [`EventSink`] for UI notifications.
 pub fn spawn_sync_loop_with_sink<S: EventSink>(
     conn: Arc<std::sync::Mutex<rusqlite::Connection>>,
-    embedder: Option<Arc<dyn doxus_core::embedding::EmbeddingProvider>>,
+    embedder: Option<Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>>,
     plugin_manager: Arc<PluginManager>,
     interval_secs: u64,
     sink: S,
@@ -314,35 +314,59 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
                                     let updated_count = changeset.updated.len();
                                     let new_cursor = changeset.next_cursor.clone();
                                     
-                                    // 실제 검색 엔진에 인덱싱 수행
+                                    // 실제 검색 엔진에 인덱싱 수행 (배치 처리)
                                     if let Some(ref provider) = embedder {
                                         let engine = doxus_core::search::SearchEngine::with_embedder(
                                             Arc::clone(&conn),
                                             Arc::clone(provider),
                                         );
                                         
+                                        let mut current_batch = Vec::new();
+                                        let mut current_chunk_count = 0;
+                                        const MAX_CHUNKS_PER_BATCH: usize = 128;
+
                                         for doc in &changeset.updated {
-                                            let meta = doxus_core::search::DocMeta {
-                                                tags: doc.tags.clone(),
-                                                aliases: doc.aliases.clone(),
-                                                created_at: doc.created_at,
-                                                updated_at: doc.updated_at,
-                                                relative_path: doc.relative_path.clone(),
-                                                metadata: doc.metadata.clone(),
+                                            // 텍스트 길이 기반으로 청크 수 대략 예측 (정밀하게는 SearchEngine 내부에서 수행)
+                                            // 여기서는 보수적으로 문서 하나를 최소 1개 청크로 계산
+                                            let estimated_chunks = (doc.content.len() / 1000).max(1);
+                                            
+                                            let req = doxus_core::search::BatchIndexingRequest {
+                                                project_id: inst.project_id,
+                                                source_doc_id: doc.id.0.clone(),
+                                                title: doc.title.as_deref().unwrap_or("Untitled").to_string(),
+                                                content: doc.content.clone(),
+                                                meta: doxus_core::search::DocMeta {
+                                                    tags: doc.tags.clone(),
+                                                    aliases: doc.aliases.clone(),
+                                                    created_at: doc.created_at,
+                                                    updated_at: doc.updated_at,
+                                                    relative_path: doc.relative_path.clone(),
+                                                    metadata: doc.metadata.clone(),
+                                                },
                                             };
                                             
-                                            // 비동기로 인덱싱 수행 (실패 시 로그 기록)
-                                            if let Err(e) = engine.index_document_async_with_meta(
-                                                inst.project_id, 
-                                                &doc.id.0, 
-                                                doc.title.as_deref().unwrap_or("Untitled"), 
-                                                &doc.content, 
-                                                meta
-                                            ).await {
-                                                tracing::error!(instance_id = inst.id, doc_id = %doc.id.0, error = %e, "sync_loop: document indexing failed");
+                                            current_batch.push(req);
+                                            current_chunk_count += estimated_chunks;
+
+                                            if current_chunk_count >= MAX_CHUNKS_PER_BATCH {
+                                                tracing::info!(instance_id = inst.id, batch_size = current_batch.len(), "sync_loop: triggering batch indexing");
+                                                if let Err(e) = engine.index_documents_batch_async(std::mem::take(&mut current_batch)).await {
+                                                    tracing::error!(instance_id = inst.id, error = %e, "sync_loop: batch indexing failed");
+                                                }
+                                                current_chunk_count = 0;
                                             }
                                         }
-                                        tracing::info!(instance_id = inst.id, count = updated_count, "sync_loop: batch indexing completed");
+
+                                        // 남은 배치 처리
+                                        if !current_batch.is_empty() {
+                                            tracing::info!(instance_id = inst.id, batch_size = current_batch.len(), "sync_loop: triggering final batch indexing");
+                                            if let Err(e) = engine.index_documents_batch_async(current_batch).await {
+                                                tracing::error!(instance_id = inst.id, error = %e, "sync_loop: final batch indexing failed");
+                                            }
+                                        }
+
+
+                                        tracing::info!(instance_id = inst.id, count = updated_count, "sync_loop: all batches completed");
                                     }
 
                                     match conn.lock() {
