@@ -88,6 +88,7 @@ async fn sync_loop_emits_progress_event() {
     // interval_secs = 0 → always due
     let handle = spawn_sync_loop_with_sink(
         Arc::clone(&conn),
+        None,
         Arc::clone(&plugin_manager),
         0,
         sink.clone(),
@@ -130,6 +131,7 @@ async fn sync_loop_emits_complete_event() {
 
     let handle = spawn_sync_loop_with_sink(
         Arc::clone(&conn),
+        None,
         Arc::clone(&plugin_manager),
         0,
         sink.clone(),
@@ -154,7 +156,8 @@ async fn sync_loop_noop_sink_does_not_panic() {
 
     let (conn, _dir) = open_test_db();
     let handle = spawn_sync_loop_with_sink(
-        conn,
+        Arc::clone(&conn),
+        None,
         make_plugin_manager(),
         1,
         NoopEventSink,
@@ -180,7 +183,7 @@ fn insert_obsidian_instance(conn: &Connection, vault_path: &str) {
     )
     .unwrap();
     let pid: i64 = conn
-        .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+        .query_row("SELECT last_insert_rowid()", [], |r: &rusqlite::Row| r.get(0))
         .unwrap();
     let config = format!(r#"{{"path":"{}"}}"#, vault_path);
     conn.execute(

@@ -901,15 +901,6 @@ pub async fn check_gemini_status() -> Result<serde_json::Value, String> {
     }
 }
 
-#[tauri::command]
-pub async fn get_workspaces(
-    state: tauri::State<'_, crate::AppState>,
-) -> Result<serde_json::Value, String> {
-    let conn = state.conn.lock().map_err(|e| e.to_string())?;
-    let workspaces = doxus_core::workspace::list_workspace_projects(&conn)
-        .map_err(|e| e.to_string())?;
-    Ok(serde_json::json!({ "workspaces": workspaces }))
-}
 
 /// 플러그인의 캐시 TTL(분) 조회 (plugin_kv 기반, per-plugin-type).
 /// 반환: `{ "cache_ttl_minutes": 30 }` 또는 `{ "cache_ttl_minutes": null }` (비활성화)

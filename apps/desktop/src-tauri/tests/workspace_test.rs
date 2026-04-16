@@ -30,9 +30,9 @@ fn make_conn() -> Connection {
 fn list_workspaces_returns_all() {
     let conn = make_conn();
 
-    create_workspace_document_impl(&conn, "Doc Alpha".into(), None, None, std::path::Path::new("/tmp")).unwrap();
-    create_workspace_document_impl(&conn, "Doc Beta".into(), None, None, std::path::Path::new("/tmp")).unwrap();
-    create_workspace_document_impl(&conn, "Doc Gamma".into(), Some("todo".to_string()), None, std::path::Path::new("/tmp")).unwrap();
+    create_workspace_document_impl(&conn, "Doc Alpha".into(), None, std::path::Path::new("/tmp")).unwrap();
+    create_workspace_document_impl(&conn, "Doc Beta".into(), None, std::path::Path::new("/tmp")).unwrap();
+    create_workspace_document_impl(&conn, "Doc Gamma".into(), None, std::path::Path::new("/tmp")).unwrap();
 
     let docs = list_workspace_documents_impl(&conn, None).unwrap();
 
@@ -49,7 +49,7 @@ fn list_workspaces_returns_all() {
 fn create_workspace_persists() {
     let conn = make_conn();
 
-    let doc = create_workspace_document_impl(&conn, "My Spec".into(), Some("techspec".to_string()), None, std::path::Path::new("/tmp"))
+    let doc = create_workspace_document_impl(&conn, "My Spec".into(), None, std::path::Path::new("/tmp"))
         .unwrap();
 
     // 반환값에 id, title, created_at 포함
@@ -72,8 +72,8 @@ fn create_workspace_persists() {
         )
         .unwrap();
     assert!(
-        content.as_deref().unwrap_or("").contains("기술 명세서"),
-        "techspec template content should be present"
+        content.is_some(),
+        "document content should exist"
     );
 }
 
@@ -83,8 +83,8 @@ fn create_workspace_persists() {
 fn switch_workspace_updates_state() {
     let conn = make_conn();
 
-    let a = create_workspace_document_impl(&conn, "Keep Me".into(), None, None, std::path::Path::new("/tmp")).unwrap();
-    let b = create_workspace_document_impl(&conn, "Delete Me".into(), None, None, std::path::Path::new("/tmp")).unwrap();
+    let a = create_workspace_document_impl(&conn, "Keep Me".into(), None, std::path::Path::new("/tmp")).unwrap();
+    let b = create_workspace_document_impl(&conn, "Delete Me".into(), None, std::path::Path::new("/tmp")).unwrap();
 
     let id_b = b["id"].as_i64().unwrap();
     delete_workspace_document_impl(&conn, id_b).unwrap();
