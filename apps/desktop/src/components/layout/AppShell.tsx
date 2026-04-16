@@ -78,7 +78,6 @@ const NAV_ITEMS = [
   { to: "/", label: "대시보드", icon: <IconDashboard /> },
   { to: "/search", label: "검색", icon: <IconSearch /> },
   { to: "/projects", label: "프로젝트", icon: <IconProjects /> },
-  { to: "/workspace", label: "워크스페이스", icon: <IconWorkspace /> },
   { to: "/market", label: "마켓", icon: <IconMarket /> },
   { to: "/settings", label: "설정", icon: <IconSettings /> },
 ];
