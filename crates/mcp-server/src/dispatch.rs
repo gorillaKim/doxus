@@ -49,7 +49,7 @@ pub async fn dispatch_tool(server: &McpServer, name: &str, id: Value, args: &Val
         "doxus_sync_project" => tools::project::sync_project(server, id, args),
 
         // ── Search & documents ────────────────────────────────────────────
-        "doxus_search" => tools::search::search(server, id, args),
+        "doxus_search" => tools::search::search(server, id, args).await,
         "doxus_get_document" => tools::search::get_document(server, id, args),
         "doxus_get_section" => tools::search::get_section(server, id, args),
         "doxus_get_metadata" => tools::search::get_metadata(server, id, args),
@@ -91,11 +91,12 @@ pub fn tool_list() -> Value {
     json!({
         "tools": [
             // Search & document
-            tool("doxus_search", "Hybrid search across indexed documents", &[
+            tool("doxus_search", "Hybrid search with intelligent context retrieval (Small-to-Big)", &[
                 param("query", "string", "Search query text"),
                 param_opt("project", "string", "Restrict to project name"),
                 param_opt("mode", "string", "Search mode: hybrid|fts|vector"),
                 param_opt("limit", "number", "Max results (default 20)"),
+                param_opt("offset", "number", "Pagination offset (default 0)"),
             ]),
             tool("doxus_get_document", "Get full document content", &[
                 param("project", "string", "Project name"),

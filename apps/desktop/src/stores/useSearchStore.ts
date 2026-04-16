@@ -6,12 +6,16 @@ export interface SearchHit {
   chunk_id: number;
   title: string | null;
   snippet: string | null;
+  context_content: string | null;
   score: number;
   source_doc_id: string | null;
   file_path: string | null;
   heading_path: string | null;
   project_name: string;
   source_type: string;
+  tags: string[];
+  updated_at: number;
+  metadata: Record<string, any>;
 }
 
 export interface AllDocument {

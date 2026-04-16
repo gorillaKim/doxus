@@ -4,7 +4,12 @@ use rusqlite::params;
 use serde_json::{json, Value};
 
 pub fn list(server: &McpServer, id: Value) -> McpResponse {
-    let mut stmt = match server.conn().prepare(
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+    let mut stmt = match conn_lock.prepare(
         "SELECT plugin_id, COUNT(*) as instances
          FROM source_instances
          GROUP BY plugin_id
@@ -83,7 +88,12 @@ pub async fn install(server: &McpServer, id: Value, args: &Value) -> McpResponse
         }
     }
 
-    let result = server.conn().execute(
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+    let result = conn_lock.execute(
         "INSERT OR IGNORE INTO plugins(id, name, version, kind, installed_at)
          VALUES (?1, ?1, ?2, 'external', unixepoch())",
         params![plugin_id, version],
@@ -119,7 +129,12 @@ pub fn remove(server: &McpServer, id: Value, args: &Value) -> McpResponse {
         }
     }
 
-    let db_result = server.conn().execute("DELETE FROM plugins WHERE id=?1", params![plugin_id]);
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+    let db_result = conn_lock.execute("DELETE FROM plugins WHERE id=?1", params![plugin_id]);
     match db_result {
         Ok(0) => McpResponse::text(id, format!("Plugin '{plugin_id}' not found.")),
         Ok(_) => McpResponse::text(id, format!("Plugin '{plugin_id}' removed.")),
@@ -134,7 +149,12 @@ pub fn update(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     };
     let version = args["version"].as_str().unwrap_or("latest");
 
-    let n = server.conn().execute(
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+    let n = conn_lock.execute(
         "UPDATE plugins SET version=?2 WHERE id=?1",
         params![plugin_id, version],
     );
@@ -151,7 +171,12 @@ pub fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse {
         None => return McpResponse::err(id, -32602, "missing required arg: query"),
     };
 
-    let mut stmt = match server.conn().prepare(
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+    let mut stmt = match conn_lock.prepare(
         "SELECT id, name, version, kind, trust_level FROM plugins
          WHERE id LIKE ?1 OR name LIKE ?1
          ORDER BY name LIMIT 20",
@@ -188,7 +213,12 @@ pub fn status(server: &McpServer, id: Value, args: &Value) -> McpResponse {
         None => return McpResponse::err(id, -32602, "missing required arg: id"),
     };
 
-    let row: Result<(String, String, i64), _> = server.conn().query_row(
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+    let row: Result<(String, String, i64), _> = conn_lock.query_row(
         "SELECT version, trust_level, enabled FROM plugins WHERE id=?1",
         params![plugin_id],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
@@ -197,7 +227,7 @@ pub fn status(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     match row {
         Err(_) => McpResponse::err(id, -32602, format!("plugin '{plugin_id}' not found")),
         Ok((version, trust, enabled)) => {
-            let instances: i64 = server.conn()
+            let instances: i64 = conn_lock
                 .query_row("SELECT COUNT(*) FROM source_instances WHERE plugin_id=?1", params![plugin_id], |r| r.get(0))
                 .unwrap_or(0);
             let status = json!({
@@ -236,11 +266,17 @@ pub fn logs(server: &McpServer, id: Value, args: &Value) -> McpResponse {
          ORDER BY occurred_at DESC LIMIT ?"
     );
 
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+
     let mut all_params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(plugin_id.to_string())];
     for l in &levels { all_params.push(Box::new(l.to_string())); }
     all_params.push(Box::new(limit));
 
-    let mut stmt = match server.conn().prepare(&sql) {
+    let mut stmt = match conn_lock.prepare(&sql) {
         Ok(s) => s,
         Err(e) => return McpResponse::err(id, -32603, e.to_string()),
     };
@@ -271,7 +307,12 @@ pub fn info(server: &McpServer, id: Value, args: &Value) -> McpResponse {
         None => return McpResponse::err(id, -32602, "missing required arg: id"),
     };
 
-    let row: Result<(String, String, String, String, i64, i64), _> = server.conn().query_row(
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+    let row: Result<(String, String, String, String, i64, i64), _> = conn_lock.query_row(
         "SELECT version, kind, trust_level, manifest_json, enabled, installed_at FROM plugins WHERE id=?1",
         params![plugin_id],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),

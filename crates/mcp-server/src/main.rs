@@ -27,6 +27,7 @@ async fn main() -> Result<()> {
 
     // Main connection used by McpServer.
     let conn = doxus_core::db::open(&db_path)?;
+    let conn = Arc::new(Mutex::new(conn));
 
     // Separate connection for the background sync loop (SQLite WAL mode supports
     // concurrent readers; the sync loop only reads due-instance metadata).
@@ -50,7 +51,7 @@ async fn main() -> Result<()> {
 
 
     // Attempt to initialize OnnxEmbedder via shared path resolution; fall back gracefully.
-    let embedder: Option<std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider>> =
+    let embedder: Option<std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>> =
         match doxus_core::embedding::OnnxEmbedder::from_default_path() {
             Ok(e) => {
                 tracing::info!("OnnxEmbedder loaded; hybrid search enabled.");
@@ -70,7 +71,7 @@ async fn main() -> Result<()> {
     let plugins_dir = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".doxus/plugins");
-    let server = McpServer::new(conn, embedder, Arc::clone(&plugin_manager), plugins_dir);
+    let server = McpServer::new(Arc::clone(&conn), embedder, Arc::clone(&plugin_manager), plugins_dir);
     let sync_handle = spawn_sync_loop(sync_conn, server.embedder().cloned(), Arc::clone(&plugin_manager), interval_secs);
 
     let stdin = std::io::stdin();

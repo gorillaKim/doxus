@@ -18,27 +18,35 @@ function stripFrontmatter(content: string): string {
 
 interface DocEntry {
   document_id: number;
+  chunk_id: number;
   title: string;
-  source_doc_id: string; // 고유 ID (예: Confluence ID 47852)
-  hierarchy_path: string; // 계층 구조용 경로 (예: folder/note.md)
+  source_doc_id: string;
+  hierarchy_path: string;
   project_name: string;
   source_type: string;
   score?: number;
   snippet?: string;
-  heading_path?: string;
+  context_content?: string | null;
+  tags?: string[];
+  updated_at?: number;
+  metadata?: Record<string, any>;
 }
 
 function hitToEntry(hit: SearchHit): DocEntry {
   return {
     document_id: hit.document_id,
+    chunk_id: hit.chunk_id,
     title: hit.title ?? '(제목 없음)',
-    source_doc_id: hit.source_doc_id ?? String(hit.document_id), // 실제 식별자
-    hierarchy_path: hit.file_path ?? hit.source_doc_id ?? '',      // 트리용 경로
+    source_doc_id: hit.source_doc_id ?? String(hit.document_id),
+    hierarchy_path: hit.file_path ?? hit.source_doc_id ?? '',
     project_name: hit.project_name ?? '',
     source_type: hit.source_type ?? '',
     score: hit.score,
     snippet: hit.snippet ?? undefined,
-    heading_path: hit.heading_path ?? undefined,
+    context_content: hit.context_content,
+    tags: hit.tags,
+    updated_at: hit.updated_at,
+    metadata: hit.metadata,
   };
 }
 
@@ -70,24 +78,59 @@ interface TooltipProps {
 }
 
 function DocTooltip({ doc, x, y }: TooltipProps) {
+  const dateStr = doc.updated_at ? formatUnixDate(doc.updated_at) : null;
+  
   return (
     <div
-      className="fixed z-50 bg-gray-800 border border-gray-700 rounded-lg shadow-xl p-3 w-64 text-xs pointer-events-none"
-      style={{ left: x + 12, top: y }}
+      className="fixed z-50 bg-gray-900 border border-indigo-500/30 rounded-xl shadow-2xl p-4 w-80 text-xs backdrop-blur-md pointer-events-none ring-1 ring-white/10"
+      style={{ left: Math.min(x + 12, window.innerWidth - 340), top: Math.min(y, window.innerHeight - 300) }}
     >
-      <p className="text-white font-semibold leading-tight mb-1.5">{doc.title}</p>
-      <p className="text-gray-400 break-all leading-relaxed">{doc.source_doc_id}</p>
-      {doc.project_name && (
-        <p className="text-indigo-400 mt-1">
-          {pluginIcon(doc.source_type)} {doc.project_name}
-        </p>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-indigo-400 font-mono text-[10px] uppercase tracking-tighter">Document Info</span>
+        {doc.score != null && (
+          <span className="px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+             {doc.score.toFixed(3)}
+          </span>
+        )}
+      </div>
+      
+      <p className="text-white font-bold leading-tight mb-1 text-[13px]">{doc.title}</p>
+      <p className="text-gray-500 font-mono text-[10px] truncate mb-3">{doc.source_doc_id}</p>
+      
+      {doc.context_content && (
+        <div className="bg-black/40 rounded-lg p-2.5 mb-3 border border-gray-800/50">
+          <p className="text-gray-400 leading-relaxed line-clamp-4 italic">
+            "{doc.context_content.replace(/---/g, '').trim()}"
+          </p>
+        </div>
       )}
-      {doc.score != null && (
-        <p className="text-gray-500 mt-1">점수: {doc.score.toFixed(3)}</p>
-      )}
-      {doc.heading_path && (
-        <p className="text-indigo-300 mt-1">섹션: {doc.heading_path}</p>
-      )}
+
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <span className="w-12 text-gray-600">Project</span>
+          <span className="text-gray-300 truncate">
+            {pluginIcon(doc.source_type)} {doc.project_name}
+          </span>
+        </div>
+        
+        {dateStr && (
+          <div className="flex items-center gap-2">
+            <span className="w-12 text-gray-600">Updated</span>
+            <span className="text-gray-400">{dateStr}</span>
+          </div>
+        )}
+
+        {doc.tags && doc.tags.length > 0 && (
+          <div className="flex gap-1.5 flex-wrap pt-1">
+            {doc.tags.slice(0, 3).map(t => (
+              <span key={t} className="px-1.5 py-0.5 rounded bg-gray-800 text-gray-400 border border-gray-700">
+                #{t}
+              </span>
+            ))}
+            {doc.tags.length > 3 && <span className="text-gray-600">+{doc.tags.length - 3}</span>}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

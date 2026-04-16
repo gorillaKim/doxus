@@ -1,11 +1,11 @@
 use doxus_core::embedding::EmbeddingProvider;
 use rusqlite::Connection;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub struct McpServer {
-    pub(crate) conn: Connection,
-    pub(crate) embedder: Option<Arc<dyn EmbeddingProvider>>,
+    pub(crate) conn: Arc<Mutex<Connection>>,
+    pub(crate) embedder: Option<Arc<dyn EmbeddingProvider + Send + Sync>>,
     pub(crate) plugin_manager: Arc<doxus_core::plugin::PluginManager>,
     pub(crate) plugins_dir: PathBuf,
     pub(crate) allow_file_scheme: bool,
@@ -13,8 +13,8 @@ pub struct McpServer {
 
 impl McpServer {
     pub fn new(
-        conn: Connection,
-        embedder: Option<Arc<dyn EmbeddingProvider>>,
+        conn: Arc<Mutex<Connection>>,
+        embedder: Option<Arc<dyn EmbeddingProvider + Send + Sync>>,
         plugin_manager: Arc<doxus_core::plugin::PluginManager>,
         plugins_dir: PathBuf,
     ) -> Self {
@@ -28,8 +28,8 @@ impl McpServer {
     }
 
     pub fn new_with_file_scheme(
-        conn: Connection,
-        embedder: Option<Arc<dyn EmbeddingProvider>>,
+        conn: Arc<Mutex<Connection>>,
+        embedder: Option<Arc<dyn EmbeddingProvider + Send + Sync>>,
         plugin_manager: Arc<doxus_core::plugin::PluginManager>,
         plugins_dir: PathBuf,
     ) -> Self {
@@ -43,12 +43,12 @@ impl McpServer {
     }
 
     /// Provides access to the underlying SQLite connection.
-    pub fn conn(&self) -> &Connection {
-        &self.conn
+    pub fn conn(&self) -> Arc<Mutex<Connection>> {
+        Arc::clone(&self.conn)
     }
 
     /// Provides access to the embedding provider, if available.
-    pub fn embedder(&self) -> Option<&Arc<dyn EmbeddingProvider>> {
+    pub fn embedder(&self) -> Option<&Arc<dyn EmbeddingProvider + Send + Sync>> {
         self.embedder.as_ref()
     }
 

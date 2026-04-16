@@ -92,9 +92,9 @@ async fn main() -> Result<()> {
     let conn = db::open(&db_path).context("failed to open database")?;
 
     // Try to load ONNX embedder; fall back to FTS-only silently.
-    let embedder: Option<std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider>> =
+    let embedder: Option<std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>> =
         doxus_core::embedding::OnnxEmbedder::from_default_path()
-            .map(|e| std::sync::Arc::new(e) as std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider>)
+            .map(|e| std::sync::Arc::new(e) as std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>)
             .ok();
 
     match cli.command {
@@ -249,7 +249,7 @@ async fn handle_index(conn: &rusqlite::Connection) -> Result<()> {
 async fn handle_search(
     conn: &rusqlite::Connection,
     db_path: &PathBuf,
-    embedder: Option<std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider>>,
+    embedder: Option<std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>>,
     query_text: String,
     limit: usize,
     project: Option<String>,
@@ -270,7 +270,7 @@ async fn handle_search(
         .with_limit(limit);
 
     // Use hybrid search when ONNX embedder is available; otherwise fall back to FTS-only.
-    let hits = if let Some(emb) = embedder {
+    let hits: Vec<doxus_core::search::Hit> = if let Some(emb) = embedder {
         let search_conn = db::open(db_path).context("failed to open search connection")?;
         let engine = SearchEngine::with_embedder(
             std::sync::Arc::new(std::sync::Mutex::new(search_conn)),
@@ -278,7 +278,11 @@ async fn handle_search(
         );
         engine.search_async(&query).await.map_err(|e| anyhow::anyhow!(e))?
     } else {
-        SearchEngine::new(conn).search(&query).map_err(|e| anyhow::anyhow!(e))?
+        SearchEngine::new(conn).search(&query)
+            .map_err(|e| anyhow::anyhow!(e))?
+            .into_iter()
+            .map(doxus_core::search::Hit::from)
+            .collect()
     };
 
     if hits.is_empty() {
@@ -292,7 +296,7 @@ async fn handle_search(
         let path = hit.file_path.as_deref().unwrap_or("");
         println!("{}. {} [score: {:.6}]", i + 1, title, hit.score);
         println!("   📄 {path}");
-        println!("   {}", hit.snippet);
+        println!("   {}", hit.snippet.as_deref().unwrap_or_default());
         println!();
     }
 
