@@ -23,7 +23,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": []
+    "icon": [],
+    "externalBin": [
+      "binaries/doxus-mcp"
+    ]
   },
   "plugins": {
     "deep-link": {

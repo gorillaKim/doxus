@@ -9,9 +9,6 @@ members = [
     "crates/agent",
     "crates/extism-poc",
     "apps/desktop/src-tauri",
-]
-
-exclude = [
     "crates/plugins/confluence",
     "crates/plugins/github",
 ]
