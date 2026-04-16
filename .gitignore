@@ -8,3 +8,6 @@
 .claude/worktrees/
 **/Cargo.lock
 !/Cargo.lock
+apps/desktop/src-tauri/binaries/
+build_errors.log
+request.json
