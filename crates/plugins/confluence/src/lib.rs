@@ -1,10 +1,23 @@
 pub mod html_convert;
 pub mod path_utils;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod oauth_server;
+
 use extism_pdk::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use doxus_plugin_sdk::wasm_types::*;
+use doxus_plugin_sdk::{PluginError, wasm_types::*};
+
+#[cfg(not(target_arch = "wasm32"))]
+use async_trait::async_trait;
+
+#[cfg(not(target_arch = "wasm32"))]
+use doxus_plugin_sdk::{
+    DocSource, FetchAllOpts, FetchChangesOpts, PluginMetadata, PluginKind, 
+    Capabilities, HealthStatus, PluginConfig, PluginSecrets, RawDocument, 
+    SourceDocId, ContentType as NativeContentType, DocumentStream, ChangeSet
+};
 
 macro_rules! log_debug {
     ($state:expr, $($arg:tt)*) => {
@@ -34,7 +47,6 @@ extern "ExtismHost" {
 struct PluginState {
     config: HashMap<String, serde_json::Value>,
     secrets: HashMap<String, String>,
-    // Cached tokens from successful refreshes during this session (instance lifetime)
     access_token: Option<String>,
     refresh_token: Option<String>,
     expires_at: Option<i64>,
@@ -61,20 +73,26 @@ impl PluginState {
         self.config.get(key).and_then(|v| v.as_str())
     }
 
+    fn update_hierarchy_cache(&mut self, id: &str, title: &str, parent_id: Option<&str>) {
+        let cache = self.hierarchy_cache.get_or_insert_with(HashMap::new);
+        cache.insert(id.to_string(), (title.to_string(), parent_id.map(|s| s.to_string())));
+        self.last_hierarchy_fetch = Some(now_secs());
+    }
+
     fn get_secret(&self, key: &str) -> Option<String> {
-        // 1. Try internal cache first
         if let Some(s) = self.secrets.get(key) {
             return Some(s.to_string());
         }
-
-        // 2. Fallback to host function for on-demand fetch
         let val = unsafe { __doxus_get_secret(key.to_string()).ok().unwrap_or_default() };
         if !val.is_empty() {
             return Some(val);
         }
-
         None
     }
+}
+
+fn now_secs() -> i64 {
+    unsafe { __doxus_get_time().unwrap_or(0) }
 }
 
 // ── Confluence API response shapes ────────────────────────────────────────────
@@ -129,6 +147,45 @@ struct ConfluenceSpace {
     id: String,
     key: String,
     name: Option<String>,
+}
+
+// ── Write Operation Shapes ───────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct CreatePageRequestV2 {
+    #[serde(rename = "spaceId")]
+    space_id: String,
+    title: String,
+    status: String,
+    #[serde(rename = "parentId", skip_serializing_if = "Option::is_none")]
+    parent_id: Option<String>,
+    body: CreatePageBodyV2,
+}
+
+#[derive(Serialize)]
+struct CreatePageBodyV2 {
+    representation: String,
+    value: String,
+}
+
+#[derive(Serialize)]
+struct UpdatePageRequestV2 {
+    id: String,
+    status: String,
+    title: String,
+    body: CreatePageBodyV2,
+    version: UpdatePageVersionV2,
+}
+
+#[derive(Serialize)]
+struct UpdatePageVersionV2 {
+    number: i64,
+    message: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct CreatePageResultV2 {
+    id: String,
 }
 
 // ── Confluence API v2 response shapes ──────────────────────────────────────────
@@ -186,8 +243,6 @@ struct ConfluenceV2Content {
     value: String,
 }
 
-// ── OAuth ────────────────────────────────────────────────────────────────────
-
 #[derive(Deserialize)]
 struct TokenResponse {
     access_token: String,
@@ -205,7 +260,6 @@ struct InitOpts {
 
 #[plugin_fn]
 pub fn initialize(Json(opts): Json<InitOpts>) -> FnResult<()> {
-    // Initial tokens from secrets
     let access_token = opts.secrets.get("access_token").cloned();
     let refresh_token = opts.secrets.get("refresh_token").cloned();
     let expires_at = opts.secrets.get("expires_at").and_then(|s| s.parse::<i64>().ok());
@@ -225,29 +279,24 @@ pub fn initialize(Json(opts): Json<InitOpts>) -> FnResult<()> {
 
 #[plugin_fn]
 pub fn fetch_all(Json(opts): Json<FetchAllOptsWasm>) -> FnResult<Json<DocumentStreamWasm>> {
+    fetch_all_impl(opts).map(Json)
+}
+
+pub(crate) fn fetch_all_impl(opts: FetchAllOptsWasm) -> FnResult<DocumentStreamWasm> {
     let mut state = PluginState::load()?;
     ensure_valid_token(&mut state)?;
 
     let base_url = get_base_url(&state)?;
     let space_key = state.get_config("space_key").ok_or(Error::msg("space_key missing"))?.to_string();
 
-    // 1. 스페이스 정보를 가져와서 가독성 있는 이름을 확보 (최상위 폴더명용)
     let space_url = format!("{base_url}/api/v2/spaces?keys={space_key}");
     let space_resp = request_with_auth(&state, "GET", &space_url, None)?;
     let space_list: ConfluenceV2ListResponse<ConfluenceSpace> = serde_json::from_slice(&space_resp.body())?;
     let space_info = space_list.results.first().ok_or(Error::msg("Space not found"))?;
     let root_folder_name = space_info.name.as_ref().unwrap_or(&space_info.key);
-
-    // 2. 전체 계층 구조 파악을 위해 폴더 목록을 먼저 가져옴 (최적화: 실제로는 페이징 필요할 수 있음)
-    // v2Folders API: GET /api/v2/spaces/{id}/folders
-    // 여기서는 간단히 하기 위해 ID를 스페이스 키로 대체하거나 별도 조회 로직 필요
-    // 현재 SDK 제약상 페이지 데이터와 함께 hierarchy를 구축하는 방향으로 진행
     
-    log_debug!(state, "[Confluence] Starting fetch_all, space: {}", space_key);
     let mut hierarchy = get_full_hierarchy(&mut state, &base_url, &space_info.id)?;
-    log_debug!(state, "[Confluence] Hierarchy built with {} entries", hierarchy.len());
     
-    // 3. 페이지 조회 (v2)
     let start = opts.cursor.and_then(|c| c.parse::<i64>().ok()).unwrap_or(0);
     let limit = opts.page_size as i64;
     
@@ -274,9 +323,6 @@ pub fn fetch_all(Json(opts): Json<FetchAllOptsWasm>) -> FnResult<Json<DocumentSt
         (r.results, r.links.next.is_some())
     };
 
-    eprintln!("[Confluence] Found {} pages to sync", pages_results.len());
-
-    // 4. 계층 지도 보완 (현재 페이지 정보도 부모가 될 수 있으므로 추가)
     for p in &pages_results {
         hierarchy.insert(p.id.clone(), (p.title.clone(), p.parent_id.clone()));
     }
@@ -285,24 +331,24 @@ pub fn fetch_all(Json(opts): Json<FetchAllOptsWasm>) -> FnResult<Json<DocumentSt
 
     let documents = pages_results.into_iter()
         .map(|p| {
-            let title = p.title.clone();
             let ancestor_id = state.get_config("ancestor_id");
-            let doc = page_to_doc_v2(&state, &mut hierarchy, p, root_folder_name, &base_url, ancestor_id);
-            log_debug!(state, "[Confluence]  - Converted: {}", title);
-            doc
+            page_to_doc_v2(&state, &mut hierarchy, p, root_folder_name, &base_url, ancestor_id)
         })
         .collect();
-    log_debug!(state, "[Confluence] Page sync complete");
 
-    Ok(Json(DocumentStreamWasm {
+    Ok(DocumentStreamWasm {
         documents,
         next_cursor,
         estimated_total: None,
-    }))
+    })
 }
 
 #[plugin_fn]
 pub fn fetch_document(Json(opts): Json<FetchDocumentOptsWasm>) -> FnResult<Json<RawDocumentWasm>> {
+    fetch_document_impl(opts).map(Json)
+}
+
+pub(crate) fn fetch_document_impl(opts: FetchDocumentOptsWasm) -> FnResult<RawDocumentWasm> {
     let mut state = PluginState::load()?;
     ensure_valid_token(&mut state)?;
 
@@ -312,7 +358,6 @@ pub fn fetch_document(Json(opts): Json<FetchDocumentOptsWasm>) -> FnResult<Json<
     let resp = request_with_auth(&state, "GET", &url, None)?;
     let p: ConfluencePageV2 = serde_json::from_slice(&resp.body())?;
 
-    // 단일 문서 조회 시에도 스페이스 정보를 가져옴
     let space_key = state.get_config("space_key").unwrap_or("Unknown").to_string();
     let space_url = format!("{base_url}/api/v2/spaces?keys={space_key}");
     let space_resp = request_with_auth(&state, "GET", &space_url, None)?;
@@ -323,22 +368,21 @@ pub fn fetch_document(Json(opts): Json<FetchDocumentOptsWasm>) -> FnResult<Json<
     let mut hierarchy = get_full_hierarchy(&mut state, &base_url, &space_info.id)?;
 
     let ancestor_id = state.get_config("ancestor_id");
-    Ok(Json(page_to_doc_v2(&state, &mut hierarchy, p, root_name, &base_url, ancestor_id)))
+    Ok(page_to_doc_v2(&state, &mut hierarchy, p, root_name, &base_url, ancestor_id))
 }
 
 #[plugin_fn]
 pub fn fetch_changes(Json(opts): Json<FetchChangesOptsWasm>) -> FnResult<Json<ChangeSetWasm>> {
+    fetch_changes_impl(opts).map(Json)
+}
+
+pub(crate) fn fetch_changes_impl(opts: FetchChangesOptsWasm) -> FnResult<ChangeSetWasm> {
     let mut state = PluginState::load()?;
     ensure_valid_token(&mut state)?;
 
     let base_url = get_base_url(&state)?;
     let space_key = state.get_config("space_key").ok_or(Error::msg("space_key missing"))?.to_string();
 
-    // v2에서는 lastModified 대신 CQL을 직접적으로 사용하기 어려우므로 
-    // 우선 v1 API의 검색을 사용하여 ID 목록을 가져온 뒤 v2로 상세 정보를 채우거나,
-    // 전체 v2 페이지 목록에서 필터링하는 방식을 취해야 함.
-    // 여기서는 일관성을 위해 v1 검색 후 v2 변환 방식을 사용 (현실적인 타협점)
-    
     let start = opts.cursor.and_then(|c| c.parse::<i64>().ok()).unwrap_or(0);
     let limit = opts.page_size as i64;
     let since_dt = chrono::DateTime::from_timestamp(opts.since, 0).unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH);
@@ -363,14 +407,12 @@ pub fn fetch_changes(Json(opts): Json<FetchChangesOptsWasm>) -> FnResult<Json<Ch
     let space_info = space_list.results.first().ok_or(Error::msg("Space not found"))?;
     let root_name = space_info.name.as_ref().unwrap_or(&space_info.key);
 
-    // 상세 정보 및 계층 구조 복원
     let mut updated = Vec::new();
     let mut hierarchy = get_full_hierarchy(&mut state, &base_url, &space_info.id)?;
 
     let ancestor_id = state.get_config("ancestor_id");
 
     for v1_page in r.results {
-        // 상세 정보 및 계층 구조 복원
         let v2_url = format!("{base_url}/api/v2/pages/{}?body-format=storage", v1_page.id);
         if let Ok(v2_resp) = request_with_auth(&state, "GET", &v2_url, None) {
              if let Ok(p_v2) = serde_json::from_slice::<ConfluencePageV2>(&v2_resp.body()) {
@@ -380,15 +422,19 @@ pub fn fetch_changes(Json(opts): Json<FetchChangesOptsWasm>) -> FnResult<Json<Ch
         }
     }
 
-    Ok(Json(ChangeSetWasm {
+    Ok(ChangeSetWasm {
         updated,
         deleted: vec![],
         next_cursor,
-    }))
+    })
 }
 
 #[plugin_fn]
 pub fn health_check() -> FnResult<String> {
+    health_check_impl()
+}
+
+pub(crate) fn health_check_impl() -> FnResult<String> {
     let state = PluginState::load()?;
     let base_url = get_base_url(&state)?;
     let url = format!("{base_url}/rest/api/content?limit=1");
@@ -398,8 +444,151 @@ pub fn health_check() -> FnResult<String> {
         Ok("Healthy".into())
     } else {
         let msg = format!("Confluence returned status {}", resp.status_code());
-        Err(Error::msg(msg).into())
+        Ok(msg)
     }
+}
+
+#[plugin_fn]
+pub fn create_document(Json(opts): Json<CreateDocumentOptsWasm>) -> FnResult<Json<CreateDocumentResultWasm>> {
+    create_document_impl(opts).map(Json)
+}
+
+pub(crate) fn create_document_impl(opts: CreateDocumentOptsWasm) -> FnResult<CreateDocumentResultWasm> {
+    let mut state = PluginState::load()?;
+    ensure_valid_token(&mut state)?;
+
+    let base_url = get_base_url(&state)?;
+    let space_key = state.get_config("space_key").ok_or(Error::msg("space_key missing"))?.to_string();
+
+    let space_url = format!("{base_url}/api/v2/spaces?keys={space_key}");
+    let space_resp = request_with_auth(&state, "GET", &space_url, None)?;
+    let space_list: ConfluenceV2ListResponse<ConfluenceSpace> = serde_json::from_slice(&space_resp.body())?;
+    let space_info = space_list.results.first().ok_or(Error::msg("Space not found"))?;
+
+    let segments = doxus_plugin_sdk::path_utils::parse_hierarchical_path(opts.folder.as_deref(), &opts.title)?;
+    
+    let config_ancestor_id = state.get_config("ancestor_id").map(|s| s.to_string());
+    let mut current_parent_id = opts.metadata.get("parent_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| state.get_config("default_parent_id").map(|s| s.to_string()))
+        .or_else(|| config_ancestor_id);
+
+    let mut final_title = String::new();
+    let mut final_id = String::new();
+
+    for (i, segment) in segments.iter().enumerate() {
+        let is_last = i == segments.len() - 1;
+        
+        if is_last {
+            let (id, actual_title) = get_or_create_page_v2(
+                &mut state,
+                &base_url,
+                &space_info.id,
+                segment,
+                current_parent_id.as_deref(),
+            )?;
+            final_id = id;
+            final_title = actual_title;
+        } else {
+            let (id, _) = get_or_create_page_v2(
+                &mut state,
+                &base_url,
+                &space_info.id,
+                segment,
+                current_parent_id.as_deref(),
+            )?;
+            current_parent_id = Some(id);
+        }
+    }
+
+    let html_content = html_convert::markdown_to_html(&opts.content);
+    let update_body = CreatePageBodyV2 {
+        representation: "storage".to_string(),
+        value: html_content,
+    };
+
+    let get_url = format!("{base_url}/api/v2/pages/{final_id}");
+    let get_resp = request_with_auth(&state, "GET", &get_url, None)?;
+    let current_page: ConfluencePageV2 = serde_json::from_slice(&get_resp.body())?;
+    let current_version = current_page.version.map(|v| v.number).unwrap_or(1);
+
+    let req_body = UpdatePageRequestV2 {
+        id: final_id.clone(),
+        status: "current".to_string(),
+        title: final_title.clone(),
+        body: update_body,
+        version: UpdatePageVersionV2 {
+            number: current_version + 1,
+            message: "Updated via doxus standardized flow".to_string(),
+        },
+    };
+
+    let update_url = format!("{base_url}/api/v2/pages/{final_id}");
+    let _resp = request_with_auth(&state, "PUT", &update_url, Some(serde_json::to_vec(&req_body)?))?;
+
+    state.update_hierarchy_cache(&final_id, &final_title, current_parent_id.as_deref());
+    state.save()?;
+
+    Ok(CreateDocumentResultWasm { id: final_id })
+}
+
+#[plugin_fn]
+pub fn update_document(Json(opts): Json<UpdateDocumentOptsWasm>) -> FnResult<()> {
+    update_document_impl(opts)
+}
+
+pub(crate) fn update_document_impl(opts: UpdateDocumentOptsWasm) -> FnResult<()> {
+    let mut state = PluginState::load()?;
+    ensure_valid_token(&mut state)?;
+
+    let base_url = get_base_url(&state)?;
+
+    let get_url = format!("{base_url}/api/v2/pages/{}", opts.id);
+    let get_resp = request_with_auth(&state, "GET", &get_url, None)?;
+    let current_page: ConfluencePageV2 = serde_json::from_slice(&get_resp.body())?;
+    let current_version = current_page.version.map(|v| v.number).unwrap_or(1);
+
+    let html_content = if let Some(content) = opts.content {
+        html_convert::markdown_to_html(&content)
+    } else {
+        return Err(Error::msg("Updating without new content not yet supported").into());
+    };
+
+    let req_body = UpdatePageRequestV2 {
+        id: opts.id.clone(),
+        status: "current".to_string(),
+        title: current_page.title,
+        body: CreatePageBodyV2 {
+            representation: "storage".to_string(),
+            value: html_content,
+        },
+        version: UpdatePageVersionV2 {
+            number: current_version + 1,
+            message: "Updated via doxus".to_string(),
+        },
+    };
+
+    let update_url = format!("{base_url}/api/v2/pages/{}", opts.id);
+    let _resp = request_with_auth(&state, "PUT", &update_url, Some(serde_json::to_vec(&req_body)?))?;
+
+    Ok(())
+}
+
+#[plugin_fn]
+pub fn delete_document(Json(opts): Json<DeleteDocumentOptsWasm>) -> FnResult<()> {
+    delete_document_impl(opts)
+}
+
+pub(crate) fn delete_document_impl(opts: DeleteDocumentOptsWasm) -> FnResult<()> {
+    let mut state = PluginState::load()?;
+    ensure_valid_token(&mut state)?;
+
+    let base_url = get_base_url(&state)?;
+    let delete_url = format!("{base_url}/api/v2/pages/{}", opts.id);
+    
+    let _resp = request_with_auth(&state, "DELETE", &delete_url, None)?;
+    Ok(())
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -418,7 +607,6 @@ fn auth_header(state: &PluginState) -> FnResult<String> {
         return Ok(format!("Bearer {token}"));
     }
     
-    // Fallback to Basic Auth (email + api_token)
     let api_token_opt = state.get_secret("confluence_api_token")
         .or_else(|| state.get_secret("api_token"));
 
@@ -433,30 +621,25 @@ fn auth_header(state: &PluginState) -> FnResult<String> {
 
 fn request_with_auth(state: &PluginState, method: &str, url: &str, body: Option<Vec<u8>>) -> FnResult<HttpResponse> {
     let auth = auth_header(state)?;
-    let auth_type = if auth.starts_with("Bearer") { "Bearer" } else { "Basic" };
     
-    // WASM 인스턴스 로그 전송 (debug=true 일 때만 출력)
-    log_debug!(state, "[Wasm-Network] {} request to: {}", method, url);
-    log_debug!(state, "[Wasm-Network] Auth using: {}", auth_type);
-
     let mut req = HttpRequest::new(url);
     req.method = Some(method.to_string());
     req.headers.insert("Authorization".to_string(), auth);
     req.headers.insert("Accept".to_string(), "application/json".to_string());
+    if body.is_some() {
+        req.headers.insert("Content-Type".to_string(), "application/json".to_string());
+    }
     
     let resp = http::request(&req, body)?;
     if resp.status_code() >= 400 {
         let msg = format!("HTTP {}: {}", resp.status_code(), String::from_utf8_lossy(&resp.body()));
-        eprintln!("[Wasm-Network] ERROR: {}", msg);
         return Err(Error::msg(msg).into());
     }
     Ok(resp)
 }
 
 fn ensure_valid_token(state: &mut PluginState) -> FnResult<()> {
-    // Note: WASM guest doesn't have system time easily. For now, we rely on the host
-    // or simple exists check.
-    let now: i64 = unsafe { __doxus_get_time().ok().unwrap_or(0) }; 
+    let now: i64 = unsafe { __doxus_get_time().unwrap_or(0) }; 
     
     let needs_refresh = if let Some(expires_at) = state.expires_at {
         now + REFRESH_THRESHOLD_SECONDS >= expires_at
@@ -477,7 +660,6 @@ fn refresh_oauth_token(state: &mut PluginState, refresh_token: &str) -> FnResult
     let client_id = state.get_config("client_id").ok_or(Error::msg("client_id missing"))?;
     let client_secret = state.get_config("client_secret").ok_or(Error::msg("client_secret missing"))?;
     
-    // Allow overriding the OAuth URL for testing (default: Atlassian production)
     let oauth_base = state.get_config("oauth_base_url")
         .unwrap_or("https://auth.atlassian.com");
     let url = format!("{oauth_base}/oauth/token");
@@ -502,19 +684,13 @@ fn refresh_oauth_token(state: &mut PluginState, refresh_token: &str) -> FnResult
 
     let token_resp: TokenResponse = serde_json::from_slice(&resp.body())?;
     
-    // Update local state
     state.access_token = Some(token_resp.access_token.clone());
     if let Some(rt) = token_resp.refresh_token {
         state.refresh_token = Some(rt);
     }
-    // TODO(P2): get_time 호스트 함수 도입 후 `now + expires_in`으로 절대 시각 저장
-    // 현재는 now=0 기반 비교이므로 expires_in 값 그대로 유지 (일관성 보장)
     state.expires_at = Some(token_resp.expires_in);
     state.save()?;
 
-    // Push updated tokens to host immediately via host function.
-    // Errors are propagated: if the host cannot persist the token, we treat the
-    // refresh as failed so the caller can surface the problem to the user.
     unsafe {
         __doxus_set_secret("access_token".to_string(), state.access_token.clone().unwrap())?;
         if let Some(rt) = &state.refresh_token {
@@ -540,10 +716,8 @@ fn page_to_doc_v2(
         .unwrap_or_default();
     
     let markdown = html_convert::confluence_html_to_markdown(storage_content);
-    
     let (ancestor_titles, root_name) = resolve_ancestors(state, base_url, &p.id, hierarchy, stop_id);
     
-    // 만약 stop_id가 지정되었는데 못찾았다면, 최소한 스페이스명을 루트로 쓰지 않음 (평면화 방지)
     let final_root_name = if !root_name.is_empty() {
         root_name
     } else if stop_id.is_some() {
@@ -558,12 +732,9 @@ fn page_to_doc_v2(
         chrono::DateTime::parse_from_rfc3339(&v.created_at).ok().map(|dt| dt.timestamp())
     });
 
-    // v2 webui link는 "/pages/..." 형태이므로 base_url과 조합
     let url = p.links.webui.map(|ui| format!("{}{}", base_url, ui));
 
     let mut metadata = HashMap::new();
-    metadata.insert("debug_check".to_string(), serde_json::json!("OK-PATH-FIXED"));
-    
     if let Some(sid) = &p.space_id {
         metadata.insert("space_id".to_string(), serde_json::json!(sid));
     }
@@ -587,29 +758,22 @@ fn get_full_hierarchy(
     base_url: &str, 
     space_id: &str
 ) -> FnResult<HashMap<String, (String, Option<String>)>> {
-    let now: i64 = unsafe { __doxus_get_time().ok().unwrap_or(0) };
-    const CACHE_TTL_SECONDS: i64 = 3600; // 1 hour
+    let now: i64 = unsafe { __doxus_get_time().unwrap_or(0) };
+    const CACHE_TTL_SECONDS: i64 = 3600;
 
     if let (Some(cache), Some(last_fetch)) = (&state.hierarchy_cache, state.last_hierarchy_fetch) {
         if now < last_fetch + CACHE_TTL_SECONDS {
-            log_debug!(state, "[Confluence] Using cached hierarchy ({} entries)", cache.len());
             return Ok(cache.clone());
         }
     }
 
     let mut hierarchy = HashMap::new();
-    
-    // 1. Fetch Pages (Standard hierarchy)
     let mut pages_url = format!("{base_url}/api/v2/spaces/{space_id}/pages?limit=250");
     let mut pages_count = 0;
     loop {
         pages_count += 1;
-        if pages_count > 100 {
-            log_debug!(state, "[Confluence] Pages hierarchy fetch reached safety limit (100 pages)");
-            break;
-        }
+        if pages_count > 100 { break; }
         
-        log_debug!(state, "[Confluence] Fetching pages hierarchy page {}, url: {}", pages_count, pages_url);
         if let Ok(resp) = request_with_auth(state, "GET", &pages_url, None) {
             if let Ok(list) = serde_json::from_slice::<ConfluenceV2ListResponse<ConfluencePageV2>>(&resp.body()) {
                 let current_batch_size = list.results.len();
@@ -620,16 +784,12 @@ fn get_full_hierarchy(
                 if let Some(next) = list.links.next {
                     pages_url = if next.starts_with("http") { next } else { format!("{}{}", base_url, next) };
                 } else if current_batch_size >= 250 {
-                   // Fallback if links.next is missing but results are full
                    pages_url = format!("{base_url}/api/v2/spaces/{space_id}/pages?limit=250&offset={}", pages_count * 250);
-                } else {
-                    break;
-                }
+                } else { break; }
             } else { break; }
         } else { break; }
     }
 
-    // 2. Fetch Folders (For premium plans/new types if any)
     let mut folders_url = format!("{base_url}/api/v2/spaces/{space_id}/folders?limit=250");
     let mut folders_count = 0;
     loop {
@@ -659,14 +819,12 @@ fn fetch_page_info(
     base_url: &str,
     id: &str
 ) -> Option<(String, Option<String>)> {
-    log_debug!(state, "[Confluence] Fetching missing parent info for ID: {}", id);
     let url = format!("{base_url}/api/v2/pages/{id}");
     if let Ok(resp) = request_with_auth(state, "GET", &url, None) {
         if let Ok(p) = serde_json::from_slice::<ConfluencePageV2>(&resp.body()) {
             return Some((p.title, p.parent_id));
         }
     }
-    // Fallback to folders if page not found
     let url = format!("{base_url}/api/v2/folders/{id}");
     if let Ok(resp) = request_with_auth(state, "GET", &url, None) {
         if let Ok(f) = serde_json::from_slice::<ConfluenceFolderV2>(&resp.body()) {
@@ -676,7 +834,6 @@ fn fetch_page_info(
     None
 }
 
-/// 조상 경로를 추적합니다. 캐시에 없는 경우 API호출로 보완합니다.
 fn resolve_ancestors(
     state: &PluginState,
     base_url: &str,
@@ -692,7 +849,6 @@ fn resolve_ancestors(
         let (title, parent_id) = if let Some(info) = hierarchy.get(&cursor) {
             info.clone()
         } else {
-            // 캐시에 없으면 API로 직접 가져옴
             if let Some(info) = fetch_page_info(state, base_url, &cursor) {
                 hierarchy.insert(cursor.clone(), info.clone());
                 info
@@ -726,4 +882,268 @@ fn resolve_ancestors(
     }
     ancestors.reverse();
     (ancestors, root_title)
+}
+
+fn get_or_create_page_v2(
+    state: &mut PluginState,
+    base_url: &str,
+    space_id: &str,
+    title: &str,
+    parent_id: Option<&str>,
+) -> FnResult<(String, String)> {
+    let mut attempts = 0;
+    let mut current_title = title.to_string();
+
+    loop {
+        attempts += 1;
+        if attempts > 10 {
+            return Err(Error::msg(format!("Failed to find a unique title for '{}' after 10 attempts", title)).into());
+        }
+
+        let search_url = format!("{base_url}/api/v2/pages?spaceId={space_id}&title={}", urlencoding::encode(&current_title));
+        let resp = request_with_auth(state, "GET", &search_url, None)?;
+        let list: ConfluenceV2ListResponse<ConfluencePageV2> = serde_json::from_slice(&resp.body())?;
+        
+        if !list.results.is_empty() {
+            for p in &list.results {
+                if p.parent_id.as_deref() == parent_id {
+                    state.update_hierarchy_cache(&p.id, &p.title, p.parent_id.as_deref());
+                    return Ok((p.id.clone(), current_title));
+                }
+            }
+            current_title = format!("{} ({})", title, attempts);
+            continue;
+        }
+
+        let req_body = CreatePageRequestV2 {
+            space_id: space_id.to_string(),
+            title: current_title.clone(),
+            status: "current".to_string(),
+            parent_id: parent_id.map(|s| s.to_string()),
+            body: CreatePageBodyV2 {
+                representation: "storage".to_string(),
+                value: "<p />".to_string(), 
+            },
+        };
+        
+        let create_url = format!("{base_url}/api/v2/pages");
+        let resp = request_with_auth(state, "POST", &create_url, Some(serde_json::to_vec(&req_body)?))?;
+        let result: CreatePageResultV2 = serde_json::from_slice(&resp.body())?;
+        return Ok((result.id, current_title));
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub struct ConfluencePlugin {
+    pub base_url: String,
+    pub space_key: String,
+    pub token: String,
+    pub ancestor_id: Option<String>,
+    pub oauth_token: Option<doxus_core::auth::OAuthToken>,
+    pub oauth_config: Option<doxus_core::auth::OAuthConfig>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl ConfluencePlugin {
+    pub fn new() -> Self {
+        Self {
+            base_url: String::new(),
+            space_key: String::new(),
+            token: "test-token".to_string(),
+            ancestor_id: None,
+            oauth_token: None,
+            oauth_config: None,
+        }
+    }
+
+    pub fn set_test_config(&mut self, base_url: String, space_key: String, token: String) {
+        self.base_url = base_url;
+        self.space_key = space_key;
+        self.token = token;
+    }
+
+    pub fn set_test_ancestor_config(&mut self, base_url: String, ancestor_id: String, token: String) {
+        self.base_url = base_url;
+        self.ancestor_id = Some(ancestor_id);
+        self.token = token;
+        self.space_key = "TEAM".to_string();
+    }
+
+    pub fn set_test_oauth_config(&mut self, config: doxus_core::auth::OAuthConfig, token: Option<doxus_core::auth::OAuthToken>) {
+        self.oauth_config = Some(config);
+        self.oauth_token = token;
+    }
+
+    fn setup_state(&self) -> Result<(), PluginError> {
+        let mut config = HashMap::new();
+        config.insert("base_url".to_string(), serde_json::json!(self.base_url));
+        config.insert("space_key".to_string(), serde_json::json!(self.space_key));
+        if let Some(aid) = &self.ancestor_id {
+            config.insert("ancestor_id".to_string(), serde_json::json!(aid));
+        }
+
+        let mut secrets = HashMap::new();
+        secrets.insert("access_token".to_string(), self.token.clone());
+
+        if let Some(oauth_cfg) = &self.oauth_config {
+            config.insert("oauth_config".to_string(), serde_json::to_value(oauth_cfg).unwrap());
+        }
+
+        let state = PluginState {
+            config,
+            secrets,
+            access_token: self.oauth_token.as_ref().map(|t| t.access_token.clone()).or(Some(self.token.clone())),
+            refresh_token: self.oauth_token.as_ref().and_then(|t| t.refresh_token.clone()),
+            expires_at: self.oauth_token.as_ref().and_then(|t| t.expires_at.map(|e| e as i64)),
+            hierarchy_cache: None,
+            last_hierarchy_fetch: None,
+        };
+        
+        let bytes = serde_json::to_vec(&state).map_err(|e| PluginError::Internal(e.to_string()))?;
+        var::set(STATE_VAR, bytes).map_err(|e| PluginError::Internal(e.to_string()))?;
+        Ok(())
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[async_trait]
+impl DocSource for ConfluencePlugin {
+    fn metadata(&self) -> &PluginMetadata {
+        use std::sync::OnceLock;
+        static META: OnceLock<PluginMetadata> = OnceLock::new();
+        META.get_or_init(|| PluginMetadata {
+            id: "confluence".to_string(),
+            name: "Confluence".to_string(),
+            version: "0.1.0".to_string(),
+            kind: PluginKind::External,
+        })
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            incremental_sync: true,
+            oauth: true,
+            native_search: false,
+        }
+    }
+
+    async fn validate_config(&self, _config: &PluginConfig) -> Result<(), PluginError> {
+        Ok(())
+    }
+
+    async fn initialize(&mut self, _config: PluginConfig, _secrets: PluginSecrets) -> Result<(), PluginError> {
+        Ok(())
+    }
+
+    async fn fetch_all(&self, opts: FetchAllOpts) -> Result<DocumentStream, PluginError> {
+        self.setup_state()?;
+        let res = fetch_all_impl(FetchAllOptsWasm { 
+            cursor: opts.cursor, 
+            page_size: opts.page_size 
+        }).map_err(|e| PluginError::Internal(e.0.to_string()))?;
+        
+        Ok(DocumentStream {
+            documents: res.documents.into_iter().map(wasm_to_native_doc).collect(),
+            next_cursor: res.next_cursor,
+            estimated_total: res.estimated_total,
+        })
+    }
+
+    async fn fetch_changes(&self, opts: FetchChangesOpts) -> Result<ChangeSet, PluginError> {
+        self.setup_state()?;
+        let res = fetch_changes_impl(FetchChangesOptsWasm {
+            since: opts.since,
+            cursor: opts.cursor,
+            page_size: opts.page_size,
+        }).map_err(|e| PluginError::Internal(e.0.to_string()))?;
+
+        Ok(ChangeSet {
+            updated: res.updated.into_iter().map(wasm_to_native_doc).collect(),
+            deleted_ids: res.deleted.into_iter().map(SourceDocId).collect(),
+            next_cursor: res.next_cursor,
+        })
+    }
+
+    async fn fetch_document(&self, id: &SourceDocId) -> Result<RawDocument, PluginError> {
+        self.setup_state()?;
+        let res = fetch_document_impl(FetchDocumentOptsWasm { id: id.0.clone() })
+            .map_err(|e| PluginError::Internal(e.0.to_string()))?;
+        Ok(wasm_to_native_doc(res))
+    }
+
+    async fn health_check(&self) -> HealthStatus {
+        if let Err(e) = self.setup_state() {
+            return HealthStatus { healthy: false, message: Some(format!("Failed to setup test state: {}", e)) };
+        }
+        let res = health_check_impl();
+        match res {
+            Ok(msg) => HealthStatus { healthy: true, message: Some(msg) },
+            Err(e) => HealthStatus { healthy: false, message: Some(e.0.to_string()) },
+        }
+    }
+
+    fn supports_write(&self) -> bool {
+        true
+    }
+
+    async fn create_document(
+        &self,
+        title: &str,
+        content: &str,
+        folder: Option<&str>,
+        metadata: Option<&HashMap<String, serde_json::Value>>,
+    ) -> Result<SourceDocId, PluginError> {
+        self.setup_state()?;
+        let res = create_document_impl(CreateDocumentOptsWasm {
+            title: title.to_string(),
+            content: content.to_string(),
+            folder: folder.map(String::from),
+            metadata: metadata.cloned().unwrap_or_default(),
+        }).map_err(|e| PluginError::Internal(e.0.to_string()))?;
+        Ok(SourceDocId(res.id))
+    }
+
+    async fn update_document(
+        &self,
+        _id: &SourceDocId,
+        _content: Option<&str>,
+        _metadata: Option<&HashMap<String, serde_json::Value>>,
+    ) -> Result<(), PluginError> {
+        self.setup_state()?;
+        update_document_impl(UpdateDocumentOptsWasm {
+            id: _id.0.clone(),
+            content: _content.map(String::from),
+            metadata: _metadata.cloned(),
+        }).map_err(|e| PluginError::Internal(e.0.to_string()))?;
+        Ok(())
+    }
+
+    async fn delete_document(&self, _id: &SourceDocId) -> Result<(), PluginError> {
+        self.setup_state()?;
+        delete_document_impl(DeleteDocumentOptsWasm {
+            id: _id.0.clone(),
+        }).map_err(|e| PluginError::Internal(e.0.to_string()))?;
+        Ok(())
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn wasm_to_native_doc(w: RawDocumentWasm) -> RawDocument {
+    RawDocument {
+        id: SourceDocId(w.id),
+        title: w.title,
+        content: w.content,
+        content_type: match w.content_type.as_str() {
+            "html" => NativeContentType::Html,
+            "plain_text" => NativeContentType::PlainText,
+            _ => NativeContentType::Markdown,
+        },
+        url: w.url,
+        metadata: w.metadata,
+        tags: w.tags,
+        aliases: vec![],
+        created_at: w.created_at,
+        updated_at: w.updated_at,
+        relative_path: w.relative_path,
+    }
 }

@@ -1,9 +1,10 @@
 use doxus_core::auth::{OAuthConfig, OAuthToken};
 use doxus_plugin_confluence::ConfluencePlugin;
-use doxus_plugin_sdk::{DocSource, FetchAllOpts, FetchChangesOpts, PluginError};
+use doxus_plugin_sdk::{DocSource, FetchAllOpts, FetchChangesOpts, PluginError, DocumentStream, ChangeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+use std::sync::Arc;
 
 fn now_secs() -> u64 {
     SystemTime::now()
@@ -95,11 +96,11 @@ async fn token_refreshed_before_fetch_all_when_expired() {
         .await;
 
     let plugin = make_oauth_plugin(&server, "TEST");
-    let result = plugin
+    let res: Result<DocumentStream, PluginError> = plugin
         .fetch_all(FetchAllOpts { cursor: None, page_size: 25 })
         .await;
 
-    assert!(result.is_ok(), "expected ok, got: {:?}", result);
+    assert!(res.is_ok(), "expected ok, got: {:?}", res);
     server.verify().await;
 }
 
@@ -123,7 +124,7 @@ async fn fetch_changes_refreshes_expired_token() {
         .await;
 
     let plugin = make_oauth_plugin(&server, "TEST");
-    let result = plugin
+    let res: Result<ChangeSet, PluginError> = plugin
         .fetch_changes(FetchChangesOpts {
             since: 0,
             cursor: None,
@@ -132,7 +133,7 @@ async fn fetch_changes_refreshes_expired_token() {
         })
         .await;
 
-    assert!(result.is_ok(), "expected ok, got: {:?}", result);
+    assert!(res.is_ok(), "expected ok, got: {:?}", res);
     server.verify().await;
 }
 
@@ -169,11 +170,11 @@ async fn no_refresh_when_token_valid() {
     plugin.set_test_config(base_url, "TEST".into(), "api-token".into());
     plugin.set_test_oauth_config(oauth_config, Some(valid_token()));
 
-    let result = plugin
+    let res: Result<DocumentStream, PluginError> = plugin
         .fetch_all(FetchAllOpts { cursor: None, page_size: 25 })
         .await;
 
-    assert!(result.is_ok(), "expected ok, got: {:?}", result);
+    assert!(res.is_ok(), "expected ok, got: {:?}", res);
     server.verify().await;
 }
 
@@ -181,8 +182,6 @@ async fn no_refresh_when_token_valid() {
 
 #[tokio::test]
 async fn concurrent_fetch_does_not_double_refresh() {
-    use std::sync::Arc;
-
     let server = MockServer::start().await;
 
     // Token endpoint must be called exactly once despite two concurrent fetches
@@ -201,12 +200,12 @@ async fn concurrent_fetch_does_not_double_refresh() {
 
     let plugin = Arc::new(make_oauth_plugin(&server, "TEST"));
 
-    let p1 = Arc::clone(&plugin);
-    let p2 = Arc::clone(&plugin);
+    let p1: Arc<ConfluencePlugin> = Arc::clone(&plugin);
+    let p2: Arc<ConfluencePlugin> = Arc::clone(&plugin);
 
-    let (r1, r2) = tokio::join!(
-        p1.fetch_all(FetchAllOpts { cursor: None, page_size: 25 }),
-        p2.fetch_all(FetchAllOpts { cursor: None, page_size: 25 }),
+    let (r1, r2): (Result<DocumentStream, PluginError>, Result<DocumentStream, PluginError>) = tokio::join!(
+        async { p1.fetch_all(FetchAllOpts { cursor: None, page_size: 25 }).await },
+        async { p2.fetch_all(FetchAllOpts { cursor: None, page_size: 25 }).await },
     );
 
     assert!(r1.is_ok(), "r1: {:?}", r1);
@@ -241,14 +240,14 @@ async fn refresh_fails_when_no_refresh_token() {
     plugin.set_test_config(base_url, "TEST".into(), "api-token".into());
     plugin.set_test_oauth_config(oauth_config, Some(no_refresh));
 
-    let result = plugin
+    let res: Result<DocumentStream, PluginError> = plugin
         .fetch_all(FetchAllOpts { cursor: None, page_size: 25 })
         .await;
 
     assert!(
-        matches!(result, Err(PluginError::AuthRequired)),
+        matches!(res, Err(PluginError::AuthRequired)),
         "expected AuthRequired, got: {:?}",
-        result
+        res
     );
 }
 
@@ -280,10 +279,10 @@ async fn api_token_auth_unaffected() {
         "my-api-token".into(),
     );
 
-    let result = plugin
+    let res: Result<DocumentStream, PluginError> = plugin
         .fetch_all(FetchAllOpts { cursor: None, page_size: 25 })
         .await;
 
-    assert!(result.is_ok(), "expected ok, got: {:?}", result);
+    assert!(res.is_ok(), "expected ok, got: {:?}", res);
     server.verify().await;
 }

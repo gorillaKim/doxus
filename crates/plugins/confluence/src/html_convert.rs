@@ -24,6 +24,23 @@ pub fn confluence_html_to_markdown(html: &str) -> String {
     }
 }
 
+/// Markdown을 Confluence storage format용 HTML로 변환한다.
+pub fn markdown_to_html(md: &str) -> String {
+    use pulldown_cmark::{html, Options, Parser};
+
+    let mut options = Options::empty();
+    options.insert(Options::ENABLE_GFM);
+    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_TASKLISTS);
+
+    let parser = Parser::new_ext(md, options);
+    let mut html_output = String::new();
+    html::push_html(&mut html_output, parser);
+    // Confluence storage format requires <p></p> instead of <p/>
+    html_output.replace("<p/>", "<p></p>")
+}
+
 /// Confluence XML 전용 태그를 표준 HTML로 변환한다.
 fn normalize_confluence_xml(html: &str) -> String {
     use quick_xml::events::Event;

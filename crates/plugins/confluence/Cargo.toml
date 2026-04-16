@@ -18,7 +18,17 @@ base64 = "0.22"
 htmd = "0.5"
 quick-xml = { version = "0.37", features = ["serialize"] }
 urlencoding = "2.1"
+pulldown-cmark = "0.11"
+
+# Native-only dependencies for testing and oauth helper
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+doxus-core = { path = "../../core" }
+url = "2"
+doxus-plugin-sdk = { path = "../../plugin-sdk", features = ["native"] }
 
 [dev-dependencies]
 tempfile = "3"
 wiremock = "0.6"
+reqwest = "0.12"

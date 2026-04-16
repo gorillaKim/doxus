@@ -1,5 +1,7 @@
 use doxus_plugin_confluence::ConfluencePlugin;
-use doxus_plugin_sdk::{DocSource, FetchAllOpts, FetchChangesOpts, PluginError, SourceDocId};
+use doxus_plugin_sdk::{DocSource, FetchAllOpts, FetchChangesOpts, PluginError, SourceDocId, DocumentStream, ChangeSet, HealthStatus};
+#[allow(unused_imports)]
+use doxus_plugin_sdk::wasm_types::*;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -39,13 +41,13 @@ async fn fetch_all_returns_pages_from_api() {
         .await;
 
     let plugin = make_plugin(&server, "TEAM");
-    let stream = plugin
+    let res: Result<DocumentStream, PluginError> = plugin
         .fetch_all(FetchAllOpts {
             cursor: None,
             page_size: 25,
         })
-        .await
-        .unwrap();
+        .await;
+    let stream = res.unwrap();
 
     assert_eq!(stream.documents.len(), 3);
     assert_eq!(stream.documents[0].title.as_deref(), Some("Page 1"));
@@ -92,24 +94,24 @@ async fn fetch_all_paginates_with_cursor() {
     let plugin = make_plugin(&server, "TEAM");
 
     // page 1: cursor=None → start=0
-    let p1 = plugin
+    let res1: Result<DocumentStream, PluginError> = plugin
         .fetch_all(FetchAllOpts { cursor: None, page_size: 25 })
-        .await
-        .unwrap();
+        .await;
+    let p1 = res1.unwrap();
     assert_eq!(p1.next_cursor.as_deref(), Some("25"));
 
     // page 2: cursor="25" → start=25
-    let p2 = plugin
+    let res2: Result<DocumentStream, PluginError> = plugin
         .fetch_all(FetchAllOpts { cursor: p1.next_cursor, page_size: 25 })
-        .await
-        .unwrap();
+        .await;
+    let p2 = res2.unwrap();
     assert_eq!(p2.next_cursor.as_deref(), Some("50"));
 
     // page 3: cursor="50" → start=50, size(10) < limit(25) → no next cursor
-    let p3 = plugin
+    let res3: Result<DocumentStream, PluginError> = plugin
         .fetch_all(FetchAllOpts { cursor: p2.next_cursor, page_size: 25 })
-        .await
-        .unwrap();
+        .await;
+    let p3 = res3.unwrap();
     assert!(p3.next_cursor.is_none());
 }
 
@@ -124,14 +126,14 @@ async fn fetch_all_returns_error_on_unauthorized() {
         .await;
 
     let plugin = make_plugin(&server, "TEAM");
-    let result = plugin
+    let res: Result<DocumentStream, PluginError> = plugin
         .fetch_all(FetchAllOpts { cursor: None, page_size: 25 })
         .await;
 
     assert!(
-        matches!(result, Err(PluginError::AuthRequired)),
+        matches!(res, Err(PluginError::AuthRequired)),
         "expected AuthRequired, got: {:?}",
-        result
+        res
     );
 }
 
@@ -152,12 +154,12 @@ async fn fetch_all_respects_page_size() {
         .await;
 
     let plugin = make_plugin(&server, "TEAM");
-    let result = plugin
+    let res: Result<DocumentStream, PluginError> = plugin
         .fetch_all(FetchAllOpts { cursor: None, page_size: 25 })
         .await;
 
     // If mock matched (limit=25 in query), request succeeded
-    assert!(result.is_ok(), "expected ok, got: {:?}", result);
+    assert!(res.is_ok(), "expected ok, got: {:?}", res);
 }
 
 #[tokio::test]
@@ -178,15 +180,15 @@ async fn fetch_changes_returns_updated_pages() {
         .await;
 
     let plugin = make_plugin(&server, "TEAM");
-    let changeset = plugin
+    let res_cs: Result<ChangeSet, PluginError> = plugin
         .fetch_changes(FetchChangesOpts {
             since: 1704067200, // 2024-01-01T00:00:00Z
             cursor: None,
             page_size: 25,
             known_ids: vec![],
         })
-        .await
-        .unwrap();
+        .await;
+    let changeset = res_cs.unwrap();
 
     assert_eq!(changeset.updated.len(), 1);
     assert_eq!(changeset.updated[0].title.as_deref(), Some("Updated Page"));
@@ -221,26 +223,26 @@ async fn fetch_changes_paginates_with_cursor() {
 
     let plugin = make_plugin(&server, "TEAM");
 
-    let cs1 = plugin
+    let res_cs1: Result<ChangeSet, PluginError> = plugin
         .fetch_changes(FetchChangesOpts {
             since: 0,
             cursor: None,
             page_size: 25,
             known_ids: vec![],
         })
-        .await
-        .unwrap();
+        .await;
+    let cs1 = res_cs1.unwrap();
     assert_eq!(cs1.next_cursor.as_deref(), Some("25"));
 
-    let cs2 = plugin
+    let res_cs2: Result<ChangeSet, PluginError> = plugin
         .fetch_changes(FetchChangesOpts {
             since: 0,
             cursor: cs1.next_cursor,
             page_size: 25,
             known_ids: vec![],
         })
-        .await
-        .unwrap();
+        .await;
+    let cs2 = res_cs2.unwrap();
     assert!(cs2.next_cursor.is_none());
     assert_eq!(cs2.updated[0].title.as_deref(), Some("B"));
 }
@@ -256,7 +258,7 @@ async fn fetch_changes_returns_auth_error_on_401() {
         .await;
 
     let plugin = make_plugin(&server, "TEAM");
-    let result = plugin
+    let res: Result<ChangeSet, PluginError> = plugin
         .fetch_changes(FetchChangesOpts {
             since: 0,
             cursor: None,
@@ -266,9 +268,9 @@ async fn fetch_changes_returns_auth_error_on_401() {
         .await;
 
     assert!(
-        matches!(result, Err(PluginError::AuthRequired)),
+        matches!(res, Err(PluginError::AuthRequired)),
         "expected AuthRequired, got: {:?}",
-        result
+        res
     );
 }
 
@@ -291,15 +293,15 @@ async fn fetch_changes_detects_deletions_on_final_page() {
         .await;
 
     let plugin = make_plugin(&server, "TEAM");
-    let changeset = plugin
+    let res_cs_known: Result<ChangeSet, PluginError> = plugin
         .fetch_changes(FetchChangesOpts {
             since: 0,
             cursor: None,
             page_size: 25,
             known_ids: vec![SourceDocId("999".into()), SourceDocId("200".into())],
         })
-        .await
-        .unwrap();
+        .await;
+    let changeset = res_cs_known.unwrap();
 
     assert_eq!(changeset.updated.len(), 1);
     assert_eq!(changeset.deleted_ids.len(), 1);
@@ -322,7 +324,7 @@ async fn health_check_ancestor_only_config_returns_healthy() {
         .await;
 
     let plugin = make_ancestor_plugin(&server, "4667998225");
-    let status = plugin.health_check().await;
+    let status: HealthStatus = plugin.health_check().await;
 
     assert!(status.healthy, "expected healthy for ancestor-only config, got: {:?}", status.message);
 }
@@ -338,7 +340,7 @@ async fn health_check_ancestor_only_returns_unhealthy_on_404() {
         .await;
 
     let plugin = make_ancestor_plugin(&server, "9999999");
-    let status = plugin.health_check().await;
+    let status: HealthStatus = plugin.health_check().await;
 
     assert!(!status.healthy, "expected unhealthy for 404 ancestor");
 }
@@ -357,14 +359,14 @@ async fn fetch_all_returns_rate_limited_on_429() {
         .await;
 
     let plugin = make_plugin(&server, "TEAM");
-    let result = plugin
+    let res: Result<DocumentStream, PluginError> = plugin
         .fetch_all(FetchAllOpts { cursor: None, page_size: 25 })
         .await;
 
     assert!(
-        matches!(result, Err(PluginError::RateLimited { retry_after_secs: 30 })),
+        matches!(res, Err(PluginError::RateLimited { retry_after_secs: 30 })),
         "expected RateLimited{{30}}, got: {:?}",
-        result
+        res
     );
 }
 
@@ -379,14 +381,14 @@ async fn fetch_all_returns_rate_limited_default_on_429_without_header() {
         .await;
 
     let plugin = make_plugin(&server, "TEAM");
-    let result = plugin
+    let res: Result<DocumentStream, PluginError> = plugin
         .fetch_all(FetchAllOpts { cursor: None, page_size: 25 })
         .await;
 
     assert!(
-        matches!(result, Err(PluginError::RateLimited { retry_after_secs: 60 })),
+        matches!(res, Err(PluginError::RateLimited { retry_after_secs: 60 })),
         "expected RateLimited{{60}}, got: {:?}",
-        result
+        res
     );
 }
 
@@ -401,14 +403,14 @@ async fn fetch_all_returns_permission_denied_on_403() {
         .await;
 
     let plugin = make_plugin(&server, "TEAM");
-    let result = plugin
+    let res: Result<DocumentStream, PluginError> = plugin
         .fetch_all(FetchAllOpts { cursor: None, page_size: 25 })
         .await;
 
     assert!(
-        matches!(result, Err(PluginError::PermissionDenied(_))),
+        matches!(res, Err(PluginError::PermissionDenied(_))),
         "expected PermissionDenied, got: {:?}",
-        result
+        res
     );
 }
 
@@ -426,7 +428,7 @@ async fn fetch_changes_returns_rate_limited_on_429() {
         .await;
 
     let plugin = make_plugin(&server, "TEAM");
-    let result = plugin
+    let res: Result<ChangeSet, PluginError> = plugin
         .fetch_changes(FetchChangesOpts {
             since: 0,
             cursor: None,
@@ -436,9 +438,9 @@ async fn fetch_changes_returns_rate_limited_on_429() {
         .await;
 
     assert!(
-        matches!(result, Err(PluginError::RateLimited { retry_after_secs: 45 })),
+        matches!(res, Err(PluginError::RateLimited { retry_after_secs: 45 })),
         "expected RateLimited{{45}}, got: {:?}",
-        result
+        res
     );
 }
 
@@ -465,10 +467,10 @@ async fn fetch_all_ancestor_filters_out_folder_types() {
         .await;
 
     let plugin = make_ancestor_plugin(&server, "4667998225");
-    let stream = plugin
+    let res_s: Result<DocumentStream, PluginError> = plugin
         .fetch_all(FetchAllOpts { cursor: None, page_size: 25 })
-        .await
-        .unwrap();
+        .await;
+    let stream = res_s.unwrap();
 
     // folder type must be filtered out — only 2 pages returned
     assert_eq!(stream.documents.len(), 2, "should filter out folder type items");
@@ -495,10 +497,10 @@ async fn fetch_all_ancestor_returns_zero_when_only_folders() {
         .await;
 
     let plugin = make_ancestor_plugin(&server, "4667998225");
-    let stream = plugin
+    let res_anc: Result<DocumentStream, PluginError> = plugin
         .fetch_all(FetchAllOpts { cursor: None, page_size: 25 })
-        .await
-        .unwrap();
+        .await;
+    let stream = res_anc.unwrap();
 
     assert_eq!(stream.documents.len(), 0, "all-folder response should yield 0 documents");
 }
@@ -522,15 +524,15 @@ async fn fetch_changes_ancestor_filters_out_folder_types() {
         .await;
 
     let plugin = make_ancestor_plugin(&server, "4667998225");
-    let changeset = plugin
+    let res_cs_anc: Result<ChangeSet, PluginError> = plugin
         .fetch_changes(FetchChangesOpts {
             since: 0,
             cursor: None,
             page_size: 25,
             known_ids: vec![],
         })
-        .await
-        .unwrap();
+        .await;
+    let changeset = res_cs_anc.unwrap();
 
     assert_eq!(changeset.updated.len(), 1, "folder type should be filtered from changes");
     assert_eq!(changeset.updated[0].title.as_deref(), Some("Updated Page"));
@@ -556,15 +558,15 @@ async fn fetch_changes_ancestor_deletion_ignores_folder_ids() {
         .await;
 
     let plugin = make_ancestor_plugin(&server, "4667998225");
-    let changeset = plugin
+    let res_cs_known_anc: Result<ChangeSet, PluginError> = plugin
         .fetch_changes(FetchChangesOpts {
             since: 0,
             cursor: None,
             page_size: 25,
             known_ids: vec![SourceDocId("200".into()), SourceDocId("999".into())],
         })
-        .await
-        .unwrap();
+        .await;
+    let changeset = res_cs_known_anc.unwrap();
 
     assert_eq!(changeset.deleted_ids.len(), 1);
     assert_eq!(changeset.deleted_ids[0].0, "999");
