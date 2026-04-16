@@ -4,12 +4,15 @@ use rusqlite::params;
 use serde_json::{json, Value};
 
 pub fn status(server: &McpServer, id: Value) -> McpResponse {
-    let projects: i64 = server
-        .conn()
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+    let projects: i64 = conn_lock
         .query_row("SELECT COUNT(*) FROM projects WHERE source_type != 'workspace'", [], |r| r.get(0))
         .unwrap_or(0);
-    let documents: i64 = server
-        .conn()
+    let documents: i64 = conn_lock
         .query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))
         .unwrap_or(0);
     McpResponse::text(
@@ -21,16 +24,18 @@ pub fn status(server: &McpServer, id: Value) -> McpResponse {
 }
 
 pub fn diagnose(server: &McpServer, id: Value) -> McpResponse {
-    let projects: i64 = server
-        .conn()
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+    let projects: i64 = conn_lock
         .query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
         .unwrap_or(0);
-    let documents: i64 = server
-        .conn()
+    let documents: i64 = conn_lock
         .query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))
         .unwrap_or(0);
-    let chunks: i64 = server
-        .conn()
+    let chunks: i64 = conn_lock
         .query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))
         .unwrap_or(0);
 
@@ -56,28 +61,28 @@ pub fn diagnose(server: &McpServer, id: Value) -> McpResponse {
 }
 
 pub fn system_report(server: &McpServer, id: Value) -> McpResponse {
-    let projects: i64 = server
-        .conn()
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+    let projects: i64 = conn_lock
         .query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
         .unwrap_or(0);
-    let active_projects: i64 = server
-        .conn()
+    let active_projects: i64 = conn_lock
         .query_row(
             "SELECT COUNT(*) FROM projects WHERE status='active'",
             [],
             |r| r.get(0),
         )
         .unwrap_or(0);
-    let documents: i64 = server
-        .conn()
+    let documents: i64 = conn_lock
         .query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))
         .unwrap_or(0);
-    let chunks: i64 = server
-        .conn()
+    let chunks: i64 = conn_lock
         .query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))
         .unwrap_or(0);
-    let plugins: i64 = server
-        .conn()
+    let plugins: i64 = conn_lock
         .query_row(
             "SELECT COUNT(DISTINCT plugin_id) FROM source_instances",
             [],
@@ -118,7 +123,12 @@ pub fn explain_search(server: &McpServer, id: Value, args: &Value) -> McpRespons
         None => return McpResponse::err(id, -32602, "missing required arg: document_id"),
     };
 
-    let row: Result<(Option<String>, String), _> = server.conn().query_row(
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+    let row: Result<(Option<String>, String), _> = conn_lock.query_row(
         "SELECT d.title, d.content FROM documents d WHERE d.source_doc_id = ?1",
         params![document_id],
         |r| Ok((r.get(0)?, r.get(1)?)),

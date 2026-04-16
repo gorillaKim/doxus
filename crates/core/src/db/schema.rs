@@ -68,5 +68,6 @@ pub struct SearchHit {
     pub file_path: Option<String>,
     pub heading_path: Option<String>,
     pub snippet: String,
+    pub context_content: Option<String>,
     pub score: f64,
 }

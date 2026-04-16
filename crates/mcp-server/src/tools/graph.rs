@@ -22,8 +22,13 @@ fn links(server: &McpServer, id: Value, args: &Value, outgoing: bool) -> McpResp
         None => return McpResponse::err(id, -32602, "missing required arg: id"),
     };
 
-    let table_exists: bool = server
-        .conn()
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+
+    let table_exists: bool = conn_lock
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='document_links'",
             [],
@@ -52,7 +57,7 @@ fn links(server: &McpServer, id: Value, args: &Value, outgoing: bool) -> McpResp
          WHERE p.name = ?1 AND d1.source_doc_id = ?2"
     };
 
-    let mut stmt = match server.conn().prepare(sql) {
+    let mut stmt = match conn_lock.prepare(sql) {
         Ok(s) => s,
         Err(e) => return McpResponse::err(id, -32603, e.to_string()),
     };
@@ -92,7 +97,13 @@ pub fn find_related(server: &McpServer, id: Value, args: &Value) -> McpResponse 
     };
     let k = args["k"].as_u64().unwrap_or(10) as i64;
 
-    let content: Result<String, _> = server.conn().query_row(
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+
+    let content: Result<String, _> = conn_lock.query_row(
         "SELECT d.content FROM documents d JOIN projects p ON d.project_id = p.id
          WHERE p.name = ?1 AND d.source_doc_id = ?2",
         params![project, doc_id],
@@ -116,7 +127,7 @@ pub fn find_related(server: &McpServer, id: Value, args: &Value) -> McpResponse 
         return McpResponse::text(id, "[]");
     }
 
-    let mut stmt = match server.conn().prepare(
+    let mut stmt = match conn_lock.prepare(
         "SELECT d.source_doc_id, d.title
          FROM documents_fts fts
          JOIN documents d ON fts.rowid = d.id
@@ -159,7 +170,13 @@ pub fn find_path(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     };
     let max_hops = args["max_hops"].as_u64().unwrap_or(6) as usize;
 
-    let table_exists: bool = server.conn()
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+
+    let table_exists: bool = conn_lock
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='document_links'",
             [], |r| r.get::<_, i64>(0),
@@ -184,7 +201,7 @@ pub fn find_path(server: &McpServer, id: Value, args: &Value) -> McpResponse {
          SELECT trail, depth FROM path WHERE doc_id = (SELECT id FROM documents WHERE source_doc_id = ?2 LIMIT 1)
          ORDER BY depth LIMIT 1";
 
-    let result: Result<(String, i64), _> = server.conn().query_row(
+    let result: Result<(String, i64), _> = conn_lock.query_row(
         sql, params![from, to, max_hops as i64], |r| Ok((r.get(0)?, r.get(1)?))
     );
 
@@ -213,7 +230,13 @@ pub fn get_cluster(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     };
     let depth = args["depth"].as_u64().unwrap_or(2).min(5) as i64;
 
-    let table_exists: bool = server.conn()
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+
+    let table_exists: bool = conn_lock
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='document_links'",
             [], |r| r.get::<_, i64>(0),
@@ -240,7 +263,7 @@ pub fn get_cluster(server: &McpServer, id: Value, args: &Value) -> McpResponse {
          SELECT DISTINCT source_doc_id, title, lvl FROM cluster ORDER BY lvl, source_doc_id"
     );
 
-    let mut stmt = match server.conn().prepare(&sql) {
+    let mut stmt = match conn_lock.prepare(&sql) {
         Ok(s) => s,
         Err(e) => return McpResponse::err(id, -32603, e.to_string()),
     };

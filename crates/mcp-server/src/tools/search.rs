@@ -2,8 +2,9 @@ use crate::server::McpServer;
 use crate::types::McpResponse;
 use rusqlite::params;
 use serde_json::{json, Value};
+use std::sync::{Arc, Mutex};
 
-pub fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse {
+pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     use doxus_core::search::{SearchEngine, SearchMode, SearchQuery};
 
     let query_text = match args["query"].as_str() {
@@ -11,12 +12,20 @@ pub fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse {
         None => return McpResponse::err(id, -32602, "missing required arg: query"),
     };
     let limit = args["limit"].as_u64().unwrap_or(20) as usize;
+    let offset = args["offset"].as_u64().unwrap_or(0) as usize;
     let project_filter = args["project"].as_str();
 
-    let mut q = SearchQuery::new(query_text).with_limit(limit);
+    let mut q = SearchQuery::new(query_text)
+        .with_limit(limit)
+        .with_offset(offset);
 
     if let Some(proj) = project_filter {
-        let pid: Result<i64, _> = server.conn().query_row(
+        let conn = server.conn();
+        let conn_lock = match conn.lock() {
+            Ok(l) => l,
+            Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+        };
+        let pid: Result<i64, _> = conn_lock.query_row(
             "SELECT id FROM projects WHERE name=?1",
             params![proj],
             |r| r.get(0),
@@ -27,38 +36,88 @@ pub fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse {
         }
     }
 
-    q.mode = if server.embedder().is_some() {
-        SearchMode::Hybrid
-    } else {
-        SearchMode::Fts
+    q.mode = match args["mode"].as_str() {
+        Some("fts") => SearchMode::Fts,
+        Some("vector") => SearchMode::Vector,
+        _ => if server.embedder().is_some() {
+            SearchMode::Hybrid
+        } else {
+            SearchMode::Fts
+        },
     };
 
-    let engine = SearchEngine::new(server.conn());
-    match engine.search(&q) {
-        Err(e) => McpResponse::err(id, -32603, e.to_string()),
-        Ok(hits) if hits.is_empty() => McpResponse::text(id, "No results found."),
-        Ok(hits) => {
-            let items: Vec<Value> = hits
-                .iter()
-                .map(|h| {
-                    json!({
-                        "document_id": h.document_id,
-                        "title": h.title,
-                        "file_path": h.file_path,
-                        "snippet": h.snippet,
-                        "score": h.score,
+    if let Some(embedder) = server.embedder() {
+        // Use the Arc<Mutex<Connection>> directly
+        let async_engine = SearchEngine::with_embedder(server.conn(), Arc::clone(embedder));
+        match async_engine.search_async(&q).await {
+            Err(e) => McpResponse::err(id, -32603, e.to_string()),
+            Ok(hits) if hits.is_empty() => McpResponse::text(id, "No results found."),
+            Ok(hits) => {
+                let items: Vec<Value> = hits
+                    .iter()
+                    .map(|h| {
+                        json!({
+                            "document_id": h.document_id,
+                            "title": h.title,
+                            "heading": h.heading_path,
+                            "snippet": h.snippet,
+                            "context": h.context_content,
+                            "score": h.score,
+                        })
                     })
-                })
-                .collect();
-            McpResponse::ok(
-                id,
-                json!({
-                    "content": [{
-                        "type": "text",
-                        "text": serde_json::to_string_pretty(&items).unwrap_or_default()
-                    }]
-                }),
-            )
+                    .collect();
+                
+                let mut text_resp = serde_json::to_string_pretty(&items).unwrap_or_default();
+                
+                // Add Small-to-Big Retrieval hint if context is present but truncated
+                if hits.iter().any(|h| h.context_content.as_ref().map(|s| s.contains("truncated")).unwrap_or(false)) {
+                    text_resp.push_str("\n\nNOTE: Some contexts were truncated for token efficiency. Use 'doxus_get_section' with the 'heading' provided above for full content.");
+                }
+
+                McpResponse::ok(
+                    id,
+                    json!({
+                        "content": [{
+                            "type": "text",
+                            "text": text_resp
+                        }]
+                    }),
+                )
+            }
+        }
+    } else {
+        // Fallback to basic sync search if no embedder
+        let conn = server.conn();
+        let conn_lock = match conn.lock() {
+            Ok(l) => l,
+            Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+        };
+        let engine = SearchEngine::new(&*conn_lock);
+        match engine.search(&q) {
+            Err(e) => McpResponse::err(id, -32603, e.to_string()),
+            Ok(hits) if hits.is_empty() => McpResponse::text(id, "No results found."),
+            Ok(hits) => {
+                let items: Vec<Value> = hits
+                    .iter()
+                    .map(|h| {
+                        json!({
+                            "document_id": h.document_id,
+                            "title": h.title,
+                            "snippet": h.snippet,
+                            "score": h.score,
+                        })
+                    })
+                    .collect();
+                McpResponse::ok(
+                    id,
+                    json!({
+                        "content": [{
+                            "type": "text",
+                            "text": serde_json::to_string_pretty(&items).unwrap_or_default()
+                        }]
+                    }),
+                )
+            }
         }
     }
 }
@@ -73,7 +132,12 @@ pub fn get_document(server: &McpServer, id: Value, args: &Value) -> McpResponse 
         None => return McpResponse::err(id, -32602, "missing required arg: id"),
     };
 
-    let row: Result<(Option<String>, String), _> = server.conn().query_row(
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+    let row: Result<(Option<String>, String), _> = conn_lock.query_row(
         "SELECT d.title, d.content
          FROM documents d
          JOIN projects p ON d.project_id = p.id
@@ -109,7 +173,12 @@ pub fn get_section(server: &McpServer, id: Value, args: &Value) -> McpResponse {
         None => return McpResponse::err(id, -32602, "missing required arg: heading"),
     };
 
-    let content: Result<String, _> = server.conn().query_row(
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+    let content: Result<String, _> = conn_lock.query_row(
         "SELECT d.content
          FROM documents d
          JOIN projects p ON d.project_id = p.id
@@ -149,7 +218,12 @@ pub fn get_metadata(server: &McpServer, id: Value, args: &Value) -> McpResponse 
         None => return McpResponse::err(id, -32602, "missing required arg: id"),
     };
 
-    let row: Result<(Option<String>, String, i64), _> = server.conn().query_row(
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+    let row: Result<(Option<String>, String, i64), _> = conn_lock.query_row(
         "SELECT d.title, d.content_hash, d.last_indexed
          FROM documents d
          JOIN projects p ON d.project_id = p.id
@@ -196,7 +270,12 @@ pub fn list_documents(server: &McpServer, id: Value, args: &Value) -> McpRespons
         .and_then(|c| c.parse::<i64>().ok())
         .unwrap_or(0);
 
-    let mut stmt = match server.conn().prepare(
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+    let mut stmt = match conn_lock.prepare(
         "SELECT d.source_doc_id, d.title
          FROM documents d
          JOIN projects p ON d.project_id = p.id
@@ -252,12 +331,17 @@ pub fn get_documents(server: &McpServer, id: Value, args: &Value) -> McpResponse
     };
 
     let mut results = vec![];
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
     for doc_id_val in ids {
         let doc_id = match doc_id_val.as_str() {
             Some(s) => s,
             None => continue,
         };
-        let row: Result<(Option<String>, String), _> = server.conn().query_row(
+        let row: Result<(Option<String>, String), _> = conn_lock.query_row(
             "SELECT d.title, d.content
              FROM documents d
              JOIN projects p ON d.project_id = p.id
@@ -287,7 +371,12 @@ pub fn resolve_alias(server: &McpServer, id: Value, args: &Value) -> McpResponse
         None => return McpResponse::err(id, -32602, "missing required arg: alias"),
     };
 
-    let row: Result<(String, String), _> = server.conn().query_row(
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+    let row: Result<(String, String), _> = conn_lock.query_row(
         "SELECT da.source_doc_id, p.name
          FROM document_aliases da
          JOIN documents d ON da.document_id = d.id
@@ -317,7 +406,12 @@ pub fn get_toc(server: &McpServer, id: Value, args: &Value) -> McpResponse {
         None => return McpResponse::err(id, -32602, "missing required arg: id"),
     };
 
-    let content: Result<String, _> = server.conn().query_row(
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+    let content: Result<String, _> = conn_lock.query_row(
         "SELECT d.content
          FROM documents d
          JOIN projects p ON d.project_id = p.id
@@ -346,7 +440,12 @@ pub fn get_ranking(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     };
     let limit = args["limit"].as_u64().unwrap_or(20) as i64;
 
-    let mut stmt = match server.conn().prepare(
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+    let mut stmt = match conn_lock.prepare(
         "SELECT d.source_doc_id, d.title, COALESCE(vc.view_count, 0) as views
          FROM documents d
          JOIN projects p ON d.project_id = p.id
@@ -395,7 +494,12 @@ pub fn inspect_document(server: &McpServer, id: Value, args: &Value) -> McpRespo
         None => return McpResponse::err(id, -32602, "missing required arg: id"),
     };
 
-    let row: Result<(i64, Option<String>, String, i64, i64), _> = server.conn().query_row(
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+    let row: Result<(i64, Option<String>, String, i64, i64), _> = conn_lock.query_row(
         "SELECT d.id, d.title, d.content_hash, d.last_indexed,
                 (SELECT COUNT(*) FROM chunks c WHERE c.document_id = d.id) as chunk_count
          FROM documents d

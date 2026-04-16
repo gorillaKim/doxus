@@ -4,8 +4,13 @@ use rusqlite::params;
 use serde_json::Value;
 
 pub fn list_projects(server: &McpServer, id: Value) -> McpResponse {
-    let mut stmt = match server.conn().prepare(
-        "SELECT name, display_name, status, path FROM projects WHERE source_type != 'workspace' ORDER BY name",
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+    let mut stmt = match conn_lock.prepare(
+        "SELECT name, display_name, status, path FROM projects ORDER BY name",
     ) {
         Ok(s) => s,
         Err(e) => return McpResponse::err(id, -32603, e.to_string()),
@@ -50,7 +55,12 @@ pub fn add_project(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     };
     let display_name = args["display_name"].as_str().unwrap_or(name);
 
-    let result = server.conn().execute(
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+    let result = conn_lock.execute(
         "INSERT INTO projects(name, display_name, path, created_at, updated_at)
          VALUES (?1, ?2, ?3, unixepoch(), unixepoch())",
         params![name, display_name, path],
@@ -71,17 +81,20 @@ pub fn remove_project(server: &McpServer, id: Value, args: &Value) -> McpRespons
         None => return McpResponse::err(id, -32602, "missing required arg: name"),
     };
 
-    let pid: Result<i64, _> = server
-        .conn()
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+    let pid: Result<i64, _> = conn_lock
         .query_row("SELECT id FROM projects WHERE name=?1", params![name], |r| r.get(0));
 
     match pid {
         Err(_) => McpResponse::err(id, -32602, format!("project '{name}' not found")),
         Ok(pid) => {
-            let _ = server
-                .conn()
+            let _ = conn_lock
                 .execute("DELETE FROM source_instances WHERE project_id=?1", [pid]);
-            match server.conn().execute("DELETE FROM projects WHERE id=?1", [pid]) {
+            match conn_lock.execute("DELETE FROM projects WHERE id=?1", [pid]) {
                 Ok(_) => McpResponse::text(
                     id,
                     format!("Project '{name}' removed (index data deleted, original files untouched)."),
@@ -93,134 +106,93 @@ pub fn remove_project(server: &McpServer, id: Value, args: &Value) -> McpRespons
 }
 
 pub fn index_project(server: &McpServer, id: Value, args: &Value) -> McpResponse {
-    use doxus_core::search::SyncSearchEngine;
+    use doxus_core::search::SearchEngine;
     use doxus_plugin_obsidian::ObsidianPlugin;
     use doxus_plugin_sdk::{DocSource, FetchAllOpts, PluginConfig, PluginSecrets};
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     let name = match args["project"].as_str().or_else(|| args["name"].as_str()) {
         Some(n) => n,
         None => return McpResponse::err(id, -32602, "missing required arg: project"),
     };
 
-    let row: Result<(i64, String), _> = server.conn().query_row(
-        "SELECT id, path FROM projects WHERE name=?1",
-        params![name],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    );
-
-    let (project_id, path) = match row {
-        Err(_) => return McpResponse::err(id, -32602, format!("project '{name}' not found")),
-        Ok(r) => r,
+    let conn = server.conn();
+    let (project_id, path) = {
+        let conn_lock = match conn.lock() {
+            Ok(l) => l,
+            Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+        };
+        let row: Result<(i64, String), _> = conn_lock.query_row(
+            "SELECT id, path FROM projects WHERE name=?1",
+            params![name],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        );
+        match row {
+            Err(_) => return McpResponse::err(id, -32602, format!("project '{name}' not found")),
+            Ok(r) => r,
+        }
     };
 
-    let mut plugin = ObsidianPlugin::new();
-    let mut fields = HashMap::new();
-    fields.insert("path".to_string(), serde_json::Value::String(path));
-    let config = PluginConfig { fields };
-    let secrets = PluginSecrets { fields: HashMap::new() };
+    let embedder = server.embedder()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(doxus_core::embedding::NoOpEmbedder) as Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>);
+    let engine = Arc::new(SearchEngine::with_embedder(conn.clone(), embedder));
 
-    let run_async = async move {
+    let run_batch_indexing = async move {
+        let mut plugin = ObsidianPlugin::new();
+        let mut fields = HashMap::new();
+        fields.insert("path".to_string(), serde_json::Value::String(path));
+        let config = PluginConfig { fields };
+        let secrets = PluginSecrets { fields: HashMap::new() };
+
         plugin.initialize(config, secrets).await?;
-        let mut all_docs = Vec::new();
+
         let mut cursor = None;
+        let mut total_indexed = 0;
+
         loop {
+            // 1. Fetch a batch of documents
             let stream = plugin
-                .fetch_all(FetchAllOpts { cursor, page_size: 1000 })
+                .fetch_all(FetchAllOpts { cursor, page_size: 50 })
                 .await?;
-            all_docs.extend(stream.documents);
-            match stream.next_cursor {
-                Some(c) => cursor = Some(c),
-                None => break,
+            
+            let docs = stream.documents;
+            if docs.is_empty() {
+                break;
+            }
+
+            // 2. Index the batch (with embeddings)
+            for doc in &docs {
+                let title = doc.title.as_deref().unwrap_or("");
+                engine.index_document_async(project_id, &doc.id.0, title, &doc.content).await
+                    .map_err(|e| doxus_plugin_sdk::PluginError::Internal(format!("indexing error for '{}': {e}", doc.id.0)))?;
+            }
+
+            total_indexed += docs.len();
+            cursor = stream.next_cursor;
+            if cursor.is_none() {
+                break;
             }
         }
-        Ok::<_, doxus_plugin_sdk::PluginError>(all_docs)
+        Ok::<usize, doxus_plugin_sdk::PluginError>(total_indexed)
     };
 
-    let docs = match tokio::runtime::Handle::try_current() {
-        Ok(handle) => match tokio::task::block_in_place(|| handle.block_on(run_async)) {
-            Ok(d) => d,
-            Err(e) => return McpResponse::err(id, -32603, format!("fetch error: {e}")),
-        },
+    let result = match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(run_batch_indexing)),
         Err(_) => {
-            match tokio::runtime::Runtime::new()
-                .map_err(|e| format!("runtime error: {e}"))
-                .and_then(|rt| rt.block_on(run_async).map_err(|e| e.to_string()))
-            {
-                Ok(d) => d,
-                Err(e) => return McpResponse::err(id, -32603, e),
+            match tokio::runtime::Runtime::new() {
+                Ok(rt) => rt.block_on(run_batch_indexing),
+                Err(e) => return McpResponse::err(id, -32603, format!("runtime error: {e}")),
             }
         }
     };
-
-    // Index all documents inside a single transaction
-    let result: Result<usize, String> = (|| {
-        server
-            .conn()
-            .execute_batch("BEGIN")
-            .map_err(|e| format!("begin transaction: {e}"))?;
-
-        let engine = SyncSearchEngine::from_conn(server.conn());
-        let mut indexed = 0usize;
-
-        for doc in &docs {
-            let title = doc.title.as_deref().unwrap_or("");
-            if let Err(e) = engine.index_document(project_id, &doc.id.0, title, &doc.content) {
-                let _ = server.conn().execute_batch("ROLLBACK");
-                return Err(format!("indexing error for '{}': {e}", doc.id.0));
-            }
-            indexed += 1;
-
-            if let Some(links_val) = doc.metadata.get("links") {
-                if let Some(links_arr) = links_val.as_array() {
-                    let doc_id: i64 = match server.conn().query_row(
-                        "SELECT id FROM documents WHERE project_id=?1 AND source_doc_id=?2",
-                        params![project_id, &doc.id.0],
-                        |r| r.get(0),
-                    ) {
-                        Ok(id) => id,
-                        Err(e) => {
-                            let _ = server.conn().execute_batch("ROLLBACK");
-                            return Err(format!("doc id lookup: {e}"));
-                        }
-                    };
-
-                    if let Err(e) = server.conn().execute(
-                        "DELETE FROM document_links WHERE source_id=?1",
-                        [doc_id],
-                    ) {
-                        let _ = server.conn().execute_batch("ROLLBACK");
-                        return Err(format!("delete links: {e}"));
-                    }
-
-                    for link in links_arr {
-                        if let Some(target_raw) = link.as_str() {
-                            if let Err(e) = server.conn().execute(
-                                "INSERT INTO document_links (source_id, target_raw, link_type) VALUES (?1, ?2, 'wikilink')",
-                                params![doc_id, target_raw],
-                            ) {
-                                let _ = server.conn().execute_batch("ROLLBACK");
-                                return Err(format!("insert link: {e}"));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        server
-            .conn()
-            .execute_batch("COMMIT")
-            .map_err(|e| format!("commit transaction: {e}"))?;
-
-        Ok(indexed)
-    })();
 
     match result {
         Ok(indexed) => {
-            McpResponse::text(id, format!("Project '{name}' indexed: {indexed} documents."))
+            McpResponse::text(id, format!("Project '{name}' indexed: {indexed} documents. (Embeddings generated)"))
         }
-        Err(e) => McpResponse::err(id, -32603, format!("index failed (rolled back): {e}")),
+        Err(e) => McpResponse::err(id, -32603, format!("index failed: {e}")),
     }
 }
 
@@ -235,7 +207,12 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
         None => return McpResponse::err(id, -32602, "missing required arg: project"),
     };
 
-    let row: Result<(i64, String, Option<String>, Option<i64>, String), _> = server.conn().query_row(
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+    let row: Result<(i64, String, Option<String>, Option<i64>, String), _> = conn_lock.query_row(
         "SELECT si.id, si.plugin_id, si.sync_cursor, si.last_synced, p.path
          FROM source_instances si
          JOIN projects p ON si.project_id = p.id
@@ -257,7 +234,7 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
         return McpResponse::err(id, -32603, format!("unsupported plugin: {plugin_id}"));
     }
 
-    let project_id: i64 = match server.conn().query_row(
+    let project_id: i64 = match conn_lock.query_row(
         "SELECT p.id FROM projects p
          JOIN source_instances si ON si.project_id = p.id
          WHERE si.id = ?1",
@@ -269,7 +246,7 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
     };
 
     let known_ids: Vec<SourceDocId> = {
-        let mut stmt = match server.conn().prepare(
+        let mut stmt = match conn_lock.prepare(
             "SELECT source_doc_id FROM documents WHERE project_id = ?1",
         ) {
             Ok(s) => s,
@@ -322,38 +299,38 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
     let n_deleted = changeset.deleted_ids.len();
 
     let result: Result<(), String> = (|| {
-        server.conn().execute_batch("BEGIN").map_err(|e| format!("begin: {e}"))?;
+        conn_lock.execute_batch("BEGIN").map_err(|e| format!("begin: {e}"))?;
 
-        let engine = SyncSearchEngine::from_conn(server.conn());
+        let engine = SyncSearchEngine::from_conn(&*conn_lock);
 
         for doc in &changeset.updated {
             let title = doc.title.as_deref().unwrap_or("");
             if let Err(e) = engine.index_document(project_id, &doc.id.0, title, &doc.content) {
-                let _ = server.conn().execute_batch("ROLLBACK");
+                let _ = conn_lock.execute_batch("ROLLBACK");
                 return Err(format!("index error for '{}': {e}", doc.id.0));
             }
         }
 
         for del_id in &changeset.deleted_ids {
-            if let Err(e) = server.conn().execute(
+            if let Err(e) = conn_lock.execute(
                 "DELETE FROM documents WHERE project_id = ?1 AND source_doc_id = ?2",
                 params![project_id, &del_id.0],
             ) {
-                let _ = server.conn().execute_batch("ROLLBACK");
+                let _ = conn_lock.execute_batch("ROLLBACK");
                 return Err(format!("delete error for '{}': {e}", del_id.0));
             }
         }
 
         let new_cursor: Option<&str> = changeset.next_cursor.as_deref();
-        if let Err(e) = server.conn().execute(
+        if let Err(e) = conn_lock.execute(
             "UPDATE source_instances SET sync_cursor = ?1, last_synced = unixepoch() WHERE id = ?2",
             params![new_cursor, si_id],
         ) {
-            let _ = server.conn().execute_batch("ROLLBACK");
+            let _ = conn_lock.execute_batch("ROLLBACK");
             return Err(format!("update cursor: {e}"));
         }
 
-        server.conn().execute_batch("COMMIT").map_err(|e| format!("commit: {e}"))?;
+        conn_lock.execute_batch("COMMIT").map_err(|e| format!("commit: {e}"))?;
         Ok(())
     })();
 
