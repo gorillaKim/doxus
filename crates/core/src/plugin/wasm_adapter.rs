@@ -499,6 +499,7 @@ impl DocSource for WasmDocSourceAdapter {
         &self,
         title: &str,
         content: &str,
+        folder: Option<&str>,
         metadata: Option<&HashMap<String, serde_json::Value>>,
     ) -> Result<SourceDocId, PluginError> {
         use doxus_plugin_sdk::wasm_types::{CreateDocumentOptsWasm, CreateDocumentResultWasm};
@@ -506,6 +507,7 @@ impl DocSource for WasmDocSourceAdapter {
         let opts = CreateDocumentOptsWasm {
             title: title.to_string(),
             content: content.to_string(),
+            folder: folder.map(|s| s.to_string()),
             metadata: metadata.cloned().unwrap_or_default(),
         };
         let result: CreateDocumentResultWasm = self.call_wasm("create_document", &opts).await?;
@@ -908,7 +910,7 @@ mod tests {
             None,
         ).unwrap();
 
-        let res = adapter.create_document("title", "content", None).await;
+        let res = adapter.create_document("title", "content", None, None).await;
         assert!(res.is_err());
         let err = res.unwrap_err().to_string();
         assert!(err.contains("wasm call 'create_document' failed"));

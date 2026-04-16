@@ -6,14 +6,14 @@
 //! sent through the watch channel.
 
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use doxus_core::plugin::PluginManager;
 use doxus_core::sync::{SyncDb, SyncScheduler};
-use doxus_plugin_sdk::{FetchChangesOpts, PluginConfig, PluginError, PluginSecrets};
+use doxus_plugin_sdk::{FetchChangesOpts, PluginConfig, PluginError, PluginSecrets, SecretValue};
 use rand::Rng;
-use rusqlite::Connection;
+
 use tokio::sync::watch;
 
 // ── Retry policy ─────────────────────────────────────────────────────────────
@@ -198,29 +198,19 @@ impl SyncLoopHandle {
     }
 }
 
-/// Spawn the background sync loop.
-///
-/// * `conn` — shared SQLite connection wrapped in `Arc<Mutex<Connection>>`.
-/// * `plugin_manager` — used to resolve a `DocSource` for each due instance.
-/// * `interval_secs` — how often to poll for due instances (also used as the
-///   staleness threshold passed to `SyncScheduler`).
-///
-/// Returns a [`SyncLoopHandle`] that can be used to trigger a graceful shutdown.
 pub fn spawn_sync_loop(
-    conn: Arc<Mutex<Connection>>,
+    conn: Arc<std::sync::Mutex<rusqlite::Connection>>,
+    embedder: Option<Arc<dyn doxus_core::embedding::EmbeddingProvider>>,
     plugin_manager: Arc<PluginManager>,
     interval_secs: u64,
 ) -> SyncLoopHandle {
-    spawn_sync_loop_with_sink(conn, plugin_manager, interval_secs, NoopEventSink)
+    spawn_sync_loop_with_sink(conn, embedder, plugin_manager, interval_secs, NoopEventSink)
 }
 
 /// Spawn the background sync loop with an [`EventSink`] for UI notifications.
-///
-/// Identical to [`spawn_sync_loop`] but emits [`SyncEvent`]s through `sink`
-/// so that callers (e.g. Tauri desktop) can forward them as frontend events.
-/// Pass [`NoopEventSink`] when running in CLI mode.
 pub fn spawn_sync_loop_with_sink<S: EventSink>(
-    conn: Arc<Mutex<Connection>>,
+    conn: Arc<std::sync::Mutex<rusqlite::Connection>>,
+    embedder: Option<Arc<dyn doxus_core::embedding::EmbeddingProvider>>,
     plugin_manager: Arc<PluginManager>,
     interval_secs: u64,
     sink: S,
@@ -262,7 +252,7 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
 
                     match plugin_manager.get_source(&inst.plugin_id) {
                         Some(mut source) => {
-                            let config_fields: std::collections::HashMap<String, serde_json::Value> =
+                            let mut config_fields: std::collections::HashMap<String, serde_json::Value> =
                                 match serde_json::from_str(&inst.config_json) {
                                     Ok(f) => f,
                                     Err(e) => {
@@ -279,8 +269,18 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
                                         continue;
                                     }
                                 };
-                            let plugin_config = PluginConfig { fields: config_fields };
-                            if let Err(e) = source.initialize(plugin_config, PluginSecrets::default()).await {
+
+                            // Tauri 저장 형식 대응: "fields" 키가 있으면 내부 객체 사용
+                            if let Some(inner) = config_fields.get("fields").and_then(|v| v.as_object()) {
+                                config_fields = inner.clone().into_iter().collect();
+                            }
+                            let mut plugin_config = PluginConfig { fields: config_fields };
+                            let mut plugin_secrets = PluginSecrets::default();
+                            
+                            // 키체인에서 인증 정보 로드하여 설정 및 시크릿에 주입
+                            crate::auth::inject_keychain_auth(&inst.plugin_id, &mut plugin_config, &mut plugin_secrets);
+
+                            if let Err(e) = source.initialize(plugin_config, plugin_secrets).await {
                                 tracing::warn!(
                                     instance_id = inst.id,
                                     error = %e,
@@ -311,8 +311,40 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
                             .await;
                             match fetch_result {
                                 Ok(changeset) => {
-                                    let updated = changeset.updated.len();
-                                    let new_cursor = changeset.next_cursor;
+                                    let updated_count = changeset.updated.len();
+                                    let new_cursor = changeset.next_cursor.clone();
+                                    
+                                    // 실제 검색 엔진에 인덱싱 수행
+                                    if let Some(ref provider) = embedder {
+                                        let engine = doxus_core::search::SearchEngine::with_embedder(
+                                            Arc::clone(&conn),
+                                            Arc::clone(provider),
+                                        );
+                                        
+                                        for doc in &changeset.updated {
+                                            let meta = doxus_core::search::DocMeta {
+                                                tags: doc.tags.clone(),
+                                                aliases: doc.aliases.clone(),
+                                                created_at: doc.created_at,
+                                                updated_at: doc.updated_at,
+                                                relative_path: doc.relative_path.clone(),
+                                                metadata: doc.metadata.clone(),
+                                            };
+                                            
+                                            // 비동기로 인덱싱 수행 (실패 시 로그 기록)
+                                            if let Err(e) = engine.index_document_async_with_meta(
+                                                inst.project_id, 
+                                                &doc.id.0, 
+                                                doc.title.as_deref().unwrap_or("Untitled"), 
+                                                &doc.content, 
+                                                meta
+                                            ).await {
+                                                tracing::error!(instance_id = inst.id, doc_id = %doc.id.0, error = %e, "sync_loop: document indexing failed");
+                                            }
+                                        }
+                                        tracing::info!(instance_id = inst.id, count = updated_count, "sync_loop: batch indexing completed");
+                                    }
+
                                     match conn.lock() {
                                         Ok(guard) => {
                                             let sync_db = SyncDb::new(&*guard);
@@ -335,12 +367,12 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
                                     }
                                     tracing::info!(
                                         instance_id = inst.id,
-                                        updated,
+                                        updated = updated_count,
                                         "sync_loop: sync completed"
                                     );
                                     sink.emit(SyncEvent::Complete {
                                         instance_id: inst.id,
-                                        updated,
+                                        updated: updated_count,
                                     });
                                 }
                                 Err(e) => {
@@ -387,6 +419,7 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
 mod tests {
     use super::*;
     use doxus_core::db;
+    use rusqlite::Connection;
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
 
@@ -408,7 +441,7 @@ mod tests {
     #[tokio::test]
     async fn loop_starts_and_shuts_down_gracefully() {
         let (conn, _dir) = open_test_db();
-        let handle = spawn_sync_loop(conn, make_plugin_manager(), 1);
+        let handle = spawn_sync_loop(conn, None, make_plugin_manager(), 1);
         // Give the loop one tick to start.
         tokio::time::sleep(Duration::from_millis(50)).await;
         handle.shutdown().await;
@@ -431,7 +464,7 @@ mod tests {
 
         // Use a very short interval (100 ms) so we get multiple iterations quickly.
         let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
-        let conn_clone = Arc::clone(&conn);
+        let conn_clone: Arc<Mutex<Connection>> = Arc::clone(&conn);
         let poll_count = Arc::new(AtomicUsize::new(0));
         let poll_count_clone = Arc::clone(&poll_count);
 
@@ -470,7 +503,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_tx_drop_stops_loop() {
         let (conn, _dir) = open_test_db();
-        let handle = spawn_sync_loop(conn, make_plugin_manager(), 1);
+        let handle = spawn_sync_loop(conn, None, make_plugin_manager(), 1);
         // Drop the sender — loop should notice channel closed and exit.
         drop(handle.shutdown_tx);
         // join_handle should complete within reasonable time.
@@ -493,7 +526,7 @@ mod tests {
         )
         .unwrap();
         let pid: i64 = conn
-            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            .query_row("SELECT last_insert_rowid()", [], |r: &rusqlite::Row| r.get(0))
             .unwrap();
         conn.execute(
             "INSERT OR IGNORE INTO source_instances(plugin_id, project_id, name, config_json, created_at)
@@ -519,7 +552,7 @@ mod tests {
         )
         .unwrap();
         let pid: i64 = conn
-            .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+            .query_row("SELECT last_insert_rowid()", [], |r: &rusqlite::Row| r.get(0))
             .unwrap();
         let config = format!(r#"{{"path":"{}"}}"#, vault_path);
         conn.execute(
@@ -528,7 +561,7 @@ mod tests {
             rusqlite::params![pid, config],
         )
         .unwrap();
-        conn.query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+        conn.query_row("SELECT last_insert_rowid()", [], |r: &rusqlite::Row| r.get(0))
             .unwrap()
     }
 
@@ -555,7 +588,7 @@ mod tests {
         let plugin_manager = Arc::new(pm);
 
         // interval_secs = 0 → always due
-        let handle = spawn_sync_loop(Arc::clone(&conn), Arc::clone(&plugin_manager), 0);
+        let handle = spawn_sync_loop(Arc::clone(&conn), None, Arc::clone(&plugin_manager), 0);
         // Give the loop time to run at least one iteration
         tokio::time::sleep(Duration::from_millis(200)).await;
         handle.shutdown().await;
@@ -566,7 +599,7 @@ mod tests {
             .query_row(
                 "SELECT last_synced FROM source_instances WHERE id = ?1",
                 rusqlite::params![instance_id],
-                |r| r.get(0),
+                |r: &rusqlite::Row| r.get::<_, Option<i64>>(0),
             )
             .unwrap();
         assert!(

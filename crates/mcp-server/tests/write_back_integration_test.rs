@@ -30,13 +30,14 @@ impl DocSource for MockWriteSource {
             aliases: vec![],
             created_at: None,
             updated_at: None,
+            relative_path: None,
         })
     }
     async fn health_check(&self) -> HealthStatus { HealthStatus { healthy: true, message: None } }
     
     fn supports_write(&self) -> bool { true }
     
-    async fn create_document(&self, _title: &str, _content: &str, _metadata: Option<&std::collections::HashMap<String, serde_json::Value>>) -> Result<SourceDocId, PluginError> {
+    async fn create_document(&self, _title: &str, _content: &str, _folder: Option<&str>, _metadata: Option<&std::collections::HashMap<String, serde_json::Value>>) -> Result<SourceDocId, PluginError> {
         Ok(SourceDocId("mock-id.md".into()))
     }
 
@@ -107,8 +108,8 @@ async fn test_create_document_with_immediate_sync() {
     let doc_count: i64 = server.conn().query_row(
         "SELECT COUNT(*) FROM documents WHERE source_doc_id = 'mock-id.md'",
         [],
-        |r| r.get(0)
-    ).unwrap();
+        |r| r.get::<_, Option<i64>>(0),
+    ).unwrap().unwrap_or(0);
     
     assert_eq!(doc_count, 1, "Document should be synced to DB immediately after creation");
 }

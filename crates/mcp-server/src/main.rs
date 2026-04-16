@@ -47,7 +47,7 @@ async fn main() -> Result<()> {
     });
     let plugin_manager = std::sync::Arc::new(plugin_manager);
 
-    let sync_handle = spawn_sync_loop(sync_conn, Arc::clone(&plugin_manager), interval_secs);
+
 
     // Attempt to initialize OnnxEmbedder via shared path resolution; fall back gracefully.
     let embedder: Option<std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider>> =
@@ -71,6 +71,7 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".doxus/plugins");
     let server = McpServer::new(conn, embedder, Arc::clone(&plugin_manager), plugins_dir);
+    let sync_handle = spawn_sync_loop(sync_conn, server.embedder().cloned(), Arc::clone(&plugin_manager), interval_secs);
 
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();

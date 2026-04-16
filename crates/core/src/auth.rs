@@ -128,7 +128,7 @@ impl SecretStore for KeyringSecretStore {
 // ── OAuth 2.0 Types ───────────────────────────────────────────────────────────
 
 /// Configuration for an OAuth 2.0 Authorization Code flow client.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAuthConfig {
     pub client_id: String,
     pub client_secret: String,
@@ -141,7 +141,7 @@ pub struct OAuthConfig {
 }
 
 /// Returned by `OAuthFlow::authorization_url` — caller must redirect user here.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthorizationRequest {
     /// Full URL the user should open in their browser.
     pub url: String,

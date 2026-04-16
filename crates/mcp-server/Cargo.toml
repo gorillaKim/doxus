@@ -28,3 +28,4 @@ tracing-subscriber = { workspace = true }
 dirs = "5"
 rand = "0.8"
 sha2 = "0.10"
+keyring = { version = "2", features = ["default"] }
