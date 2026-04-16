@@ -77,14 +77,6 @@ pub async fn dispatch_tool(server: &McpServer, name: &str, id: Value, args: &Val
         "doxus_plugin_logs" => tools::plugin::logs(server, id, args),
         "doxus_plugin_info" => tools::plugin::info(server, id, args),
 
-        // ── Workspace ─────────────────────────────────────────────────────
-        "doxus_create_document" => tools::workspace::create_document(server, id, args).await,
-        "doxus_update_document" => tools::workspace::update_document(server, id, args).await,
-        "doxus_delete_document" => tools::workspace::delete_document(server, id, args).await,
-        "doxus_list_workspace_documents" => tools::workspace::list_documents(server, id, args),
-        "doxus_apply_template" => tools::workspace::apply_template(server, id, args).await,
-        "doxus_list_templates" => tools::workspace::list_templates(server, id),
-        "doxus_get_template" => tools::workspace::get_template(server, id, args),
 
         // ── Diagnostics ───────────────────────────────────────────────────
         "doxus_diagnose" => tools::core::diagnose(server, id),
@@ -210,37 +202,6 @@ pub fn tool_list() -> Value {
             tool("doxus_plugin_info", "Get detailed plugin information", &[
                 param("id", "string", "Plugin ID"),
             ]),
-            // Workspace
-            tool("doxus_create_document", "Create a workspace document", &[
-                param("title", "string", "Document title"),
-                param_opt("project", "string", "Target project name (optional, defaults to internal workspace)"),
-                param_opt("template", "string", "Template name"),
-                param_opt("doc_type", "string", "note|meeting|decision|journal"),
-            ]),
-            tool("doxus_update_document", "Update a workspace document", &[
-                param("id", "string", "Document ID"),
-                param("content", "string", "New content"),
-                param_opt("project", "string", "Target project name (required if not internal workspace)"),
-                param_opt("metadata", "object", "Metadata updates (optional)"),
-            ]),
-            tool("doxus_delete_document", "Delete a workspace document", &[
-                param("id", "string", "Document ID"),
-                param_opt("project", "string", "Target project name (required if not internal workspace)"),
-            ]),
-            tool("doxus_list_workspace_documents", "List workspace documents", &[
-                param_opt("project", "string", "Project name"),
-                param_opt("doc_type", "string", "Filter by type"),
-                param_opt("status", "string", "Filter by status"),
-            ]),
-            tool("doxus_apply_template", "Apply a template to create a document with frontmatter auto-generated", &[
-                param("template", "string", "Template name (use doxus_list_templates to discover)"),
-                param_opt("project", "string", "Target project name"),
-                param_opt("variables", "object", "Template variables (use doxus_get_template to see required variables)"),
-            ]),
-            tool("doxus_list_templates", "List all available templates (builtin + custom). Returns name and description only — use doxus_get_template for content and variables.", &[]),
-            tool("doxus_get_template", "Get a template's content and variable list. Variables are auto-extracted from {{placeholder}} syntax.", &[
-                param("name", "string", "Template name"),
-            ]),
             // Diagnostics
             tool("doxus_diagnose", "Interactive troubleshooting guide", &[
                 param_opt("issue", "string", "Issue description"),
@@ -287,14 +248,13 @@ fn param_opt(name: &str, type_: &str, description: &str) -> Value {
     json!({"name": name, "type": type_, "description": description, "required": false})
 }
 
-static HELP_TEXT: &str = r#"doxus MCP — 37 doxus_* tools
+static HELP_TEXT: &str = r#"doxus MCP — 32 doxus_* tools
 
 SEARCH:      doxus_search, doxus_get_document, doxus_get_section, doxus_get_metadata
 GRAPH:       doxus_get_backlinks, doxus_get_links, doxus_find_related, doxus_find_path, doxus_get_cluster
 PROJECTS:    doxus_list_projects, doxus_add_project, doxus_remove_project, doxus_index_project, doxus_sync_project
 DOCUMENTS:   doxus_list_documents, doxus_get_documents, doxus_get_toc, doxus_get_ranking, doxus_resolve_alias
 PLUGINS:     doxus_plugin_list, doxus_plugin_install, doxus_plugin_status
-WORKSPACE:   doxus_create_document, doxus_apply_template
 DIAGNOSTICS: doxus_diagnose, doxus_system_report, doxus_inspect_document
 
 Run 'tools/list' for full schema."#;

@@ -12,6 +12,7 @@ pub use server::McpServer;
 
 pub mod dispatch;
 pub mod tools;
+pub mod auth;
 
 use serde_json::Value;
 
@@ -39,12 +40,7 @@ mod tests {
         let conn = Connection::open_in_memory().expect("in-memory db");
         doxus_core::db::apply_pragmas(&conn).expect("pragmas");
         doxus_core::db::migrate(&conn).expect("migrate");
-        // 테스트용 디폴트 워크스페이스 프로젝트 seed
-        conn.execute(
-            "INSERT OR IGNORE INTO projects(name, display_name, path, status, source_type, config_json, is_default, created_at, updated_at)
-             VALUES ('default-workspace', '기본 워크스페이스', '/tmp/ws', 'active', 'workspace', '{}', 1, unixepoch(), unixepoch())",
-            [],
-        ).expect("seed workspace project");
+        // No default workspace seeding needed anymore
         
         let pm = Arc::new(doxus_core::plugin::PluginManager::new(std::path::PathBuf::from("/tmp/doxus-pm")));
         McpServer::new(conn, None, pm, std::path::PathBuf::from("/tmp/doxus-test-plugins"))
