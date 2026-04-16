@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use thiserror::Error;
 
 pub mod wasm_types;
+pub mod path_utils;
 
 // ── Shared error type ─────────────────────────────────────────────────────────
 
@@ -297,6 +298,7 @@ pub trait DocSource: Send + Sync {
         &self,
         _title: &str,
         _content: &str,
+        _folder: Option<&str>,
         _metadata: Option<&HashMap<String, serde_json::Value>>,
     ) -> Result<SourceDocId, PluginError> {
         Err(PluginError::Internal(
@@ -359,6 +361,7 @@ mod tests {
             aliases: vec![],
             created_at: None,
             updated_at: None,
+            relative_path: None,
         };
         let doc2 = RawDocument {
             id: SourceDocId("b".into()),
@@ -371,6 +374,7 @@ mod tests {
             aliases: vec![],
             created_at: None,
             updated_at: None,
+            relative_path: None,
         };
         // Same content → same hash when computed the same way
         let hash2 = format!("{:x}", {
@@ -433,6 +437,7 @@ mod tests {
             aliases: vec![],
             created_at: None,
             updated_at: Some(1700000000),
+            relative_path: Some("notes/test.md".into()),
         };
         let json = serde_json::to_string(&doc).unwrap();
         let back: RawDocument = serde_json::from_str(&json).unwrap();

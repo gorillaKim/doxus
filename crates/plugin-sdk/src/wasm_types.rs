@@ -61,6 +61,7 @@ pub struct ChangeSetWasm {
 pub struct CreateDocumentOptsWasm {
     pub title: String,
     pub content: String,
+    pub folder: Option<String>,
     pub metadata: HashMap<String, serde_json::Value>,
 }
 
