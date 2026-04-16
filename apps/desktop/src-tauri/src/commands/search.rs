@@ -485,11 +485,11 @@ pub async fn search_documents(
     let hits = engine.search(&q).map_err(|e| e.to_string())?;
     // document_id 목록으로 project_name / source_type 일괄 조회
     let doc_ids: Vec<i64> = hits.iter().map(|h| h.document_id).collect();
-    let mut project_info: std::collections::HashMap<i64, (String, String)> = std::collections::HashMap::new();
+    let mut project_info: std::collections::HashMap<i64, (String, String, String)> = std::collections::HashMap::new();
     for chunk in doc_ids.chunks(50) {
         let placeholders = chunk.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
         let sql = format!(
-            "SELECT d.id, p.name, COALESCE(p.source_type, 'obsidian') \
+            "SELECT d.id, p.name, COALESCE(p.source_type, 'obsidian'), d.source_doc_id \
              FROM documents d JOIN projects p ON d.project_id = p.id \
              WHERE d.id IN ({})",
             placeholders
@@ -497,25 +497,26 @@ pub async fn search_documents(
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let params: Vec<&dyn rusqlite::ToSql> = chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
         let rows = stmt.query_map(params.as_slice(), |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
         }).map_err(|e| e.to_string())?;
         for row in rows.filter_map(|r| r.ok()) {
-            project_info.insert(row.0, (row.1, row.2));
+            project_info.insert(row.0, (row.1, row.2, row.3));
         }
     }
 
     let hits_json: Vec<serde_json::Value> = hits
         .into_iter()
         .map(|h| {
-            let (project_name, source_type) = project_info
+            let (project_name, source_type, source_doc_id) = project_info
                 .get(&h.document_id)
                 .cloned()
-                .unwrap_or_default();
+                .unwrap_or_else(|| ("".to_string(), "".to_string(), "".to_string()));
             serde_json::json!({
                 "document_id": h.document_id,
                 "chunk_id": h.chunk_id,
                 "title": h.title,
                 "file_path": h.file_path,
+                "source_doc_id": source_doc_id,
                 "heading_path": h.heading_path,
                 "snippet": h.snippet,
                 "score": h.score,
@@ -630,11 +631,16 @@ pub async fn index_project(
                     std::sync::Arc::clone(&state.embedder) as std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider>,
                 );
                 for doc in &stream.documents {
+                    let relative_path = doc.relative_path.clone().or_else(|| { doc.metadata.get("relative_path")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()) });
+
                     let meta = doxus_core::search::DocMeta {
                         tags: doc.tags.clone(),
                         aliases: doc.aliases.clone(),
                         created_at: doc.created_at,
                         updated_at: doc.updated_at,
+                        relative_path,
                         metadata: doc.metadata.clone(),
                     };
                     if engine.index_document_async_with_meta(project_id, &doc.id.0, doc.title.as_deref().unwrap_or("Untitled"), &doc.content, meta).await.is_ok() {
@@ -674,11 +680,16 @@ pub async fn index_project(
                     std::sync::Arc::clone(&state.embedder) as std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider>,
                 );
                 for doc in &stream.documents {
+                    let relative_path = doc.relative_path.clone().or_else(|| { doc.metadata.get("relative_path")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()) });
+
                     let meta = doxus_core::search::DocMeta {
                         tags: doc.tags.clone(),
                         aliases: doc.aliases.clone(),
                         created_at: doc.created_at,
                         updated_at: doc.updated_at,
+                        relative_path,
                         metadata: doc.metadata.clone(),
                     };
                     if engine.index_document_async_with_meta(project_id, &doc.id.0, doc.title.as_deref().unwrap_or("Untitled"), &doc.content, meta).await.is_ok() {
@@ -707,11 +718,16 @@ pub async fn index_project(
                     std::sync::Arc::clone(&state.embedder) as std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider>,
                 );
                 for doc in &stream.documents {
+                    let relative_path = doc.relative_path.clone().or_else(|| { doc.metadata.get("relative_path")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string()) });
+
                     let meta = doxus_core::search::DocMeta {
                         tags: doc.tags.clone(),
                         aliases: doc.aliases.clone(),
                         created_at: doc.created_at,
                         updated_at: doc.updated_at,
+                        relative_path,
                         metadata: doc.metadata.clone(),
                     };
                     if engine.index_document_async_with_meta(project_id, &doc.id.0, doc.title.as_deref().unwrap_or("Untitled"), &doc.content, meta).await.is_ok() {
@@ -853,6 +869,59 @@ pub(crate) fn get_document_content_impl(conn: &rusqlite::Connection, file_path: 
     }))
 }
 
+/// DB에서 문서의 메타데이터(제목, 태그, 타임스탬프 등)를 직접 조회합니다.
+fn get_doc_meta_from_db(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    source_doc_id: &str
+) -> Result<Option<serde_json::Value>, String> {
+    // 1. 문서 기본 정보 및 metadata_json 조회
+    let doc_info = conn.query_row(
+        "SELECT id, title, created_at, updated_at, metadata_json 
+         FROM documents 
+         WHERE project_id = ?1 AND source_doc_id = ?2",
+        rusqlite::params![project_id, source_doc_id],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, Option<i64>>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        }
+    );
+
+    let (db_doc_id, title, created_at, updated_at, metadata_json) = match doc_info {
+        Ok(val) => val,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
+
+    // 2. 태그 조회
+    let mut stmt = conn.prepare("SELECT tag FROM document_tags WHERE document_id = ?1").map_err(|e| e.to_string())?;
+    let tags: Vec<String> = stmt.query_map([db_doc_id], |row| row.get(0)).map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    // 3. 별칭 조회
+    let mut stmt = conn.prepare("SELECT alias FROM document_aliases WHERE document_id = ?1").map_err(|e| e.to_string())?;
+    let aliases: Vec<String> = stmt.query_map([db_doc_id], |row| row.get(0)).map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let metadata: serde_json::Value = serde_json::from_str(&metadata_json).unwrap_or(serde_json::json!({}));
+
+    Ok(Some(serde_json::json!({
+        "title": title,
+        "tags": tags,
+        "aliases": aliases,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "metadata": metadata,
+    })))
+}
+
 #[tauri::command]
 pub async fn get_document_content(
     state: tauri::State<'_, crate::AppState>,
@@ -898,26 +967,54 @@ pub async fn get_document_content(
                     ).ok().map(|v| v as u32).filter(|&v| v >= 10)
                 };
 
+                let project_id: i64 = {
+                    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+                    conn.query_row("SELECT id FROM projects WHERE name = ?1", [pname], |r| r.get(0)).unwrap_or(0)
+                };
+
+                // DB에서 메타데이터 우선 조회
+                let db_meta = {
+                    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+                    get_doc_meta_from_db(&conn, project_id, &file_path).unwrap_or(None)
+                };
+
                 // Cache hit 확인 (force_refresh가 아니고 TTL이 설정된 경우)
                 if let Some(ttl) = cache_ttl {
                     if !force {
                         let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
                         let cache = ContentCache::new(&conn);
-                        if let Ok(Some(cached_content)) = cache.get("com.doxus.confluence", &file_path) {
-                            let _ = cache.touch("com.doxus.confluence", &file_path, ttl);
+                        
+                        // 캐시된 본문 조회
+                        if let Ok(Some(cached_content)) = cache.get("com.doxus.confluence", &doc_id.0) {
+                            let _ = cache.touch("com.doxus.confluence", &doc_id.0, ttl);
+                            
+                            // DB 메타데이터가 있으면 그것을 사용, 없으면 캐시된 JSON에서 복구 시도 (fallback)
+                            let final_meta = if let Some(meta) = db_meta {
+                                meta
+                            } else if let Some(data_json) = cache.get_full("com.doxus.confluence", &doc_id.0).unwrap_or(None) {
+                                serde_json::from_str::<serde_json::Value>(&data_json).unwrap_or(serde_json::json!({}))
+                            } else {
+                                serde_json::json!({})
+                            };
+
                             return Ok(serde_json::json!({
-                                "title": null,
+                                "title": final_meta.get("title"),
                                 "content": cached_content,
                                 "file_path": file_path,
                                 "from_cache": true,
                                 "reindex_triggered": false,
+                                "tags": final_meta.get("tags"),
+                                "aliases": final_meta.get("aliases").or(Some(&serde_json::json!([]))),
+                                "created_at": final_meta.get("created_at"),
+                                "updated_at": final_meta.get("updated_at"),
+                                "metadata": final_meta.get("metadata"),
                             }));
                         }
                     } else {
                         // force_refresh: 기존 캐시 항목 제거
                         let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
                         let cache = ContentCache::new(&conn);
-                        let _ = cache.invalidate("com.doxus.confluence", &file_path);
+                        let _ = cache.invalidate("com.doxus.confluence", &doc_id.0);
                     }
                 }
 
@@ -962,23 +1059,57 @@ pub async fn get_document_content(
                     .map_err(|e| format!("Confluence 플러그인 초기화 실패: {e}"))?;
                 let raw = plugin.fetch_document(&doc_id).await
                     .map_err(|e| format!("문서 가져오기 실패: {e}"))?;
+                
+                let conn_arc = std::sync::Arc::clone(&state.conn);
+                let embedder = std::sync::Arc::clone(&state.embedder) as std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider>;
+                let engine = doxus_core::search::SearchEngine::with_embedder(conn_arc, embedder);
+
+                let project_id: i64 = {
+                    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+                    conn.query_row("SELECT id FROM projects WHERE name = ?1", [pname], |r| r.get(0)).unwrap_or(0)
+                };
+
+                let relative_path = raw.relative_path.clone().or_else(|| { raw.metadata.get("relative_path")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()) });
+
+                let meta = doxus_core::search::DocMeta {
+                    tags: raw.tags.clone(),
+                    aliases: vec![],
+                    created_at: raw.created_at,
+                    updated_at: raw.updated_at,
+                    relative_path,
+                    metadata: raw.metadata.clone(),
+                };
+
+                // 실시간 인덱싱 및 파일 경로 동기화 실행
+                let _ = engine.index_document_async_with_meta(
+                    project_id, 
+                    &raw.id.0, 
+                    raw.title.as_deref().unwrap_or("Untitled"), 
+                    &raw.content, 
+                    meta
+                ).await;
+
                 let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
                 // 캐시에 저장 (TTL이 설정된 경우)
                 if let Some(ttl) = cache_ttl {
                     let cache = ContentCache::new(&conn);
-                    let _ = cache.set("com.doxus.confluence", &file_path, &raw.content, ttl);
+                    let data_json = serde_json::to_string(&raw).unwrap_or_default();
+                    let _ = cache.set_full("com.doxus.confluence", &raw.id.0, &raw.content, &data_json, ttl);
                 }
-                let reindexed = reindex_if_stale(
-                    &conn, pname, &file_path,
-                    raw.title.as_deref().unwrap_or("Untitled"),
-                    &raw.content,
-                ).unwrap_or(false);
+
                 return Ok(serde_json::json!({
                     "title": raw.title,
                     "content": raw.content,
                     "file_path": file_path,
                     "from_cache": false,
-                    "reindex_triggered": reindexed,
+                    "reindex_triggered": true,
+                    "tags": raw.tags,
+                    "aliases": Vec::<String>::new(),
+                    "created_at": raw.created_at,
+                    "updated_at": raw.updated_at,
+                    "metadata": raw.metadata,
                 }));
             }
             "github" => {
@@ -1001,22 +1132,43 @@ pub async fn get_document_content(
                     .map_err(|e| format!("GitHub 플러그인 초기화 실패: {e}"))?;
                 let raw = plugin.fetch_document(&doc_id).await
                     .map_err(|e| format!("문서 가져오기 실패: {e}"))?;
-                let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
-                let db_meta = get_document_content_impl(&conn, &file_path).ok();
-                let tags = db_meta.as_ref().and_then(|v| v.get("tags")).cloned().unwrap_or(serde_json::json!([]));
-                let aliases = db_meta.as_ref().and_then(|v| v.get("aliases")).cloned().unwrap_or(serde_json::json!([]));
-                let created_at = db_meta.as_ref().and_then(|v| v.get("created_at")).cloned().unwrap_or(serde_json::json!(null));
-                let updated_at = db_meta.as_ref().and_then(|v| v.get("updated_at")).cloned().unwrap_or(serde_json::json!(null));
-                let metadata = db_meta.as_ref().and_then(|v| v.get("metadata")).cloned().unwrap_or(serde_json::json!({}));
+
+                let conn_arc = std::sync::Arc::clone(&state.conn);
+                let embedder = std::sync::Arc::clone(&state.embedder) as std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider>;
+                let engine = doxus_core::search::SearchEngine::with_embedder(conn_arc, embedder);
+
+                let project_id: i64 = {
+                    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+                    conn.query_row("SELECT id FROM projects WHERE name = ?1", [pname], |r| r.get(0)).unwrap_or(0)
+                };
+
+                let relative_path = raw.relative_path.clone().or_else(|| { raw.metadata.get("relative_path")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()) });
+
+                let meta = doxus_core::search::DocMeta {
+                    tags: raw.tags.clone(),
+                    aliases: vec![],
+                    created_at: None,
+                    updated_at: raw.updated_at,
+                    relative_path,
+                    metadata: raw.metadata.clone(),
+                };
+
+                // 실시간 인덱싱 및 파일 경로 동기화 실행
+                let _ = engine.index_document_async_with_meta(
+                    project_id, 
+                    &raw.id.0, 
+                    raw.title.as_deref().unwrap_or("Untitled"), 
+                    &raw.content, 
+                    meta
+                ).await;
+
                 return Ok(serde_json::json!({
                     "title": raw.title,
                     "content": raw.content,
                     "file_path": file_path,
-                    "tags": tags,
-                    "aliases": aliases,
-                    "created_at": created_at,
-                    "updated_at": updated_at,
-                    "metadata": metadata,
+                    "reindex_triggered": true,
                 }));
             }
             _ => {
@@ -1106,7 +1258,7 @@ pub fn reindex_if_stale(
 
 pub fn list_all_documents_impl(conn: &rusqlite::Connection) -> Result<serde_json::Value, String> {
     let mut stmt = conn.prepare(
-        "SELECT MIN(d.id), MIN(d.title), MIN(d.source_doc_id), p.name, COALESCE(p.source_type, 'obsidian')
+        "SELECT MIN(d.id), MIN(d.title), MIN(d.source_doc_id), p.name, COALESCE(p.source_type, 'obsidian'), MIN(d.file_path)
          FROM documents d
          JOIN projects p ON d.project_id = p.id
          WHERE p.status = 'active'
@@ -1121,6 +1273,7 @@ pub fn list_all_documents_impl(conn: &rusqlite::Connection) -> Result<serde_json
                 "source_doc_id": r.get::<_, String>(2)?,
                 "project_name": r.get::<_, String>(3)?,
                 "source_type": r.get::<_, String>(4)?,
+                "file_path": r.get::<_, Option<String>>(5)?,
             }))
         })
         .map_err(|e| e.to_string())?

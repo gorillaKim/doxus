@@ -2,6 +2,6 @@ plugin_id = "com.doxus.confluence"
 display_name = "Confluence"
 version = "0.1.0"
 abi_version = 1
-http_domains = ["*.atlassian.net", "api.atlassian.com"]
+http_domains = ["*.atlassian.net", "api.atlassian.com", "auth.atlassian.com"]
 kv_namespaces = ["settings"]
 secrets = ["api_token", "access_token", "refresh_token", "expires_at"]

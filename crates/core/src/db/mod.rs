@@ -118,6 +118,7 @@ static MIGRATIONS: &[(&str, &str)] = &[
     ("V14__workspace_unification",  include_str!("migrations/V14__workspace_unification.sql")),
     ("V15__drop_legacy_workspace",  include_str!("migrations/V15__drop_legacy_workspace_tables.sql")),
     ("V16__expand_doc_type",        include_str!("migrations/V16__expand_doc_type.sql")),
+    ("V17__content_cache_data",     include_str!("migrations/V17__content_cache_data.sql")),
 ];
 
 // ── Test helper ──────────────────────────────────────────────────────────────

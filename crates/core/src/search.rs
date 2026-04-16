@@ -1,7 +1,7 @@
 use crate::db::schema::SearchHit;
 use crate::embedding::{EmbeddingError, EmbeddingProvider};
 use crate::observability::{persist_audit, AuditEvent};
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use sha2::{Sha256, Digest};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -379,10 +379,12 @@ pub struct DocMeta {
     pub created_at: Option<i64>,
     /// 문서 최종 수정 시각 (Unix timestamp).
     pub updated_at: Option<i64>,
-    /// 태그 목록 (frontmatter `tags:` 또는 인라인 `#tag`, Confluence labels 등).
+    /// 태그 목록 (frontmatter tags: 또는 인라인 #tag, Confluence labels 등).
     pub tags: Vec<String>,
-    /// 별칭 목록 (Obsidian `aliases:` frontmatter 등).
+    /// 별칭 목록 (Obsidian aliases: frontmatter 등).
     pub aliases: Vec<String>,
+    /// 문서의 상대 경로 (예: "Folder/Sub/File.md"). 물리적 폴더 구조 생성 시 사용.
+    pub relative_path: Option<String>,
     /// 플러그인별 추가 메타 (space_key, url, repo 등) — JSON 직렬화하여 저장.
     pub metadata: std::collections::HashMap<String, serde_json::Value>,
 }
@@ -415,18 +417,58 @@ fn index_document_sync(
     let created_at = meta.created_at.unwrap_or(now);
     let updated_at = meta.updated_at.unwrap_or(now);
 
+    // 1. Get existing file path to check for moves
+    let existing_data: Option<(String, i64)> = conn
+        .query_row(
+            "SELECT file_path, id FROM documents WHERE project_id = ?1 AND source_doc_id = ?2",
+            rusqlite::params![project_id, source_doc_id],
+            |r| Ok((r.get::<_, String>(0).unwrap_or_default(), r.get::<_, i64>(1)?)),
+        )
+        .optional()
+        .map_err(|e| SearchError::Db(e))?;
+
+    // 2. Calculate actual file path if relative_path is provided
+    let project_path: Option<String> = conn
+        .query_row("SELECT path FROM projects WHERE id = ?1", [project_id], |r| r.get(0))
+        .ok();
+
+    let full_file_path = if let (Some(base), Some(rel)) = (project_path, &meta.relative_path) {
+        if base.starts_with("http://") || base.starts_with("https://") {
+            // Web source: Use relative path as the virtual file path
+            Some(rel.clone())
+        } else {
+            let path = std::path::PathBuf::from(base).join(rel);
+            
+            if let Some((ref old_path, _)) = existing_data {
+                if !old_path.is_empty() && old_path.as_str() != path.to_string_lossy() {
+                    let _ = std::fs::remove_file(old_path);
+                    let _ = clean_up_empty_dirs(std::path::Path::new(old_path));
+                }
+            }
+
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::write(&path, content);
+            Some(path.to_string_lossy().to_string())
+        }
+    } else {
+        None
+    };
+
     conn.execute(
-        "INSERT INTO documents (project_id, source_doc_id, title, content, content_hash, last_indexed, created_at, updated_at, metadata_json)
-         VALUES (?1, ?2, ?3, ?4, ?5, unixepoch(), ?6, ?7, ?8)
+        "INSERT INTO documents (project_id, source_doc_id, title, content, content_hash, last_indexed, created_at, updated_at, metadata_json, file_path)
+         VALUES (?1, ?2, ?3, ?4, ?5, unixepoch(), ?6, ?7, ?8, ?9)
          ON CONFLICT(project_id, source_doc_id) DO UPDATE SET
             title = excluded.title,
             content = excluded.content,
             content_hash = excluded.content_hash,
             last_indexed = excluded.last_indexed,
             updated_at = excluded.updated_at,
-            metadata_json = excluded.metadata_json",
+            metadata_json = excluded.metadata_json,
+            file_path = COALESCE(excluded.file_path, documents.file_path)",
         rusqlite::params![project_id, source_doc_id, title, content, content_hash,
-                          created_at, updated_at, metadata_json],
+                          created_at, updated_at, metadata_json, full_file_path],
     )?;
 
     let doc_id: i64 = conn.query_row(
@@ -495,6 +537,19 @@ fn index_document_sync(
         )?;
     }
 
+    Ok(())
+}
+
+/// Recursively removes empty parent directories up to but not including the root.
+fn clean_up_empty_dirs(path: &std::path::Path) -> std::io::Result<()> {
+    let mut current = path.parent();
+    while let Some(parent) = current {
+        // Try to remove. If not empty or other error, stop.
+        if std::fs::remove_dir(parent).is_err() {
+            break;
+        }
+        current = parent.parent();
+    }
     Ok(())
 }
 

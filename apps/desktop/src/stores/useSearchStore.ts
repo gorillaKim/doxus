@@ -7,6 +7,7 @@ export interface SearchHit {
   title: string | null;
   snippet: string | null;
   score: number;
+  source_doc_id: string | null;
   file_path: string | null;
   heading_path: string | null;
   project_name: string;
@@ -19,6 +20,7 @@ export interface AllDocument {
   source_doc_id: string;
   project_name: string;
   source_type: string;
+  file_path: string | null;
 }
 
 export interface SearchFilters {

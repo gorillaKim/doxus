@@ -303,6 +303,7 @@ impl ObsidianPlugin {
             aliases,
             created_at,
             updated_at,
+            relative_path: Some(rel_path),
         })
     }
 }
@@ -415,6 +416,7 @@ impl DocSource for ObsidianPlugin {
             aliases: vec![],
             created_at: None,
             updated_at: None,
+            relative_path: Some(id.0.clone()),
         })
     }
 

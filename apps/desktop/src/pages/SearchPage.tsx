@@ -19,10 +19,10 @@ function stripFrontmatter(content: string): string {
 interface DocEntry {
   document_id: number;
   title: string;
-  source_doc_id: string;
+  source_doc_id: string; // 고유 ID (예: Confluence ID 47852)
+  hierarchy_path: string; // 계층 구조용 경로 (예: folder/note.md)
   project_name: string;
   source_type: string;
-  // 검색 결과에만 존재
   score?: number;
   snippet?: string;
   heading_path?: string;
@@ -32,7 +32,8 @@ function hitToEntry(hit: SearchHit): DocEntry {
   return {
     document_id: hit.document_id,
     title: hit.title ?? '(제목 없음)',
-    source_doc_id: hit.file_path ?? '',
+    source_doc_id: hit.source_doc_id ?? String(hit.document_id), // 실제 식별자
+    hierarchy_path: hit.file_path ?? hit.source_doc_id ?? '',      // 트리용 경로
     project_name: hit.project_name ?? '',
     source_type: hit.source_type ?? '',
     score: hit.score,
@@ -45,7 +46,8 @@ function allDocToEntry(doc: AllDocument): DocEntry {
   return {
     document_id: doc.document_id,
     title: doc.title,
-    source_doc_id: doc.source_doc_id,
+    source_doc_id: doc.source_doc_id, // 고유 ID 유지
+    hierarchy_path: doc.file_path || doc.source_doc_id, // 계층 경로
     project_name: doc.project_name,
     source_type: doc.source_type,
   };
@@ -160,11 +162,18 @@ interface TreeNode {
 function buildTree(docs: DocEntry[]): TreeNode {
   const root: TreeNode = { name: '', isDir: true, children: new Map() };
   for (const doc of docs) {
-    const parts = doc.source_doc_id.split('/').filter(Boolean);
+    const fullPath = doc.hierarchy_path;
+    const parts = fullPath.split('/').map(p => p.trim()).filter(Boolean);
     let node = root;
     for (let i = 0; i < parts.length; i++) {
-      const part = parts[i];
+      let part = parts[i];
       const isLast = i === parts.length - 1;
+      
+      // .md 확장자 제거 (트리 노드 이름 정규화)
+      if (part.toLowerCase().endsWith('.md')) {
+        part = part.slice(0, -3);
+      }
+
       if (!node.children.has(part)) {
         node.children.set(part, {
           name: part,
@@ -197,37 +206,64 @@ function TreeNodeView({
   const [open, setOpen] = useState(false);
   const indent = depth * 12;
 
-  if (node.isDir) {
+  const isSelected = node.doc && selectedDoc?.document_id === node.doc.document_id && selectedDoc?.source_doc_id === node.doc.source_doc_id;
+  const hasChildren = node.children.size > 0;
+
+  if (node.isDir || hasChildren) {
     return (
-      <div>
-        <button
-          onClick={() => setOpen(v => !v)}
-          className="flex items-center gap-1 w-full text-left py-0.5 text-xs text-gray-500 hover:text-gray-300 hover:bg-gray-800/40 transition-colors rounded"
+      <div className="flex flex-col">
+        <div 
+          className={`flex items-center gap-1 w-full text-left py-0.5 text-xs rounded transition-colors group ${
+            isSelected ? 'text-indigo-300 bg-indigo-950/60' : 'text-gray-500 hover:bg-gray-800/40'
+          }`}
           style={{ paddingLeft: indent + 6 }}
         >
-          <span className="text-gray-600 w-3 text-center shrink-0">{open ? '▾' : '▸'}</span>
-          <span className="text-yellow-600 mr-1">📁</span>
-          <span className="truncate">{node.name}</span>
-        </button>
-        {open && Array.from(node.children.values()).map(child => (
-          <TreeNodeView
-            key={child.name}
-            node={child}
-            depth={depth + 1}
-            selectedDoc={selectedDoc}
-            onSelect={onSelect}
-          />
-        ))}
+          {/* 하위 노드가 있는 경우에만 쉐브론 표시 */}
+          <button
+            onClick={(e) => { e.stopPropagation(); setOpen(v => !v); }}
+            className={`w-4 h-4 flex items-center justify-center hover:text-gray-300 transition-colors ${!hasChildren && 'invisible'}`}
+          >
+            <span className="text-[10px]">{open ? '▾' : '▸'}</span>
+          </button>
+          
+          {/* 폴더 아이콘 및 제목 - 문서 정보가 있으면 클릭 시 조회 */}
+          <div 
+            onClick={() => node.doc && onSelect(node.doc)}
+            className={`flex items-center gap-1 flex-1 min-w-0 ${node.doc ? 'cursor-pointer hover:text-gray-200' : 'cursor-default'}`}
+          >
+            <span className={hasChildren ? "text-yellow-600/80 mr-0.5" : "text-gray-600 mr-0.5"}>
+              {hasChildren ? '📁' : '📄'}
+            </span>
+            <span className={`truncate ${node.doc ? 'font-medium' : 'italic opacity-70'}`}>
+              {node.doc?.title ?? node.name}
+            </span>
+          </div>
+        </div>
+        
+        {open && Array.from(node.children.values())
+          .sort((a, b) => {
+            // 폴더 우선 정렬
+            if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+            return a.name.localeCompare(b.name);
+          })
+          .map(child => (
+            <TreeNodeView
+              key={child.name}
+              node={child}
+              depth={depth + 1}
+              selectedDoc={selectedDoc}
+              onSelect={onSelect}
+            />
+          ))}
       </div>
     );
   }
 
   const doc = node.doc!;
-  const isSelected = selectedDoc?.document_id === doc.document_id && selectedDoc?.source_doc_id === doc.source_doc_id;
   return (
     <FileItem
       doc={doc}
-      isSelected={isSelected}
+      isSelected={isSelected || false}
       onSelect={onSelect}
       depth={depth}
     />

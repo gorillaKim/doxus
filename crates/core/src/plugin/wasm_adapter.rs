@@ -133,6 +133,7 @@ impl WasmDocSourceAdapter {
         // Manifest의 allowed_hosts를 통해 도메인을 검증함.
         let mut extism_manifest = Manifest::new([wasm]);
         for domain in &manifest.http_domains {
+            eprintln!("[Wasm-Adapter] Allowing domain: {}", domain);
             extism_manifest = extism_manifest.with_allowed_host(domain.as_str());
         }
 
@@ -142,6 +143,10 @@ impl WasmDocSourceAdapter {
         let secrets_manifest = manifest.secrets.clone();
 
         use extism::{Function, ValType, CurrentPlugin, Val, UserData};
+
+        let secret_backend_inner_set = secret_backend_inner.clone();
+        let plugin_id_inner_set = plugin_id_inner.clone();
+        let secrets_manifest_set = secrets_manifest.clone();
 
         let set_secret_fn = Function::new(
             "__doxus_set_secret",
@@ -154,16 +159,63 @@ impl WasmDocSourceAdapter {
                 let key = plugin.memory_str(key_h).unwrap_or_default().to_string();
                 let value = plugin.memory_str(val_h).unwrap_or_default().to_string();
                 
-                if secrets_manifest.contains(&key.to_string()) {
-                    let service = format!("doxus-{}", plugin_id_inner);
-                    secret_backend_inner.set_secret(&service, &key, &value)
+                if secrets_manifest_set.contains(&key) {
+                    let service = format!("doxus-{}", plugin_id_inner_set);
+                    secret_backend_inner_set.set_secret(&service, &key, &value)
                         .map_err(|e| extism::Error::msg(e.to_string()))?;
                 }
                 Ok(())
             }
         );
 
-        let plugin = Plugin::new(&extism_manifest, [set_secret_fn], true)
+        let secret_backend_inner_get = secret_backend_inner.clone();
+        let plugin_id_inner_get = plugin_id_inner.clone();
+        let secrets_manifest_get = secrets_manifest.clone();
+
+        let get_secret_fn = Function::new(
+            "__doxus_get_secret",
+            [ValType::I64],
+            [ValType::I64],
+            UserData::new(()),
+            move |plugin: &mut CurrentPlugin, inputs: &[Val], outputs: &mut [Val], _user_data: UserData<()>| {
+                let key_h = plugin.memory_from_val(&inputs[0]).ok_or_else(|| extism::Error::msg("invalid key handle"))?;
+                let key = plugin.memory_str(key_h).unwrap_or_default().to_string();
+                
+                if !secrets_manifest_get.contains(&key) {
+                    outputs[0] = Val::I64(0);
+                    return Ok(());
+                }
+
+                let service = format!("doxus-{}", plugin_id_inner_get);
+                match secret_backend_inner_get.get_secret(&service, &key) {
+                    Some(secret) => {
+                        let handle = plugin.memory_new(&secret)?;
+                        outputs[0] = Val::I64(handle.offset() as i64);
+                    }
+                    None => {
+                        outputs[0] = Val::I64(0);
+                    }
+                }
+                Ok(())
+            }
+        );
+
+        let get_time_fn = Function::new(
+            "__doxus_get_time",
+            [],
+            [ValType::I64],
+            UserData::new(()),
+            move |_plugin: &mut CurrentPlugin, _inputs: &[Val], outputs: &mut [Val], _user_data: UserData<()>| {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                outputs[0] = Val::I64(now);
+                Ok(())
+            }
+        );
+
+        let plugin = Plugin::new(&extism_manifest, [set_secret_fn, get_secret_fn, get_time_fn], true)
             .map_err(|e| PluginError::Internal(format!("wasm load failed: {e}")))?;
 
         let kv_conn = rusqlite::Connection::open_in_memory()
@@ -286,6 +338,8 @@ impl WasmDocSourceAdapter {
             if output.is_empty() {
                 serde_json::from_str("null")
             } else {
+                let raw_json = String::from_utf8_lossy(output);
+                eprintln!("\n[Wasm-Debug-DUMP] Function: {}, Payload: {}\n", func, raw_json);
                 serde_json::from_slice::<O>(output)
             }.map_err(|e| PluginError::Internal(format!("deserialize: {e}")))
         })
@@ -302,6 +356,7 @@ fn raw_doc_from_wasm(d: doxus_plugin_sdk::wasm_types::RawDocumentWasm) -> RawDoc
         "html" => ContentType::Html,
         _ => ContentType::Markdown,
     };
+    eprintln!("[Wasm-Debug] Mapping doc id: {}, metadata keys: {:?}", d.id, d.metadata.keys().collect::<Vec<_>>());
     RawDocument {
         id: SourceDocId(d.id),
         title: d.title,
@@ -311,8 +366,9 @@ fn raw_doc_from_wasm(d: doxus_plugin_sdk::wasm_types::RawDocumentWasm) -> RawDoc
         metadata: d.metadata,
         tags: d.tags,
         aliases: vec![],
-        created_at: None,
+        created_at: d.created_at,
         updated_at: d.updated_at,
+        relative_path: d.relative_path,
     }
 }
 
@@ -346,13 +402,29 @@ impl DocSource for WasmDocSourceAdapter {
         }
 
         let mut wasm_secrets = HashMap::new();
+        eprintln!("[Wasm-Debug] Initialize secrets fields available: {:?}", secrets.fields.keys());
+        
         for key in &self.manifest.secrets {
             if let Some(v) = secrets.fields.get(key) {
                 let val_str = match v {
                     doxus_plugin_sdk::SecretValue::Text(t) => t.clone(),
                     doxus_plugin_sdk::SecretValue::Token { value, .. } => value.clone(),
                 };
+                eprintln!("[Wasm-Debug] Found secret for key: {}", key);
                 wasm_secrets.insert(key.clone(), val_str);
+            } else {
+                eprintln!("[Wasm-Debug] Missing secret for required key: {}", key);
+                // Fallback: 만약 'confluence_api_token'이 없고 다른 토큰이 있다면 하나라도 할당 시도
+                if key == "confluence_api_token" && !secrets.fields.is_empty() {
+                    if let Some((k, v)) = secrets.fields.iter().next() {
+                        eprintln!("[Wasm-Debug] Attempting autoconnect fallback: mapping {} to {}", k, key);
+                        let val_str = match v {
+                            doxus_plugin_sdk::SecretValue::Text(t) => t.clone(),
+                            doxus_plugin_sdk::SecretValue::Token { value, .. } => value.clone(),
+                        };
+                        wasm_secrets.insert(key.clone(), val_str);
+                    }
+                }
             }
         }
 

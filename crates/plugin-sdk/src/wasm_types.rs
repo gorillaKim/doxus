@@ -7,16 +7,28 @@ pub struct FetchAllOptsWasm {
     pub page_size: usize,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RawDocumentWasm {
+    #[serde(rename = "id")]
     pub id: String,
+    #[serde(rename = "title")]
     pub title: Option<String>,
+    #[serde(rename = "content")]
     pub content: String,
+    #[serde(rename = "content_type")]
     pub content_type: String,
+    #[serde(rename = "url")]
     pub url: Option<String>,
-    pub metadata: HashMap<String, serde_json::Value>,
+    #[serde(rename = "metadata")]
+    pub metadata: std::collections::HashMap<String, serde_json::Value>,
+    #[serde(rename = "tags")]
     pub tags: Vec<String>,
+    #[serde(rename = "created_at")]
+    pub created_at: Option<i64>,
+    #[serde(rename = "updated_at")]
     pub updated_at: Option<i64>,
+    #[serde(rename = "relative_path")]
+    pub relative_path: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

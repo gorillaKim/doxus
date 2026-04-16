@@ -37,6 +37,23 @@ impl<'a> ContentCache<'a> {
         }
     }
 
+    /// Returns the full cached document object if present and not expired.
+    pub fn get_full(&self, plugin_id: &str, doc_id: &str) -> Result<Option<String>, CacheError> {
+        let now = now_secs()?;
+        let result = self.conn.query_row(
+            "SELECT data_json FROM content_cache
+             WHERE plugin_id = ?1 AND doc_id = ?2 AND expires_at > ?3",
+            params![plugin_id, doc_id, now],
+            |row| row.get::<_, Option<String>>(0),
+        );
+        match result {
+            Ok(Some(data)) => Ok(Some(data)),
+            Ok(None) => Ok(None),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(CacheError::Sqlite(e)),
+        }
+    }
+
     /// Insert or replace cache entry. Returns `CacheError::TtlTooShort` if `ttl_minutes < 10`.
     pub fn set(
         &self,
@@ -58,6 +75,33 @@ impl<'a> ContentCache<'a> {
                cached_at  = excluded.cached_at,
                expires_at = excluded.expires_at",
             params![plugin_id, doc_id, content, now, expires_at],
+        )?;
+        Ok(())
+    }
+
+    /// Insert or replace full document cache entry.
+    pub fn set_full(
+        &self,
+        plugin_id: &str,
+        doc_id: &str,
+        content: &str,
+        data_json: &str,
+        ttl_minutes: u32,
+    ) -> Result<(), CacheError> {
+        if ttl_minutes < 10 {
+            return Err(CacheError::TtlTooShort(ttl_minutes));
+        }
+        let now = now_secs()?;
+        let expires_at = now + (ttl_minutes as i64) * 60;
+        self.conn.execute(
+            "INSERT INTO content_cache(plugin_id, doc_id, content, data_json, cached_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(plugin_id, doc_id) DO UPDATE SET
+               content    = excluded.content,
+               data_json  = excluded.data_json,
+               cached_at  = excluded.cached_at,
+               expires_at = excluded.expires_at",
+            params![plugin_id, doc_id, content, data_json, now, expires_at],
         )?;
         Ok(())
     }

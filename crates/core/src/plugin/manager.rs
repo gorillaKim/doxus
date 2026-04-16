@@ -35,6 +35,7 @@ pub struct PluginManager {
 
 impl PluginManager {
     pub fn new(plugins_dir: PathBuf) -> Self {
+        eprintln!("\n[Plugin-Manager] INITIALIZED WITH PATH: {:?}\n", plugins_dir);
         let installer = PluginInstaller::new(plugins_dir.clone());
         Self { plugins_dir, installer, factories: HashMap::new() }
     }
@@ -110,50 +111,72 @@ impl PluginManager {
     /// `WasmDocSourceAdapter`. Returns `None` if neither is found or loading
     /// fails (failure is logged via `tracing::warn`).
     pub fn get_source(&self, plugin_id: &str) -> Option<Box<dyn DocSource + Send + Sync>> {
-        // Reject plugin_id containing path traversal chars
-        if plugin_id.contains('/') || plugin_id.contains('\\') || plugin_id.contains("..") {
-            tracing::warn!("get_source: invalid plugin_id '{plugin_id}'");
+        let normalized_id = Self::normalize_id(plugin_id);
+        eprintln!("[Plugin-Manager] Attempting to load source: origin='{}', normalized='{}'", plugin_id, normalized_id);
+        
+        // Reject invalid plugin_ids
+        if normalized_id.contains('/') || normalized_id.contains('\\') || normalized_id.contains("..") {
+            tracing::warn!("get_source: invalid plugin_id '{}'", normalized_id);
             return None;
         }
 
-        if let Some(factory) = self.factories.get(plugin_id) {
-            return Some(factory());
-        }
+        // 1. Try External WASM Plugin (Prioritized)
+        let wasm_path = self.plugins_dir.join(format!("{}.wasm", normalized_id));
+        let manifest_path = self.plugins_dir.join(format!("{}.manifest.toml", normalized_id));
+        
+        eprintln!("[Plugin-Manager] Checking WASM: path={:?}, exists={}", wasm_path, wasm_path.exists());
+        eprintln!("[Plugin-Manager] Checking MANIFEST: path={:?}, exists={}", manifest_path, manifest_path.exists());
 
-        let wasm_path = self.plugins_dir.join(format!("{plugin_id}.wasm"));
-        let manifest_path = self.plugins_dir.join(format!("{plugin_id}.manifest.toml"));
         if wasm_path.exists() && manifest_path.exists() {
-            let manifest = match PluginManifest::from_file(&manifest_path) {
-                Ok(m) => m,
+            eprintln!("[Plugin-Manager] External files found. Parsing manifest...");
+            let manifest_str = match std::fs::read_to_string(&manifest_path) {
+                Ok(s) => s,
                 Err(e) => {
-                    tracing::warn!("failed to load manifest for {plugin_id}: {e}");
+                    eprintln!("[Plugin-Manager] FAILED to read manifest file: {}", e);
                     return None;
                 }
             };
-            if manifest.abi_version != SUPPORTED_ABI_VERSION {
-                tracing::warn!(
-                    "get_source: plugin '{}' requires ABI v{}, supported v{}",
-                    plugin_id, manifest.abi_version, SUPPORTED_ABI_VERSION
-                );
-                return None;
-            }
+            
+            let manifest: PluginManifest = match toml::from_str(&manifest_str) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("[Plugin-Manager] FAILED to parse manifest TOML: {}", e);
+                    return None;
+                }
+            };
+
             let bytes = match std::fs::read(&wasm_path) {
                 Ok(b) => b,
                 Err(e) => {
-                    tracing::warn!("failed to read WASM for {plugin_id}: {e}");
+                    eprintln!("[Plugin-Manager] FAILED to read WASM bytes: {}", e);
                     return None;
                 }
             };
+
             let adapter = match WasmDocSourceAdapter::from_bytes(bytes, manifest, None, None) {
                 Ok(a) => a,
                 Err(e) => {
-                    tracing::warn!("failed to create WASM adapter for {plugin_id}: {e}");
+                    eprintln!("[Plugin-Manager] FAILED to create WASM adapter: {}", e);
                     return None;
                 }
             };
+            
+            eprintln!("[Plugin-Manager] SUCCESS: Loaded EXTERNAL plugin: {}", normalized_id);
             return Some(Box::new(adapter));
+        } else {
+            eprintln!("[Plugin-Manager] External plugin NOT found at {:?}", wasm_path);
         }
 
+        // 2. Fallback to Registered Factories (Built-in)
+        // Try original ID, normalized ID, and short name
+        for candidate in &[plugin_id, &normalized_id, "confluence", "obsidian"] {
+            if let Some(factory) = self.factories.get(*candidate) {
+                eprintln!("[Plugin-Manager] SUCCESS: Loaded BUILT-IN plugin for candidate: {}", candidate);
+                return Some(factory());
+            }
+        }
+
+        eprintln!("[Plugin-Manager] ERROR: No plugin source found for '{}'", plugin_id);
         None
     }
 

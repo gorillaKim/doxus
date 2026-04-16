@@ -83,6 +83,7 @@ pub struct RawDocument {
     pub aliases: Vec<String>,
     pub created_at: Option<i64>,
     pub updated_at: Option<i64>,
+    pub relative_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

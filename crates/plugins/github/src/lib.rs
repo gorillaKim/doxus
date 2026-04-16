@@ -134,17 +134,28 @@ impl GitHubPlugin {
     fn issue_to_doc(&self, issue: GitHubIssue) -> RawDocument {
         // Parse updated_at RFC3339 → unix timestamp
         let updated_at = chrono_parse_unix(&issue.updated_at);
+        let mut metadata = HashMap::new();
+        if let Some(cfg) = self.config.as_ref() {
+            let rel_path = format!("{}/{}/Issues/{}_{}.md",
+                sanitize_filename(&cfg.owner),
+                sanitize_filename(&cfg.repo),
+                issue.number,
+                sanitize_filename(&issue.title)
+            );
+            metadata.insert("relative_path".to_string(), serde_json::json!(rel_path));
+        }
+
         RawDocument {
             id: SourceDocId(format!("issue:{}", issue.number)),
             title: Some(issue.title),
             content: issue.body.unwrap_or_default(),
             content_type: ContentType::Markdown,
             url: Some(issue.html_url),
-            metadata: HashMap::new(),
+            metadata,
             tags: vec!["issue".into(), issue.state],
             aliases: vec![],
             created_at: None,
-            updated_at,
+            updated_at, relative_path: metadata.get("relative_path").and_then(|v| v.as_str()).map(|s| s.to_string()),
         }
     }
 
@@ -155,33 +166,55 @@ impl GitHubPlugin {
             .last()
             .unwrap_or("unknown")
             .to_string();
+        let mut metadata = HashMap::new();
+        if let Some(cfg) = self.config.as_ref() {
+            let rel_path = format!("{}/{}/Wiki/{}.md",
+                sanitize_filename(&cfg.owner),
+                sanitize_filename(&cfg.repo),
+                sanitize_filename(&page.title)
+            );
+            metadata.insert("relative_path".to_string(), serde_json::json!(rel_path));
+        }
+
         RawDocument {
             id: SourceDocId(format!("wiki:{slug}")),
             title: Some(page.title),
             content: page.content.unwrap_or_default(),
             content_type: ContentType::Markdown,
             url: Some(page.html_url),
-            metadata: HashMap::new(),
+            metadata,
             tags: vec!["wiki".into()],
             aliases: vec![],
             created_at: None,
             updated_at: None,
+            relative_path: metadata.get("relative_path").and_then(|v| v.as_str()).map(|s| s.to_string()),
         }
     }
 
     fn discussion_to_doc(&self, d: GitHubDiscussion) -> RawDocument {
         let updated_at = chrono_parse_unix(&d.updated_at);
+        let mut metadata = HashMap::new();
+        if let Some(cfg) = self.config.as_ref() {
+            let rel_path = format!("{}/{}/Discussions/{}_{}.md",
+                sanitize_filename(&cfg.owner),
+                sanitize_filename(&cfg.repo),
+                d.number,
+                sanitize_filename(&d.title)
+            );
+            metadata.insert("relative_path".to_string(), serde_json::json!(rel_path));
+        }
+
         RawDocument {
             id: SourceDocId(format!("discussion:{}", d.number)),
             title: Some(d.title),
             content: d.body.unwrap_or_default(),
             content_type: ContentType::Markdown,
             url: Some(d.html_url),
-            metadata: HashMap::new(),
+            metadata,
             tags: vec!["discussion".into()],
             aliases: vec![],
             created_at: None,
-            updated_at,
+            updated_at, relative_path: metadata.get("relative_path").and_then(|v| v.as_str()).map(|s| s.to_string()),
         }
     }
 
@@ -794,6 +827,17 @@ fn parse_changes_cursor(cursor: &str) -> (u64, Option<String>) {
     } else {
         (rest.parse().unwrap_or(1), None)
     }
+}
+
+// ── Path helpers ──────────────────────────────────────────────────────────────
+
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            _ => c,
+        })
+        .collect()
 }
 
 // ── Time helpers ──────────────────────────────────────────────────────────────
@@ -1571,5 +1615,80 @@ mod tests {
             .unwrap();
         assert_eq!(stream.documents.len(), 0);
         assert_eq!(stream.next_cursor, None);
+    }
+
+    #[test]
+    fn test_issue_relative_path() {
+        let mut plugin = GitHubPlugin::new();
+        plugin.config = Some(GitHubConfig {
+            owner: "owner".into(),
+            repo: "repo".into(),
+            base_url: "https://api.github.com".into(),
+            token: None,
+            include_closed: false,
+            include_wiki: true,
+            include_discussions: true,
+        });
+        let issue = GitHubIssue {
+            number: 123,
+            title: "Test Issue: Hello/World".into(),
+            body: Some("Body".into()),
+            state: "open".into(),
+            html_url: "https://github.com/owner/repo/issues/123".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            pull_request: None,
+        };
+        let doc = plugin.issue_to_doc(issue);
+        let rel_path = doc.metadata.get("relative_path").and_then(|v| v.as_str());
+        // Expected: owner/repo/Issues/123_Test Issue_ Hello_World.md
+        assert_eq!(rel_path, Some("owner/repo/Issues/123_Test Issue_ Hello_World.md"));
+    }
+
+    #[test]
+    fn test_wiki_relative_path() {
+        let mut plugin = GitHubPlugin::new();
+        plugin.config = Some(GitHubConfig {
+            owner: "owner".into(),
+            repo: "repo".into(),
+            base_url: "https://api.github.com".into(),
+            token: None,
+            include_closed: false,
+            include_wiki: true,
+            include_discussions: true,
+        });
+        let page = GitHubWikiPage {
+            title: "Wiki Page? Title: Good".into(),
+            content: Some("Content".into()),
+            html_url: "https://github.com/owner/repo/wiki/Wiki-Page".into(),
+        };
+        let doc = plugin.wiki_to_doc(page);
+        let rel_path = doc.metadata.get("relative_path").and_then(|v| v.as_str());
+        // Expected: owner/repo/Wiki/Wiki Page_ Title_ Good.md
+        assert_eq!(rel_path, Some("owner/repo/Wiki/Wiki Page_ Title_ Good.md"));
+    }
+
+    #[test]
+    fn test_discussion_relative_path() {
+        let mut plugin = GitHubPlugin::new();
+        plugin.config = Some(GitHubConfig {
+            owner: "owner".into(),
+            repo: "repo".into(),
+            base_url: "https://api.github.com".into(),
+            token: None,
+            include_closed: false,
+            include_wiki: true,
+            include_discussions: true,
+        });
+        let discussion = GitHubDiscussion {
+            number: 456,
+            title: "Discussion <Title> | Rules".into(),
+            body: Some("Body".into()),
+            html_url: "https://github.com/owner/repo/discussions/456".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+        };
+        let doc = plugin.discussion_to_doc(discussion);
+        let rel_path = doc.metadata.get("relative_path").and_then(|v| v.as_str());
+        // Expected: owner/repo/Discussions/456_Discussion _Title_ _ Rules.md
+        assert_eq!(rel_path, Some("owner/repo/Discussions/456_Discussion _Title_ _ Rules.md"));
     }
 }
