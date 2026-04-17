@@ -133,7 +133,6 @@ impl WasmDocSourceAdapter {
         // Manifest의 allowed_hosts를 통해 도메인을 검증함.
         let mut extism_manifest = Manifest::new([wasm]);
         for domain in &manifest.http_domains {
-            eprintln!("[Wasm-Adapter] Allowing domain: {}", domain);
             extism_manifest = extism_manifest.with_allowed_host(domain.as_str());
         }
 
@@ -339,7 +338,7 @@ impl WasmDocSourceAdapter {
                 serde_json::from_str("null")
             } else {
                 let raw_json = String::from_utf8_lossy(output);
-                eprintln!("\n[Wasm-Debug-DUMP] Function: {}, Payload: {}\n", func, raw_json);
+                tracing::debug!("Host function trace: {}: {}", func, raw_json);
                 serde_json::from_slice::<O>(output)
             }.map_err(|e| PluginError::Internal(format!("deserialize: {e}")))
         })
@@ -356,7 +355,7 @@ fn raw_doc_from_wasm(d: doxus_plugin_sdk::wasm_types::RawDocumentWasm) -> RawDoc
         "html" => ContentType::Html,
         _ => ContentType::Markdown,
     };
-    eprintln!("[Wasm-Debug] Mapping doc id: {}, metadata keys: {:?}", d.id, d.metadata.keys().collect::<Vec<_>>());
+    tracing::debug!("Mapping doc id: {}, metadata keys: {:?}", d.id, d.metadata.keys().collect::<Vec<_>>());
     RawDocument {
         id: SourceDocId(d.id),
         title: d.title,
@@ -402,7 +401,7 @@ impl DocSource for WasmDocSourceAdapter {
         }
 
         let mut wasm_secrets = HashMap::new();
-        eprintln!("[Wasm-Debug] Initialize secrets fields available: {:?}", secrets.fields.keys());
+        tracing::debug!("Initialize secrets fields available: {:?}", secrets.fields.keys());
         
         for key in &self.manifest.secrets {
             if let Some(v) = secrets.fields.get(key) {
@@ -410,14 +409,14 @@ impl DocSource for WasmDocSourceAdapter {
                     doxus_plugin_sdk::SecretValue::Text(t) => t.clone(),
                     doxus_plugin_sdk::SecretValue::Token { value, .. } => value.clone(),
                 };
-                eprintln!("[Wasm-Debug] Found secret for key: {}", key);
+                tracing::debug!("Found secret for key: {}", key);
                 wasm_secrets.insert(key.clone(), val_str);
             } else {
-                eprintln!("[Wasm-Debug] Missing secret for required key: {}", key);
+                tracing::debug!("Missing secret for required key: {}", key);
                 // Fallback: 만약 'confluence_api_token'이 없고 다른 토큰이 있다면 하나라도 할당 시도
                 if key == "confluence_api_token" && !secrets.fields.is_empty() {
                     if let Some((k, v)) = secrets.fields.iter().next() {
-                        eprintln!("[Wasm-Debug] Attempting autoconnect fallback: mapping {} to {}", k, key);
+                        tracing::debug!("Attempting autoconnect fallback: mapping {} to {}", k, key);
                         let val_str = match v {
                             doxus_plugin_sdk::SecretValue::Text(t) => t.clone(),
                             doxus_plugin_sdk::SecretValue::Token { value, .. } => value.clone(),
