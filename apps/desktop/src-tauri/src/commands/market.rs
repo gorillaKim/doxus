@@ -37,10 +37,13 @@ fn config_schema(fields: &[(&str, &str, &str, bool, &str)]) -> serde_json::Value
 pub async fn market_list_installed(
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<serde_json::Value, String> {
-    let installed_ids = state
+    let installed_ids: Vec<String> = state
         .plugin_manager
         .list_installed()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|id| doxus_core::plugin::PluginManager::normalize_id(&id))
+        .collect();
 
     // Built-in plugins (always available)
     let builtin = vec![
