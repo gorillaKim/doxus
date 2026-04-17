@@ -27,6 +27,17 @@ async fn main() -> Result<()> {
 
     // Main connection used by McpServer.
     let conn = doxus_core::db::open(&db_path)?;
+    
+    // Cleanup expired content cache on startup
+    {
+        let cache = doxus_core::cache::ContentCache::new(&conn);
+        if let Ok(count) = cache.cleanup_expired() {
+            if count > 0 {
+                tracing::info!("Purged {} expired cache entries on startup", count);
+            }
+        }
+    }
+
     let conn = Arc::new(Mutex::new(conn));
 
     // Separate connection for the background sync loop (SQLite WAL mode supports
@@ -45,6 +56,12 @@ async fn main() -> Result<()> {
     let mut plugin_manager = doxus_core::plugin::PluginManager::new(plugins_dir);
     plugin_manager.register_factory("com.doxus.obsidian", || {
         Box::new(doxus_plugin_obsidian::ObsidianPlugin::new())
+    });
+    plugin_manager.register_factory("com.doxus.confluence", || {
+        Box::new(doxus_plugin_confluence::ConfluencePlugin::new())
+    });
+    plugin_manager.register_factory("com.doxus.github", || {
+        Box::new(doxus_plugin_github::GitHubPlugin::new())
     });
     let plugin_manager = std::sync::Arc::new(plugin_manager);
 

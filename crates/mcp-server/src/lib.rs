@@ -12,7 +12,6 @@ pub use server::McpServer;
 
 pub mod dispatch;
 pub mod tools;
-pub mod auth;
 
 use serde_json::Value;
 

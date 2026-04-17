@@ -122,7 +122,7 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
     }
 }
 
-pub fn get_document(server: &McpServer, id: Value, args: &Value) -> McpResponse {
+pub async fn get_document(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     let project = match args["project"].as_str() {
         Some(p) => p,
         None => return McpResponse::err(id, -32602, "missing required arg: project"),
@@ -137,29 +137,56 @@ pub fn get_document(server: &McpServer, id: Value, args: &Value) -> McpResponse 
         Ok(l) => l,
         Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
     };
-    let row: Result<(Option<String>, String), _> = conn_lock.query_row(
-        "SELECT d.title, d.content
-         FROM documents d
-         JOIN projects p ON d.project_id = p.id
-         WHERE p.name = ?1 AND d.source_doc_id = ?2",
-        params![project, doc_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    );
+    let pm = server.plugin_manager();
+    let service = doxus_core::document::DocumentService::new(&conn_lock, Some(pm));
 
-    match row {
-        Err(_) => McpResponse::err(
+    match service.fetch_full_content(project, doc_id).await {
+        Err(e) => McpResponse::err(
             id,
             -32602,
-            format!("document '{doc_id}' not found in project '{project}'"),
+            format!("Failed to fetch document '{doc_id}' in project '{project}': {e}"),
         ),
-        Ok((title, content)) => {
-            let header = title.map(|t| format!("# {t}\n\n")).unwrap_or_default();
+        Ok(content) => {
+            // Fetch title and metadata for the header
+            let (title, meta_json): (Option<String>, Option<String>) = conn_lock.query_row(
+                "SELECT title, metadata_json FROM documents d JOIN projects p ON d.project_id = p.id WHERE p.name = ?1 AND d.source_doc_id = ?2",
+                params![project, doc_id],
+                |r| Ok((r.get(0)?, r.get(1)?))
+            ).unwrap_or((None, None));
+
+            // Fetch tags
+            let tags: Vec<String> = {
+                let mut stmt = conn_lock.prepare(
+                    "SELECT tag FROM document_tags dt JOIN documents d ON dt.document_id = d.id 
+                     JOIN projects p ON d.project_id = p.id WHERE p.name = ?1 AND d.source_doc_id = ?2"
+                ).ok().unwrap();
+                stmt.query_map(params![project, doc_id], |r| r.get(0)).ok().unwrap()
+                    .filter_map(|r| r.ok())
+                    .collect()
+            };
+
+            let mut header = title.map(|t| format!("# {t}\n")).unwrap_or_default();
+            
+            if !tags.is_empty() {
+                header.push_str(&format!("Tags: {}\n", tags.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" ")));
+            }
+
+            if let Some(json) = meta_json {
+                if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&json) {
+                    for (k, v) in map {
+                        if k == "links" { continue; } // Links are usually too many
+                        header.push_str(&format!("{k}: {v}\n"));
+                    }
+                }
+            }
+            
+            header.push_str("\n---\n\n");
             McpResponse::text(id, format!("{header}{content}"))
         }
     }
 }
 
-pub fn get_section(server: &McpServer, id: Value, args: &Value) -> McpResponse {
+pub async fn get_section(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     let project = match args["project"].as_str() {
         Some(p) => p,
         None => return McpResponse::err(id, -32602, "missing required arg: project"),
@@ -178,20 +205,15 @@ pub fn get_section(server: &McpServer, id: Value, args: &Value) -> McpResponse {
         Ok(l) => l,
         Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
     };
-    let content: Result<String, _> = conn_lock.query_row(
-        "SELECT d.content
-         FROM documents d
-         JOIN projects p ON d.project_id = p.id
-         WHERE p.name = ?1 AND d.source_doc_id = ?2",
-        params![project, doc_id],
-        |r| r.get(0),
-    );
 
-    match content {
-        Err(_) => McpResponse::err(
+    let pm = server.plugin_manager();
+    let service = doxus_core::document::DocumentService::new(&conn_lock, Some(pm));
+
+    match service.fetch_full_content(project, doc_id).await {
+        Err(e) => McpResponse::err(
             id,
             -32602,
-            format!("document '{doc_id}' not found in project '{project}'"),
+            format!("Failed to fetch document '{doc_id}' in project '{project}': {e}"),
         ),
         Ok(content) => {
             let section = extract_section(&content, heading);
@@ -199,7 +221,7 @@ pub fn get_section(server: &McpServer, id: Value, args: &Value) -> McpResponse {
                 McpResponse::err(
                     id,
                     -32602,
-                    format!("heading '{heading}' not found in document '{doc_id}'"),
+                    format!("section '{heading}' not found in document '{doc_id}'"),
                 )
             } else {
                 McpResponse::text(id, section)

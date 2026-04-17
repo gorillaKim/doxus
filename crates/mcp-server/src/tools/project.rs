@@ -2,6 +2,9 @@ use crate::server::McpServer;
 use crate::types::McpResponse;
 use rusqlite::params;
 use serde_json::Value;
+use std::sync::Arc;
+use doxus_core::indexing::IndexingService;
+use doxus_core::search::SearchEngine;
 
 pub fn list_projects(server: &McpServer, id: Value) -> McpResponse {
     let conn = server.conn();
@@ -106,8 +109,7 @@ pub fn remove_project(server: &McpServer, id: Value, args: &Value) -> McpRespons
 }
 
 pub fn index_project(server: &McpServer, id: Value, args: &Value) -> McpResponse {
-    use doxus_core::search::SearchEngine;
-    use doxus_plugin_obsidian::ObsidianPlugin;
+    use doxus_core::search::{SearchEngine, DocMeta};
     use doxus_plugin_sdk::{DocSource, FetchAllOpts, PluginConfig, PluginSecrets};
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -117,72 +119,24 @@ pub fn index_project(server: &McpServer, id: Value, args: &Value) -> McpResponse
         None => return McpResponse::err(id, -32602, "missing required arg: project"),
     };
 
-    let conn = server.conn();
-    let (project_id, path) = {
-        let conn_lock = match conn.lock() {
-            Ok(l) => l,
-            Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
-        };
-        let row: Result<(i64, String), _> = conn_lock.query_row(
-            "SELECT id, path FROM projects WHERE name=?1",
-            params![name],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        );
-        match row {
-            Err(_) => return McpResponse::err(id, -32602, format!("project '{name}' not found")),
-            Ok(r) => r,
-        }
-    };
-
+    let conn = server.conn().clone();
+    let plugin_manager = server.plugin_manager().clone();
     let embedder = server.embedder()
         .cloned()
         .unwrap_or_else(|| Arc::new(doxus_core::embedding::NoOpEmbedder) as Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>);
     let engine = Arc::new(SearchEngine::with_embedder(conn.clone(), embedder));
 
-    let run_batch_indexing = async move {
-        let mut plugin = ObsidianPlugin::new();
-        let mut fields = HashMap::new();
-        fields.insert("path".to_string(), serde_json::Value::String(path));
-        let config = PluginConfig { fields };
-        let secrets = PluginSecrets { fields: HashMap::new() };
+    let indexing_service = IndexingService::new(conn, plugin_manager, engine);
 
-        plugin.initialize(config, secrets).await?;
-
-        let mut cursor = None;
-        let mut total_indexed = 0;
-
-        loop {
-            // 1. Fetch a batch of documents
-            let stream = plugin
-                .fetch_all(FetchAllOpts { cursor, page_size: 50 })
-                .await?;
-            
-            let docs = stream.documents;
-            if docs.is_empty() {
-                break;
-            }
-
-            // 2. Index the batch (with embeddings)
-            for doc in &docs {
-                let title = doc.title.as_deref().unwrap_or("");
-                engine.index_document_async(project_id, &doc.id.0, title, &doc.content).await
-                    .map_err(|e| doxus_plugin_sdk::PluginError::Internal(format!("indexing error for '{}': {e}", doc.id.0)))?;
-            }
-
-            total_indexed += docs.len();
-            cursor = stream.next_cursor;
-            if cursor.is_none() {
-                break;
-            }
-        }
-        Ok::<usize, doxus_plugin_sdk::PluginError>(total_indexed)
+    let run_indexing = async move {
+        indexing_service.index_project(&name).await
     };
 
     let result = match tokio::runtime::Handle::try_current() {
-        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(run_batch_indexing)),
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(run_indexing)),
         Err(_) => {
             match tokio::runtime::Runtime::new() {
-                Ok(rt) => rt.block_on(run_batch_indexing),
+                Ok(rt) => rt.block_on(run_indexing),
                 Err(e) => return McpResponse::err(id, -32603, format!("runtime error: {e}")),
             }
         }
@@ -190,15 +144,14 @@ pub fn index_project(server: &McpServer, id: Value, args: &Value) -> McpResponse
 
     match result {
         Ok(indexed) => {
-            McpResponse::text(id, format!("Project '{name}' indexed: {indexed} documents. (Embeddings generated)"))
+            McpResponse::text(id, format!("Project '{name}' indexed: {indexed} documents. (Unified Indexing Service)"))
         }
         Err(e) => McpResponse::err(id, -32603, format!("index failed: {e}")),
     }
 }
 
 pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse {
-    use doxus_core::search::SyncSearchEngine;
-    use doxus_plugin_obsidian::ObsidianPlugin;
+    use doxus_core::search::{SyncSearchEngine, DocMeta};
     use doxus_plugin_sdk::{DocSource, FetchChangesOpts, PluginConfig, PluginSecrets, SourceDocId};
     use std::collections::HashMap;
 
@@ -213,7 +166,7 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
         Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
     };
     let row: Result<(i64, String, Option<String>, Option<i64>, String), _> = conn_lock.query_row(
-        "SELECT si.id, si.plugin_id, si.sync_cursor, si.last_synced, p.path
+        "SELECT si.id, si.plugin_id, si.sync_cursor, si.last_synced, si.config_json
          FROM source_instances si
          JOIN projects p ON si.project_id = p.id
          WHERE p.name = ?1
@@ -222,17 +175,13 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
     );
 
-    let (si_id, plugin_id, sync_cursor, last_synced, path) = match row {
+    let (si_id, plugin_id, sync_cursor, last_synced, config_json) = match row {
         Err(_) => return McpResponse::text(
             id,
             format!("Project '{name}' has no source instance configured — no source instance"),
         ),
         Ok(r) => r,
     };
-
-    if plugin_id != "com.doxus.obsidian" {
-        return McpResponse::err(id, -32603, format!("unsupported plugin: {plugin_id}"));
-    }
 
     let project_id: i64 = match conn_lock.query_row(
         "SELECT p.id FROM projects p
@@ -265,11 +214,21 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
     let since = last_synced.unwrap_or(0);
     let cursor = sync_cursor;
 
-    let mut plugin = ObsidianPlugin::new();
-    let mut fields = HashMap::new();
-    fields.insert("path".to_string(), serde_json::Value::String(path));
-    let config = PluginConfig { fields };
-    let secrets = PluginSecrets { fields: HashMap::new() };
+    let mut plugin = server.plugin_manager().get_source(&plugin_id)
+        .ok_or_else(|| McpResponse::err(id.clone(), -32603, format!("plugin not found: {plugin_id}")));
+    
+    let mut plugin = match plugin {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+
+    let fields: HashMap<String, serde_json::Value> = serde_json::from_str(&config_json)
+        .unwrap_or_default();
+    let mut config = PluginConfig { fields };
+    let mut secrets = PluginSecrets { fields: HashMap::new() };
+
+    // Inject keychain auth
+    doxus_core::auth::inject_keychain_auth(&plugin_id, &mut config, &mut secrets);
 
     let run_async = async move {
         plugin.initialize(config, secrets).await?;
@@ -305,7 +264,16 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
 
         for doc in &changeset.updated {
             let title = doc.title.as_deref().unwrap_or("");
-            if let Err(e) = engine.index_document(project_id, &doc.id.0, title, &doc.content) {
+            let meta = DocMeta {
+                url: doc.url.clone(),
+                tags: doc.tags.clone(),
+                metadata: doc.metadata.clone(),
+                created_at: doc.created_at,
+                updated_at: doc.updated_at,
+                relative_path: doc.relative_path.clone(),
+                ..Default::default()
+            };
+            if let Err(e) = engine.index_document_with_meta(project_id, &doc.id.0, title, &doc.content, &meta) {
                 let _ = conn_lock.execute_batch("ROLLBACK");
                 return Err(format!("index error for '{}': {e}", doc.id.0));
             }
