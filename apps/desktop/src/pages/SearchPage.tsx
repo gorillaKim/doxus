@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import rehypeRaw from 'rehype-raw';
 import remarkGfm from 'remark-gfm';
@@ -27,6 +28,7 @@ interface DocEntry {
   score?: number;
   snippet?: string;
   context_content?: string | null;
+  heading_path?: string | null; // 섹션 경로 필드 추가
   tags?: string[];
   updated_at?: number;
   metadata?: Record<string, any>;
@@ -45,6 +47,7 @@ function hitToEntry(hit: SearchHit): DocEntry {
     score: hit.score,
     snippet: hit.snippet ?? undefined,
     context_content: hit.context_content,
+    heading_path: hit.heading_path,
     tags: hit.tags,
     updated_at: hit.updated_at,
     metadata: hit.metadata,
@@ -55,11 +58,15 @@ function hitToEntry(hit: SearchHit): DocEntry {
 function allDocToEntry(doc: AllDocument): DocEntry {
   return {
     document_id: doc.document_id,
+    chunk_id: 0, // 전체 문서이므로 기본값 0 사용
     title: doc.title,
-    source_doc_id: doc.source_doc_id, // 고유 ID 유지
-    hierarchy_path: doc.file_path || doc.source_doc_id, // 계층 경로
+    source_doc_id: doc.source_doc_id,
+    hierarchy_path: doc.file_path || doc.source_doc_id,
     project_name: doc.project_name,
     source_type: doc.source_type,
+    heading_path: null, // 전체 목록에서는 섹션 정보 없음
+    tags: doc.tags,
+    updated_at: doc.updated_at,
     url: doc.url,
   };
 }
@@ -83,7 +90,7 @@ interface TooltipProps {
 function DocTooltip({ doc, x, y }: TooltipProps) {
   const dateStr = doc.updated_at ? formatUnixDate(doc.updated_at) : null;
   
-  return (
+  return createPortal(
     <div
       className="fixed z-50 bg-gray-900 border border-indigo-500/30 rounded-xl shadow-2xl p-4 w-80 text-xs backdrop-blur-md pointer-events-none ring-1 ring-white/10"
       style={{ left: Math.min(x + 12, window.innerWidth - 340), top: Math.min(y, window.innerHeight - 300) }}
@@ -134,8 +141,35 @@ function DocTooltip({ doc, x, y }: TooltipProps) {
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body
   );
+}
+
+// ── 툴팁 핸들러 훅 ──────────────────────────────────────────────────────────
+
+function useTooltip() {
+  const [tooltip, setTooltip] = useState<{ x: number; y: number } | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const onMouseEnter = (e: React.MouseEvent) => {
+    const { clientX, clientY } = e;
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      setTooltip({ x: clientX, y: clientY });
+    }, 1000);
+  };
+
+  const onMouseLeave = () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    setTooltip(null);
+  };
+
+  const onMouseMove = (e: React.MouseEvent) => {
+    if (tooltip) setTooltip({ x: e.clientX, y: e.clientY });
+  };
+
+  return { tooltip, onMouseEnter, onMouseLeave, onMouseMove };
 }
 
 // ── 파일 항목 (hover 2.5s 툴팁) ───────────────────────────────────────────
@@ -151,38 +185,21 @@ function FileItem({
   onSelect: (doc: DocEntry) => void;
   depth?: number;
 }) {
-  const [tooltip, setTooltip] = useState<{ x: number; y: number } | null>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const handleMouseEnter = (e: React.MouseEvent) => {
-    const { clientX, clientY } = e;
-    timerRef.current = setTimeout(() => {
-      setTooltip({ x: clientX, y: clientY });
-    }, 1000);
-  };
-
-  const handleMouseLeave = () => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    setTooltip(null);
-  };
-
-  const handleMouseMove = (e: React.MouseEvent) => {
-    if (tooltip) setTooltip({ x: e.clientX, y: e.clientY });
-  };
+  const { tooltip, onMouseEnter, onMouseLeave, onMouseMove } = useTooltip();
 
   return (
     <>
       <button
         onClick={() => onSelect(doc)}
-        onMouseEnter={handleMouseEnter}
-        onMouseLeave={handleMouseLeave}
-        onMouseMove={handleMouseMove}
+        onMouseEnter={onMouseEnter}
+        onMouseLeave={onMouseLeave}
+        onMouseMove={onMouseMove}
         className={`w-full text-left py-0.5 text-xs truncate transition-colors rounded ${
           isSelected
             ? 'text-indigo-300 bg-indigo-950/60'
             : 'text-gray-400 hover:text-gray-100 hover:bg-gray-800/40'
         }`}
-        style={{ paddingLeft: depth * 12 + 18 }}
+        style={{ paddingLeft: depth * 12 + 25 }}
         title=""
       >
         <span className="mr-1.5 opacity-50">📄</span>
@@ -215,7 +232,6 @@ function buildTree(docs: DocEntry[]): TreeNode {
       let part = parts[i];
       const isLast = i === parts.length - 1;
       
-      // .md 확장자 제거 (트리 노드 이름 정규화)
       if (part.toLowerCase().endsWith('.md')) {
         part = part.slice(0, -3);
       }
@@ -230,7 +246,6 @@ function buildTree(docs: DocEntry[]): TreeNode {
       }
       node = node.children.get(part)!;
     }
-    // 경로 없는 경우 루트에 직접
     if (parts.length === 0) {
       root.children.set(doc.title, { name: doc.title, isDir: false, children: new Map(), doc });
     }
@@ -255,6 +270,8 @@ function TreeNodeView({
   const isSelected = node.doc && selectedDoc?.document_id === node.doc.document_id && selectedDoc?.source_doc_id === node.doc.source_doc_id;
   const hasChildren = node.children.size > 0;
 
+  const { tooltip, onMouseEnter, onMouseLeave, onMouseMove } = useTooltip();
+
   if (node.isDir || hasChildren) {
     return (
       <div className="flex flex-col">
@@ -262,9 +279,8 @@ function TreeNodeView({
           className={`flex items-center gap-1 w-full text-left py-0.5 text-xs rounded transition-colors group ${
             isSelected ? 'text-indigo-300 bg-indigo-950/60' : 'text-gray-500 hover:bg-gray-800/40'
           }`}
-          style={{ paddingLeft: indent + 6 }}
+          style={{ paddingLeft: indent + 5 }}
         >
-          {/* 하위 노드가 있는 경우에만 쉐브론 표시 */}
           <button
             onClick={(e) => { e.stopPropagation(); setOpen(v => !v); }}
             className={`w-4 h-4 flex items-center justify-center hover:text-gray-300 transition-colors ${!hasChildren && 'invisible'}`}
@@ -272,9 +288,11 @@ function TreeNodeView({
             <span className="text-[10px]">{open ? '▾' : '▸'}</span>
           </button>
           
-          {/* 폴더 아이콘 및 제목 - 문서 정보가 있으면 클릭 시 조회 */}
           <div 
             onClick={() => node.doc && onSelect(node.doc)}
+            onMouseEnter={node.doc ? onMouseEnter : undefined}
+            onMouseLeave={node.doc ? onMouseLeave : undefined}
+            onMouseMove={node.doc ? onMouseMove : undefined}
             className={`flex items-center gap-1 flex-1 min-w-0 ${node.doc ? 'cursor-pointer hover:text-gray-200' : 'cursor-default'}`}
           >
             <span className={hasChildren ? "text-yellow-600/80 mr-0.5" : "text-gray-600 mr-0.5"}>
@@ -286,9 +304,10 @@ function TreeNodeView({
           </div>
         </div>
         
+        {tooltip && node.doc && <DocTooltip doc={node.doc} x={tooltip.x} y={tooltip.y} />}
+        
         {open && Array.from(node.children.values())
           .sort((a, b) => {
-            // 폴더 우선 정렬
             if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
             return a.name.localeCompare(b.name);
           })
@@ -331,8 +350,9 @@ function ProjectGroup({
   selectedDoc: DocEntry | null;
   onSelect: (doc: DocEntry) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   const tree = buildTree(docs);
+
   return (
     <div className="mb-1">
       <button
@@ -376,58 +396,54 @@ function DocMetaPanel({
   created_at: number | null; updated_at: number | null;
   metadata: Record<string, unknown>;
 }) {
-  const hasAny = tags.length > 0 || aliases.length > 0 || created_at || updated_at || Object.keys(metadata).length > 0;
-
-  // metadata에서 links 제외 (내부 처리용)
   const displayMeta = Object.entries(metadata).filter(([k]) => k !== 'links');
 
   return (
-    <div className="px-5 py-3 border-b border-gray-800 flex flex-wrap gap-x-5 gap-y-2 text-xs bg-gray-950/40">
-      {/* 날짜 */}
-      {created_at && (
-        <div className="flex items-center gap-1.5 text-gray-500">
-          <span className="text-gray-600">생성</span>
-          <span className="text-gray-400">{formatUnixDate(created_at)}</span>
+    <div className="flex flex-col gap-5">
+      {/* 기본 정보 */}
+      <div className="grid grid-cols-2 gap-4">
+        <div className="bg-white/[0.03] rounded-xl p-3 border border-white/5">
+          <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider block mb-1">Created At</span>
+          <span className="text-sm text-gray-300">{created_at ? formatUnixDate(created_at) : 'N/A'}</span>
+        </div>
+        <div className="bg-white/[0.03] rounded-xl p-3 border border-white/5">
+          <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider block mb-1">Updated At</span>
+          <span className="text-sm text-gray-300">{updated_at ? formatUnixDate(updated_at) : 'N/A'}</span>
+        </div>
+      </div>
+
+      {/* 태그 & 별칭 */}
+      {(tags.length > 0 || aliases.length > 0) && (
+        <div className="flex flex-col gap-3">
+          <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Taxonomy</span>
+          <div className="flex flex-wrap gap-2">
+            {tags.map(t => (
+              <span key={t} className="px-2 py-1 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 text-xs text-center min-w-[3rem]">
+                #{t}
+              </span>
+            ))}
+            {aliases.map(a => (
+              <span key={a} className="px-2 py-1 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-xs">
+                🏷️ {a}
+              </span>
+            ))}
+          </div>
         </div>
       )}
-      {updated_at && (
-        <div className="flex items-center gap-1.5 text-gray-500">
-          <span className="text-gray-600">수정</span>
-          <span className="text-gray-400">{formatUnixDate(updated_at)}</span>
+
+      {/* 추가 메타데이터 */}
+      {displayMeta.length > 0 && (
+        <div className="flex flex-col gap-3">
+          <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider">Extended Properties</span>
+          <div className="space-y-2">
+            {displayMeta.map(([k, v]) => (
+              <div key={k} className="flex items-center justify-between text-xs py-1 border-b border-white/5">
+                <span className="text-gray-500">{k}</span>
+                <span className="text-gray-300">{String(v)}</span>
+              </div>
+            ))}
+          </div>
         </div>
-      )}
-      {/* 태그 */}
-      {tags.length > 0 && (
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="text-gray-600">태그</span>
-          {tags.map((t) => (
-            <span key={t} className="px-1.5 py-0.5 rounded-full bg-indigo-950 text-indigo-300 border border-indigo-800">
-              #{t}
-            </span>
-          ))}
-        </div>
-      )}
-      {/* 별칭 */}
-      {aliases.length > 0 && (
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="text-gray-600">별칭</span>
-          {aliases.map((a) => (
-            <span key={a} className="px-1.5 py-0.5 rounded-full bg-gray-800 text-gray-400 border border-gray-700">
-              {a}
-            </span>
-          ))}
-        </div>
-      )}
-      {/* 플러그인 메타 (space_key 등) */}
-      {displayMeta.map(([key, val]) => (
-        <div key={key} className="flex items-center gap-1.5">
-          <span className="text-gray-600">{key}</span>
-          <span className="text-gray-400">{String(val)}</span>
-        </div>
-      ))}
-      {/* 메타 없을 때 힌트 */}
-      {!hasAny && (
-        <span className="text-gray-600 italic">메타데이터 없음 — 재인덱싱 시 채워집니다</span>
       )}
     </div>
   );
@@ -437,26 +453,21 @@ function DocMetaPanel({
 
 function MarkdownPreview({ content }: { content: string }) {
   return (
-    <div className="prose prose-invert prose-sm max-w-none text-gray-300
-      prose-headings:text-white prose-headings:font-semibold
-      prose-h1:text-lg prose-h2:text-base prose-h3:text-sm
-      prose-p:text-gray-300 prose-p:leading-relaxed
-      prose-strong:text-white prose-strong:font-semibold
-      prose-code:text-indigo-300 prose-code:bg-gray-800 prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs
-      prose-pre:bg-gray-800 prose-pre:border prose-pre:border-gray-700
-      prose-blockquote:border-indigo-500 prose-blockquote:text-gray-400
-      prose-a:text-indigo-400 prose-a:no-underline hover:prose-a:underline
-      prose-li:text-gray-300 prose-ul:text-gray-300 prose-ol:text-gray-300
-      prose-hr:border-gray-700
-      prose-table:w-full prose-table:border-collapse
-      prose-th:border prose-th:border-gray-700 prose-th:bg-gray-800 prose-th:px-3 prose-th:py-2 prose-th:text-left prose-th:text-xs prose-th:text-gray-300
-      prose-td:border prose-td:border-gray-700 prose-td:px-3 prose-td:py-2 prose-td:text-xs prose-td:text-gray-400">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>{content}</ReactMarkdown>
+    <div className="prose prose-invert max-w-none text-gray-300 prose-headings:text-white prose-a:text-indigo-400 prose-code:text-indigo-300 prose-pre:bg-black/50 prose-pre:border prose-pre:border-white/10">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeRaw]}
+        components={{
+          a: ({ ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+        }}
+      >
+        {content}
+      </ReactMarkdown>
     </div>
   );
 }
 
-// ── AdvancedSearchPanel ───────────────────────────────────────────────────
+// ── 필터 고도화 패널 ──────────────────────────────────────────────────────
 
 function AdvancedSearchPanel({
   filters,
@@ -469,36 +480,27 @@ function AdvancedSearchPanel({
   availableProjects: string[];
   onChange: (f: Partial<SearchFilters>) => void;
 }) {
-  const togglePlugin = (id: string) => {
-    const next = filters.sourceTypes.includes(id)
-      ? filters.sourceTypes.filter((x) => x !== id)
-      : [...filters.sourceTypes, id];
-    onChange({ sourceTypes: next });
-  };
-  const toggleProject = (name: string) => {
-    const next = filters.projectNames.includes(name)
-      ? filters.projectNames.filter((x) => x !== name)
-      : [...filters.projectNames, name];
-    onChange({ projectNames: next });
-  };
-
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl px-4 py-3 flex flex-col gap-3 shrink-0">
-      {/* 플러그인 필터 */}
+    <div className="glass-card border-white/10 rounded-2xl px-5 py-4 flex flex-col gap-4 shrink-0 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
       <div className="flex flex-col gap-1.5">
-        <span className="text-xs text-gray-500 uppercase tracking-wider">플러그인</span>
+        <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">Plugins</span>
         <div className="flex flex-wrap gap-2">
           {availablePlugins.map((p) => {
-            const active = filters.sourceTypes.includes(p.id);
+            const isActive = filters.sourceTypes.includes(p.id);
             return (
               <button
                 key={p.id}
                 type="button"
-                onClick={() => togglePlugin(p.id)}
-                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs border transition-colors ${
-                  active
-                    ? 'border-indigo-500 bg-indigo-950 text-indigo-300'
-                    : 'border-gray-700 text-gray-400 hover:border-gray-500 hover:text-gray-200'
+                onClick={() => {
+                  const val = isActive
+                    ? filters.sourceTypes.filter((v) => v !== p.id)
+                    : [...filters.sourceTypes, p.id];
+                  onChange({ sourceTypes: val });
+                }}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border transition-all text-xs font-medium ${
+                  isActive
+                    ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300 shadow-lg shadow-indigo-500/10'
+                    : 'bg-white/[0.03] border-white/5 text-gray-500 hover:border-white/20'
                 }`}
               >
                 <span>{p.icon}</span>
@@ -506,52 +508,48 @@ function AdvancedSearchPanel({
               </button>
             );
           })}
-          {availablePlugins.length === 0 && (
-            <span className="text-xs text-gray-600">인덱싱된 플러그인 없음</span>
-          )}
         </div>
       </div>
 
-      {/* 프로젝트 필터 */}
       <div className="flex flex-col gap-1.5">
-        <span className="text-xs text-gray-500 uppercase tracking-wider">프로젝트</span>
+        <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">Projects</span>
         <div className="flex flex-wrap gap-2">
-          {availableProjects.map((name) => {
-            const active = filters.projectNames.includes(name);
+          {availableProjects.map((projectName) => {
+            const isActive = filters.projectNames.includes(projectName);
             return (
               <button
-                key={name}
+                key={projectName}
                 type="button"
-                onClick={() => toggleProject(name)}
-                className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${
-                  active
-                    ? 'border-indigo-500 bg-indigo-950 text-indigo-300'
-                    : 'border-gray-700 text-gray-400 hover:border-gray-500 hover:text-gray-200'
+                onClick={() => {
+                  const val = isActive
+                    ? filters.projectNames.filter((v) => v !== projectName)
+                    : [...filters.projectNames, projectName];
+                  onChange({ projectNames: val });
+                }}
+                className={`px-3 py-1.5 rounded-xl border transition-all text-xs font-medium ${
+                  isActive
+                    ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300 shadow-lg shadow-emerald-500/10'
+                    : 'bg-white/[0.03] border-white/5 text-gray-500 hover:border-white/20'
                 }`}
               >
-                {name}
+                {projectName}
               </button>
             );
           })}
-          {availableProjects.length === 0 && (
-            <span className="text-xs text-gray-600">등록된 프로젝트 없음</span>
-          )}
         </div>
       </div>
 
-      {/* 태그 검색 */}
       <div className="flex flex-col gap-1.5">
-        <span className="text-xs text-gray-500 uppercase tracking-wider">태그</span>
+        <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest">Tags</span>
         <input
           type="text"
+          placeholder="#태그이름"
           value={filters.tagQuery}
           onChange={(e) => onChange({ tagQuery: e.target.value })}
-          placeholder="#태그명 입력..."
-          className="w-full px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-indigo-500"
+          className="bg-white/[0.03] border border-white/5 rounded-xl px-4 py-2 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-indigo-500/50 transition-colors"
         />
       </div>
 
-      {/* 활성 필터 요약 */}
       {(filters.sourceTypes.length > 0 || filters.projectNames.length > 0 || filters.tagQuery) && (
         <div className="flex items-center gap-2 pt-1 border-t border-gray-800">
           <span className="text-xs text-gray-600">적용 중:</span>
@@ -599,7 +597,6 @@ export function SearchPage() {
 
   useEffect(() => { listAllDocuments(); }, [listAllDocuments]);
 
-  // allDocuments에서 플러그인/프로젝트 목록 도출
   const availablePlugins = (() => {
     const seen = new Set<string>();
     return allDocuments.reduce<{ id: string; label: string; icon: string }[]>((acc, d) => {
@@ -693,16 +690,13 @@ export function SearchPage() {
     if (selectedDoc) fetchPreview(selectedDoc, true);
   };
 
-  // 파일 목록 데이터 결정: 검색어 있음 → hits 사용, 검색어 없음 → allDocuments
   const hasSearch = query.trim().length > 0;
 
-  // 그룹화
   const groupedEntries = (() => {
     const entries: DocEntry[] = hasSearch
       ? hits.map(hitToEntry)
       : allDocuments.map(allDocToEntry);
 
-    // project_name 기준 그룹화 (검색결과는 project_name이 없을 수 있음)
     const groups = new Map<string, { sourceType: string; docs: DocEntry[] }>();
     for (const entry of entries) {
       const key = entry.project_name || '검색결과';
@@ -714,54 +708,54 @@ export function SearchPage() {
     return groups;
   })();
 
-  const totalCount = hasSearch ? hits.length : allDocuments.length;
-
   return (
     <div className="flex flex-col h-full gap-3">
-      {/* 검색 폼 */}
+      {/* 검색 바 영역 */}
       <div className="flex flex-col gap-2 shrink-0">
-        <form onSubmit={handleSubmit} className="flex gap-2">
-          <input
-            type="text"
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            placeholder="문서를 검색하세요..."
-            className="flex-1 px-3 py-2 bg-gray-900 border border-gray-800 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
-          />
-          {/* 고급 검색 토글 */}
+        <form onSubmit={handleSubmit} className="flex gap-2 items-center">
+          <div className="relative flex-1 group">
+            <input
+              type="text"
+              placeholder="궁금한 지식을 검색하세요..."
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              className="w-full bg-white/[0.03] border border-white/5 rounded-2xl px-12 py-3.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500/50 transition-all placeholder-gray-600 group-hover:bg-white/[0.05]"
+            />
+            <div className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 group-focus-within:text-indigo-400 transition-colors">
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+            </div>
+          </div>
           <button
             type="button"
-            onClick={() => setAdvancedOpen((v) => !v)}
-            className={`px-3 py-2 border rounded-lg text-sm transition-colors flex items-center gap-1.5 ${
+            onClick={() => setAdvancedOpen(!advancedOpen)}
+            className={`flex items-center gap-2 px-5 py-3.5 rounded-2xl border transition-all text-sm font-semibold ${
               advancedOpen || activeFilterCount > 0
-                ? 'border-indigo-500 bg-indigo-950 text-indigo-300'
-                : 'border-gray-700 text-gray-400 hover:border-gray-600 hover:text-gray-200'
+                ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-400'
+                : 'bg-white/[0.03] border-white/5 text-gray-400 hover:border-white/10'
             }`}
-            title="고급 검색"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="4" y1="6" x2="20" y2="6"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="11" y1="18" x2="13" y2="18"/>
-            </svg>
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+            <span>필터</span>
             {activeFilterCount > 0 && (
-              <span className="text-xs bg-indigo-500 text-white rounded-full w-4 h-4 flex items-center justify-center leading-none">
+              <span className="flex items-center justify-center bg-indigo-500 text-white text-[10px] w-4 h-4 rounded-full">
                 {activeFilterCount}
               </span>
             )}
           </button>
           <button
             type="submit"
-            disabled={isLoading}
-            className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-500 disabled:opacity-50 text-sm font-medium transition-colors"
+            disabled={isLoading || !inputValue.trim()}
+            className="px-8 py-3.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-gray-800 disabled:text-gray-600 text-white rounded-2xl font-bold text-sm shadow-xl shadow-indigo-500/20 transition-all active:scale-95 flex items-center gap-2"
           >
-            {isLoading ? '검색 중...' : '검색'}
+            {isLoading ? 'Searching...' : 'Search'}
           </button>
-          {hits.length > 0 && (
+          {(hits.length > 0 || query) && (
             <button
               type="button"
               onClick={handleClear}
-              className="px-4 py-2 border border-gray-700 text-gray-400 rounded-lg hover:bg-gray-800 hover:text-gray-200 text-sm transition-colors"
+              className="px-4 py-3 text-gray-500 hover:text-gray-300 text-sm font-medium transition-colors"
             >
-              초기화
+              Clear
             </button>
           )}
         </form>
@@ -784,83 +778,81 @@ export function SearchPage() {
       )}
 
       {/* 하단 2-panel */}
-      <div className="flex-1 overflow-hidden flex gap-3">
+      <div className="flex-1 overflow-hidden flex gap-4">
         {/* 좌측: 파일 목록 */}
-        <div className="w-72 shrink-0 overflow-auto bg-gray-950 border border-gray-800 rounded-xl py-2">
+        <div className="w-80 shrink-0 overflow-auto glass-card border-white/5 rounded-2xl flex flex-col shadow-inner">
           {/* 헤더 */}
-          <div className="px-3 pb-1.5 flex items-center justify-between">
-            <span className="text-xs text-gray-600 uppercase tracking-wider">
-              {hasSearch ? `검색결과` : `전체 문서`}
+          <div className="p-4 flex items-center justify-between border-b border-white/5 bg-white/[0.02]">
+            <span className="text-[10px] text-gray-500 font-bold uppercase tracking-[0.2em]">
+              {hasSearch ? `Search Results` : `All Knowledge`}
             </span>
             {(isLoading || allDocsLoading) ? (
-              <span className="text-xs text-gray-700">로딩 중...</span>
+              <div className="w-3 h-3 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
             ) : (
-              <span className="text-xs text-gray-700">{totalCount}</span>
+              <span className="text-[10px] text-indigo-500/60 font-mono">
+                {hasSearch ? hits.length : allDocuments.length} items
+              </span>
             )}
           </div>
-
-          {/* 그룹 목록 */}
-          {groupedEntries.size === 0 && !isLoading && !allDocsLoading ? (
-            <div className="px-3 py-8 text-center text-xs text-gray-600">
-              {hasSearch ? '검색 결과 없음' : '인덱싱된 문서 없음'}
-            </div>
-          ) : (
-            Array.from(groupedEntries.entries()).map(([projectName, { sourceType, docs }]) => (
+          {/* 본문 */}
+          <div className="p-2">
+            {Array.from(groupedEntries.entries()).map(([projectName, group]) => (
               <ProjectGroup
                 key={projectName}
                 projectName={projectName}
-                sourceType={sourceType}
-                docs={docs}
+                sourceType={group.sourceType}
+                docs={group.docs}
                 selectedDoc={selectedDoc}
                 onSelect={handleSelectDoc}
               />
-            ))
-          )}
+            ))}
+          </div>
         </div>
 
-        {/* 우측: 문서 프리뷰 */}
+        {/* 우측: 프리뷰 패널 */}
         <div className="flex-1 bg-gray-900 border border-gray-800 rounded-xl flex flex-col overflow-hidden">
           {selectedDoc ? (
             <>
               {/* 프리뷰 헤더 */}
-              <div className="px-5 py-3 border-b border-gray-800 flex items-center justify-between shrink-0">
-                <div className="min-w-0">
-                  <h2 className="text-white font-semibold text-sm truncate">
-                    {selectedDoc.title}
-                  </h2>
-                  {selectedDoc.source_doc_id && (
-                    <p className="text-xs text-gray-600 truncate mt-0.5">{selectedDoc.source_doc_id}</p>
+              <div className="px-6 py-5 border-b border-white/5 bg-white/[0.01]">
+                <div className="flex flex-col gap-1 mb-4">
+                  <div className="flex items-center gap-2">
+                    <span className="px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-400 text-[10px] font-bold tracking-wider uppercase border border-indigo-500/20">
+                      {selectedDoc.source_type.replace(/^com\.doxus\./, '')}
+                    </span>
+                    <span className="text-gray-500 text-xs truncate max-w-[200px]">
+                      {selectedDoc.project_name}
+                    </span>
+                  </div>
+                  <h2 className="text-xl font-bold text-white tracking-tight">{selectedDoc.title}</h2>
+                  {selectedDoc.heading_path && (
+                    <div className="flex items-center gap-2 mt-1">
+                      <span className="text-[10px] text-gray-600 font-bold uppercase tracking-wider">Section</span>
+                      <span className="text-xs text-indigo-300 opacity-80">{selectedDoc.heading_path}</span>
+                    </div>
                   )}
                 </div>
-                <div className="flex items-center gap-1.5 shrink-0 ml-3">
-                  {previewMeta?.url && (
-                    <button
-                      onClick={() => invoke('plugin_open_url', { url: previewMeta.url })}
-                      className="flex items-center gap-1.5 px-2.5 py-1 bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 rounded-lg text-xs font-medium transition-all group mr-1"
-                      title="외부 앱에서 열기"
-                    >
-                      <span className="opacity-70 group-hover:scale-110 transition-transform">🚀</span>
-                      <span>앱에서 열기</span>
-                    </button>
-                  )}
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      const finalUrl = previewMeta?.url || selectedDoc.url;
+                      if (finalUrl) {
+                        invoke('plugin_open_url', { url: finalUrl });
+                      } else {
+                        invoke('open_file_in_editor', { filePath: selectedDoc.source_doc_id, projectName: selectedDoc.project_name });
+                      }
+                    }}
+                    className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold transition-all shadow-lg shadow-indigo-500/20"
+                  >
+                    <span>원문 열기</span>
+                    <span className="opacity-70">↗</span>
+                  </button>
                   <button
                     onClick={handleRefresh}
-                    disabled={previewLoading}
-                    title="최신 내용으로 새로고침"
-                    className="text-gray-600 hover:text-gray-300 disabled:opacity-40 transition-colors p-1 rounded"
+                    className="p-2 text-gray-500 hover:text-white hover:bg-white/5 rounded-lg transition-colors"
+                    title="콘텐츠 새로고침"
                   >
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      width="14"
-                      height="14"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      className={previewLoading ? 'animate-spin' : ''}
-                    >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className={previewLoading ? 'animate-spin' : ''}>
                       <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
                       <path d="M21 3v5h-5" />
                       <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
@@ -868,65 +860,63 @@ export function SearchPage() {
                     </svg>
                   </button>
                   <button
-                    onClick={() => { setSelectedDoc(null); setPreviewContent(null); }}
-                    className="text-gray-600 hover:text-gray-300 transition-colors text-lg p-1"
+                    onClick={() => setSelectedDoc(null)}
+                    className="ml-auto text-xs text-gray-500 hover:text-gray-300"
                   >
-                    ✕
+                    닫기
                   </button>
                 </div>
               </div>
 
-              {/* 메타데이터 패널 */}
-              {previewMeta && (
-                <DocMetaPanel
-                  tags={previewMeta.tags}
-                  aliases={previewMeta.aliases}
-                  created_at={previewMeta.created_at}
-                  updated_at={previewMeta.updated_at}
-                  metadata={previewMeta.metadata}
-                />
-              )}
-
-              {/* 프리뷰 내용 */}
+              {/* 프리뷰 본문 */}
               <div className="flex-1 overflow-auto p-5">
                 {previewLoading ? (
-                  <div className="flex items-center justify-center h-32">
-                    <p className="text-gray-500 text-sm">불러오는 중...</p>
+                  <div className="flex flex-col items-center justify-center h-full gap-4 text-gray-500">
+                    <div className="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+                    <p className="text-sm font-medium">콘텐츠를 불러오는 중...</p>
                   </div>
                 ) : previewError ? (
-                  <div className="space-y-3">
-                    <p className="text-xs text-red-400 bg-red-950 border border-red-800 rounded-lg px-3 py-2">
-                      {previewError}
-                    </p>
-                    {selectedDoc.snippet && <MarkdownPreview content={selectedDoc.snippet} />}
-                  </div>
-                ) : previewContent ? (
-                  <MarkdownPreview content={previewContent} />
-                ) : selectedDoc.snippet ? (
-                  <div className="space-y-4">
-                    {selectedDoc.heading_path && (
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-gray-500">섹션</span>
-                        <span className="text-xs text-indigo-400 bg-indigo-950 px-2 py-1 rounded">
-                          {selectedDoc.heading_path}
-                        </span>
-                      </div>
-                    )}
-                    <MarkdownPreview content={selectedDoc.snippet} />
+                  <div className="flex flex-col items-center justify-center h-full p-8 text-center gap-4">
+                    <p className="text-red-400 text-sm font-medium">미리보기를 불러올 수 없습니다.</p>
+                    <p className="text-gray-600 text-xs max-w-sm">{previewError}</p>
+                    <MarkdownPreview content={selectedDoc.snippet || ''} />
                   </div>
                 ) : (
-                  <p className="text-gray-600 text-sm">미리볼 내용이 없습니다.</p>
+                  <div className="flex flex-col gap-8">
+                    {previewMeta && (
+                      <DocMetaPanel
+                        tags={previewMeta.tags}
+                        aliases={previewMeta.aliases}
+                        created_at={previewMeta.created_at}
+                        updated_at={previewMeta.updated_at}
+                        metadata={previewMeta.metadata}
+                      />
+                    )}
+                    
+                    {previewContent ? (
+                      <div className="pt-4 border-t border-white/5">
+                        <MarkdownPreview content={previewContent} />
+                      </div>
+                    ) : (
+                      <div className="bg-indigo-500/5 border border-indigo-500/10 rounded-2xl p-4">
+                        <span className="text-[10px] text-gray-500 font-bold uppercase tracking-widest block mb-1">Snippet Preview</span>
+                        <MarkdownPreview content={selectedDoc.snippet || ''} />
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
             </>
           ) : (
             /* 선택 없을 때 empty state */
             <div className="flex flex-col items-center justify-center h-full gap-3 text-center px-8">
-              <p className="text-4xl">📖</p>
-              <p className="text-gray-400 font-medium">문서를 선택하세요</p>
-              <p className="text-sm text-gray-600">
-                {hasSearch
-                  ? '검색 결과에서 문서를 클릭하면 내용을 미리 볼 수 있습니다'
+              <div className="w-16 h-16 bg-white/[0.02] rounded-3xl flex items-center justify-center mb-2 border border-white/5">
+                <span className="text-4xl opacity-20">📂</span>
+              </div>
+              <p className="text-sm font-bold text-gray-400">선택된 문서가 없습니다</p>
+              <p className="text-xs text-gray-600 leading-relaxed max-w-[240px]">
+                {hasSearch 
+                  ? '검색 결과에서 문서를 클릭하면 내용을 미리 볼 수 있습니다' 
                   : '좌측 파일 목록에서 문서를 클릭하면 내용을 미리 볼 수 있습니다'}
               </p>
             </div>

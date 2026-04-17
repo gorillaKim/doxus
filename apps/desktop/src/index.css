@@ -1,2 +1,54 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
+
+@theme {
+  --color-brand-cyan: #22d3ee;
+  --color-brand-violet: #8b5cf6;
+}
+
+@layer base {
+  body {
+    @apply bg-gray-950 text-gray-100 antialiased selection:bg-indigo-500/30;
+  }
+}
+
+@layer components {
+  /* 프리미엄 글래스모피즘 카드 */
+  .glass-card {
+    @apply bg-gray-900/40 backdrop-blur-xl border border-white/5 shadow-2xl;
+  }
+
+  /* 세련된 보더 그라데이션 */
+  .border-gradient {
+    border: 1px solid transparent;
+    background-image: linear-gradient(#111, #111), linear-gradient(to right, #6366f1, #a855f7);
+    background-origin: border-box;
+    background-clip: padding-box, border-box;
+  }
+
+  /* 메쉬 그라데이션 배경 */
+  .bg-mesh {
+    background-color: #030712;
+    background-image: 
+      radial-gradient(at 0% 0%, rgba(99, 102, 241, 0.15) 0, transparent 50%), 
+      radial-gradient(at 100% 0%, rgba(139, 92, 246, 0.1) 0, transparent 50%),
+      radial-gradient(at 100% 100%, rgba(168, 85, 247, 0.1) 0, transparent 50%),
+      radial-gradient(at 0% 100%, rgba(79, 70, 229, 0.15) 0, transparent 50%);
+  }
+}
+
+/* 스크롤바 커스텀 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}

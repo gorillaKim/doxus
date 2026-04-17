@@ -27,6 +27,8 @@ export interface AllDocument {
   source_type: string;
   file_path: string | null;
   url: string | null;
+  tags?: string[];
+  updated_at?: number;
 }
 
 export interface SearchFilters {

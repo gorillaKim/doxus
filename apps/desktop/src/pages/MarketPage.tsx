@@ -107,15 +107,15 @@ function PluginGuideModal({ plugin, onClose }: { plugin: Plugin; onClose: () => 
   }, [plugin.guide_url]);
 
   return (
-    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50">
-      <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl">
+    <div className="fixed inset-0 bg-gray-950/60 backdrop-blur-md flex items-center justify-center z-50 animate-in fade-in duration-300">
+      <div className="glass-card border-white/10 rounded-3xl w-full max-w-3xl max-h-[85vh] flex flex-col shadow-[0_0_50px_-12px_rgba(99,102,241,0.25)] animate-in zoom-in-95 duration-300 overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
-          <div>
-            <h2 className="text-base font-semibold text-gray-100">{plugin.name} 가이드</h2>
-            <p className="text-xs text-gray-500 mt-0.5">{plugin.id}</p>
+        <div className="flex items-center justify-between px-8 py-6 border-b border-white/5 bg-white/[0.02]">
+          <div className="flex flex-col gap-1">
+            <h2 className="text-xl font-bold text-white tracking-tight">{plugin.name} 완벽 가이드</h2>
+            <p className="text-[10px] text-gray-500 font-mono tracking-wider">{plugin.id}</p>
           </div>
-          <button type="button" onClick={onClose} className="text-gray-500 hover:text-gray-300 text-lg">✕</button>
+          <button type="button" onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/5 text-gray-500 hover:text-white transition-colors">✕</button>
         </div>
         {/* Content */}
         <div className="flex-1 overflow-auto px-6 py-4">
@@ -145,10 +145,10 @@ function PluginGuideModal({ plugin, onClose }: { plugin: Plugin; onClose: () => 
           )}
         </div>
         {/* Footer */}
-        <div className="flex justify-end px-6 py-3 border-t border-gray-800">
+        <div className="flex justify-end px-8 py-4 border-t border-white/5 bg-white/[0.01]">
           <button type="button" onClick={onClose}
-            className="px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200 transition-colors">
-            닫기
+            className="px-6 py-2 text-sm font-bold bg-white text-gray-950 rounded-xl hover:bg-gray-200 transition-all duration-300">
+            확인했습니다
           </button>
         </div>
       </div>
@@ -283,16 +283,16 @@ function PluginSettingsModal({ plugin, onClose, onAuthChange, currentEmoji, onEm
   const schema = plugin.auth_schema ?? [];
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
-      <div className="bg-gray-900 border border-gray-800 rounded-2xl p-6 w-full max-w-md flex flex-col gap-5 shadow-2xl">
+    <div className="fixed inset-0 bg-gray-950/60 backdrop-blur-md flex items-center justify-center z-50 animate-in fade-in duration-300">
+      <div className="glass-card border-white/10 rounded-3xl p-8 w-full max-w-md flex flex-col gap-6 shadow-[0_0_50px_-12px_rgba(99,102,241,0.25)] animate-in zoom-in-95 duration-300">
         {/* Header */}
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-4">
             {editingEmoji ? (
               <input
                 autoFocus
                 type="text"
-                className="w-10 h-10 rounded-lg bg-gray-800 border border-indigo-500 text-center text-xl focus:outline-none"
+                className="w-12 h-12 rounded-2xl bg-white/5 border border-indigo-500 text-center text-2xl focus:outline-none shadow-inner"
                 onBlur={() => setEditingEmoji(false)}
                 onKeyDown={(e) => {
                   if (e.key === 'Escape') setEditingEmoji(false);
@@ -310,18 +310,18 @@ function PluginSettingsModal({ plugin, onClose, onAuthChange, currentEmoji, onEm
               <button
                 type="button"
                 onClick={() => setEditingEmoji(true)}
-                className="w-10 h-10 rounded-lg bg-gray-800 border border-gray-700 hover:border-indigo-500 flex items-center justify-center text-xl transition-colors"
+                className="w-12 h-12 rounded-2xl bg-white/5 border border-white/10 hover:border-indigo-500 flex items-center justify-center text-2xl transition-all duration-300 hover:scale-110 active:scale-95 shadow-inner"
                 title="클릭해서 이모지 변경"
               >
                 {emojiInput}
               </button>
             )}
-            <div>
-              <h2 className="text-base font-semibold text-gray-100">{plugin.name} 설정</h2>
-              <p className="text-xs text-gray-500 mt-0.5">{plugin.id}</p>
+            <div className="flex flex-col">
+              <h2 className="text-xl font-bold text-white tracking-tight leading-tight">{plugin.name} 설정</h2>
+              <p className="text-[10px] text-gray-500 font-mono mt-0.5 tracking-wider">{plugin.id}</p>
             </div>
           </div>
-          <button type="button" onClick={onClose} className="text-gray-500 hover:text-gray-300 text-lg">✕</button>
+          <button type="button" onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/5 text-gray-500 hover:text-white transition-colors">✕</button>
         </div>
 
         {/* Auth status badge */}
@@ -483,18 +483,18 @@ function PluginSettingsModal({ plugin, onClose, onAuthChange, currentEmoji, onEm
         )}
 
         {/* Footer */}
-        <div className="flex gap-2 justify-end">
+        <div className="flex gap-4 justify-end pt-4 border-t border-white/5">
           <button type="button" onClick={onClose}
-            className="px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200 transition-colors">
+            className="px-4 py-2 text-sm font-semibold text-gray-500 hover:text-gray-200 transition-colors">
             닫기
           </button>
           {authType === 'api_token' && showAuthForm && (
             <button
               onClick={handleSave}
               disabled={isSaving || schema.filter(f => f.required).some(f => !(fields[f.key] ?? '').trim())}
-              className="px-4 py-1.5 text-sm bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg disabled:opacity-50 transition-colors"
+              className="px-6 py-2.5 text-sm font-bold bg-white text-gray-950 rounded-xl hover:bg-gray-200 disabled:opacity-30 transition-all duration-300 shadow-xl active:scale-95"
             >
-              {isSaving ? '저장 중...' : '저장'}
+              {isSaving ? '저장 중...' : '저장 완료'}
             </button>
           )}
         </div>
@@ -571,7 +571,7 @@ export default function MarketPage() {
   const installedCount = plugins.filter((p) => p.installed).length;
 
   return (
-    <div className="flex flex-col h-full bg-gray-950 p-6 gap-5">
+    <div className="flex flex-col h-full bg-transparent p-6 gap-8 max-w-5xl mx-auto animate-in fade-in duration-700">
       {settingsPlugin && (
         <PluginSettingsModal
           plugin={settingsPlugin}
@@ -589,29 +589,36 @@ export default function MarketPage() {
       )}
 
       {/* 헤더 */}
-      <div>
-        <h1 className="text-white text-xl font-semibold tracking-tight">플러그인 마켓</h1>
-        <p className="text-gray-400 text-sm mt-0.5">문서 소스 플러그인으로 doxus를 확장하세요</p>
+      <div className="flex flex-col gap-1">
+        <h1 className="text-4xl font-extrabold text-white tracking-tight bg-clip-text text-transparent bg-gradient-to-br from-white to-gray-500">
+          확장 마켓플레이스
+        </h1>
+        <p className="text-gray-500 text-sm font-medium">플러그인을 통해 doxus의 지식 통합 능력을 극대화하세요.</p>
       </div>
 
       {/* 검색 + 필터 */}
-      <div className="flex gap-3 flex-wrap">
-        <input
-          type="text"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="플러그인 검색..."
-          className="flex-1 min-w-48 px-3 py-2 bg-gray-900 border border-gray-800 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
-        />
-        <div className="flex gap-1 p-1 bg-gray-900 border border-gray-800 rounded-xl">
+      <div className="flex gap-4 flex-wrap items-center">
+        <div className="relative flex-1 min-w-[300px] group">
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="필요한 플러그인을 검색하세요..."
+            className="w-full pl-11 pr-4 py-3 bg-white/5 border border-white/10 rounded-2xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:bg-white/10 transition-all duration-300 text-sm shadow-inner"
+          />
+          <div className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 group-focus-within:text-indigo-400 transition-colors">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+          </div>
+        </div>
+        <div className="flex gap-1 p-1.5 glass-card border-white/10 rounded-2xl shadow-inner">
           {FILTERS.map((f) => (
             <button
               key={f.key}
               onClick={() => setFilter(f.key)}
-              className={`px-3 py-1 rounded-lg text-sm font-medium transition-colors ${
+              className={`px-4 py-1.5 rounded-xl text-xs font-bold tracking-tight transition-all duration-300 ${
                 filter === f.key
-                  ? 'bg-indigo-600 text-white'
-                  : 'text-gray-400 hover:text-white'
+                  ? 'bg-white text-gray-950 shadow-lg'
+                  : 'text-gray-500 hover:text-gray-200'
               }`}
             >
               {f.label}
@@ -638,7 +645,7 @@ export default function MarketPage() {
             <p className="text-gray-500 text-sm">검색 결과가 없습니다.</p>
           </div>
         ) : (
-          <div className="grid gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-1 gap-4">
             {filtered.map((plugin) => {
               const badge = TRUST_BADGE[plugin.trust];
               const isPending = pendingIds.has(plugin.id);
@@ -647,81 +654,81 @@ export default function MarketPage() {
               return (
                 <div
                   key={plugin.id}
-                  className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex items-start gap-4 hover:border-gray-700 transition-colors"
+                  className="glass-card border-white/5 rounded-3xl p-6 flex items-start gap-6 hover:border-white/20 transition-all duration-300 group shadow-lg"
                 >
                   {/* 아이콘 */}
-                  <div className="w-10 h-10 rounded-lg bg-gray-800 border border-gray-700 flex items-center justify-center shrink-0">
-                    <span className="text-xl">
+                  <div className="w-14 h-14 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center shrink-0 group-hover:scale-110 group-hover:bg-indigo-500/10 group-hover:border-indigo-500/30 transition-all duration-500 shadow-inner">
+                    <span className="text-3xl">
                       {getEmoji(plugin.id)}
                     </span>
                   </div>
 
                   {/* 정보 */}
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <h3 className="text-white font-semibold">{plugin.name}</h3>
-                      <span className="text-gray-600 text-xs">v{plugin.version}</span>
-                      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${badge.className}`}>
+                    <div className="flex items-center gap-2 flex-wrap mb-1">
+                      <h3 className="text-lg font-bold text-white tracking-tight">{plugin.name}</h3>
+                      <span className="text-gray-600 text-[10px] font-mono bg-white/5 px-1.5 py-0.5 rounded">v{plugin.version}</span>
+                    </div>
+                    
+                    <div className="flex items-center gap-1.5 flex-wrap mt-1 mb-3">
+                      <span className={`text-[9px] px-2 py-0.5 rounded uppercase font-bold tracking-tighter shadow-sm ${badge.className}`}>
                         {badge.label}
                       </span>
                       {plugin.builtin && (
-                        <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-gray-800 text-gray-400 border border-gray-700">
-                          기본 내장
+                        <span className="text-[9px] px-2 py-0.5 rounded uppercase font-bold tracking-tighter bg-gray-800 text-gray-500 border border-gray-700">
+                          Built-in
                         </span>
                       )}
-                      {plugin.installed && isAuthenticated && (
-                        <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-emerald-950 text-emerald-400 border border-emerald-800">
-                          ● 인증됨
-                        </span>
-                      )}
-                      {plugin.installed && !isAuthenticated && plugin.auth_type !== 'none' && (
-                        <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-yellow-950 text-yellow-500 border border-yellow-800">
-                          ○ 미인증
+                      {plugin.installed && (
+                        <span className={`text-[9px] px-2 py-0.5 rounded uppercase font-bold tracking-tighter border transition-all duration-300 ${
+                          isAuthenticated 
+                            ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
+                            : 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20'
+                        }`}>
+                          {isAuthenticated ? '● Authenticated' : '○ Pending Auth'}
                         </span>
                       )}
                     </div>
-                    <p className="text-gray-400 text-sm mt-1">{plugin.description}</p>
-                    <p className="text-gray-600 text-xs mt-1 font-mono">{plugin.id}</p>
+                    
+                    <p className="text-sm text-gray-400 line-clamp-2 leading-relaxed h-10">{plugin.description}</p>
+                    <p className="text-[10px] text-gray-600 mt-2 font-mono truncate opacity-0 group-hover:opacity-100 transition-opacity">{plugin.id}</p>
                   </div>
 
                   {/* 액션 */}
-                  <div className="shrink-0 pt-0.5 flex flex-col gap-1.5 items-end">
-                    {/* Guide button */}
+                  <div className="shrink-0 flex flex-col gap-2 items-end pt-1">
                     {plugin.guide_url && (
                       <button
                         onClick={() => setGuidePlugin(plugin)}
-                        className="px-3 py-1.5 rounded-lg text-sm border border-gray-700 text-gray-400 hover:text-emerald-400 hover:border-emerald-800 transition-colors"
+                        className="w-full px-4 py-2 rounded-xl text-xs font-bold border border-white/10 text-gray-400 hover:text-emerald-400 hover:border-emerald-500/40 hover:bg-emerald-500/5 transition-all duration-300"
                       >
-                        가이드
+                        Guide
                       </button>
                     )}
-                    {/* Settings button for any installed plugin */}
                     {plugin.installed && (
                       <button
                         onClick={() => setSettingsPlugin(plugin)}
-                        className="px-3 py-1.5 rounded-lg text-sm border border-gray-700 text-gray-400 hover:text-indigo-400 hover:border-indigo-800 transition-colors"
+                        className="w-full px-4 py-2 rounded-xl text-xs font-bold border border-white/10 text-gray-400 hover:text-indigo-400 hover:border-indigo-500/40 hover:bg-indigo-500/5 transition-all duration-300"
                       >
-                        설정
+                        Settings
                       </button>
                     )}
-                    {/* Install/remove button */}
                     {plugin.builtin ? (
-                      <span className="text-xs text-gray-600 px-3 py-1.5">포함됨</span>
+                      <span className="px-4 py-2 text-[10px] font-bold text-gray-600 uppercase tracking-widest">Included</span>
                     ) : plugin.installed ? (
                       <button
                         onClick={() => handleToggle(plugin)}
                         disabled={isPending}
-                        className="px-3 py-1.5 rounded-lg text-sm border border-gray-700 text-gray-400 hover:text-red-400 hover:border-red-800 disabled:opacity-50 transition-colors"
+                        className="w-full px-4 py-2 rounded-xl text-xs font-bold border border-red-900/30 text-red-500/70 hover:text-red-400 hover:bg-red-500/10 transition-all duration-300 disabled:opacity-30"
                       >
-                        {isPending ? '...' : '제거'}
+                        {isPending ? '...' : 'Uninstall'}
                       </button>
                     ) : (
                       <button
                         onClick={() => handleToggle(plugin)}
                         disabled={isPending}
-                        className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg text-sm transition-colors"
+                        className="w-full px-6 py-2 rounded-xl text-xs font-bold bg-white text-gray-950 hover:bg-gray-200 shadow-lg shadow-white/5 transition-all duration-300 disabled:opacity-30 active:scale-95"
                       >
-                        {isPending ? '...' : '설치'}
+                        {isPending ? '...' : 'Install'}
                       </button>
                     )}
                   </div>
@@ -739,3 +746,4 @@ export default function MarketPage() {
     </div>
   );
 }
+// Force Vite refresh: Fri Apr 17 20:18:33 KST 2026

@@ -2,6 +2,7 @@ import { ReactNode, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { ChatDrawer } from "./ChatDrawer";
 import { useChatStore } from "../../stores/useChatStore";
+import logo from "../../assets/doxus-logo-minimal.png";
 
 // ── SVG 아이콘 ──────────────────────────────────────────────────────────────
 function IconDashboard() {
@@ -98,17 +99,20 @@ export function AppShell({ children }: { children: ReactNode }) {
   }
 
   return (
-    <div className="flex h-screen bg-gray-950 text-gray-100">
+    <div className="flex h-screen bg-mesh text-gray-100 overflow-hidden font-sans">
       {/* 사이드바 */}
       <nav
         data-testid="sidebar"
-        className={`${sidebarOpen ? "w-52" : "w-14"} flex-shrink-0 border-r border-gray-800 flex flex-col transition-all duration-200 overflow-hidden`}
+        className={`${sidebarOpen ? "w-56" : "w-16"} flex-shrink-0 border-r border-white/5 bg-gray-950/20 backdrop-blur-3xl flex flex-col transition-all duration-300 ease-in-out overflow-hidden`}
       >
         {/* 헤더: 로고 + 토글 버튼 */}
         <div className={`flex items-center px-3 py-4 ${sidebarOpen ? "justify-between" : "justify-center"}`}>
-          {sidebarOpen && (
-            <span className="text-base font-bold text-indigo-400 truncate">doxus</span>
-          )}
+          <div className="flex items-center gap-2 overflow-hidden">
+            <img src={logo} alt="doxus logo" className="w-6 h-6 shrink-0" />
+            {sidebarOpen && (
+              <span className="text-base font-bold text-indigo-400 truncate">doxus</span>
+            )}
+          </div>
           <button
             data-testid="sidebar-toggle"
             onClick={toggleSidebar}
@@ -120,7 +124,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
 
         {/* 구분선 */}
-        <div className="border-t border-gray-800 mx-3 mb-2" />
+        <div className="border-t border-white/5 mx-4 mb-3 opacity-50" />
 
         {/* 네비게이션 */}
         <div className="flex flex-col gap-0.5 px-2 flex-1">
@@ -131,12 +135,12 @@ export function AppShell({ children }: { children: ReactNode }) {
               end={to === "/"}
               title={!sidebarOpen ? label : undefined}
               className={({ isActive }) =>
-                `flex items-center gap-3 rounded-lg text-sm transition-colors ${
-                  sidebarOpen ? "px-3 py-2" : "px-2 py-2 justify-center"
+                `flex items-center gap-3 rounded-xl text-sm font-medium transition-all duration-200 ${
+                  sidebarOpen ? "px-3 py-2.5" : "px-0 py-2.5 justify-center mx-2"
                 } ${
                   isActive
-                    ? "bg-indigo-600/30 text-indigo-300"
-                    : "text-gray-400 hover:text-white hover:bg-gray-800"
+                    ? "bg-indigo-500/20 text-indigo-300 shadow-inner ring-1 ring-indigo-500/20"
+                    : "text-gray-400 hover:text-white hover:bg-white/5"
                 }`
               }
             >
@@ -147,16 +151,19 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
 
         {/* 하단: AI 채팅 버튼 */}
-        <div className="px-2 py-3 border-t border-gray-800">
+        <div className="px-3 py-4 border-t border-white/5 bg-gray-950/10">
           <button
             onClick={toggle}
             title={!sidebarOpen ? "AI 채팅" : undefined}
-            className={`w-full flex items-center gap-3 px-2 py-2 rounded-lg text-sm text-gray-400 hover:text-white hover:bg-gray-800 transition-colors ${
+            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 ${
               !sidebarOpen ? "justify-center" : ""
-            } ${isOpen ? "bg-indigo-600/20 text-indigo-300" : ""}`}
+            } ${isOpen 
+                ? "bg-indigo-500 text-white shadow-lg shadow-indigo-500/20" 
+                : "text-gray-400 hover:text-white hover:bg-white/5 border border-transparent hover:border-white/5"
+            }`}
           >
             <IconChat />
-            {sidebarOpen && <span>{isOpen ? "채팅 닫기" : "채팅"}</span>}
+            {sidebarOpen && <span>{isOpen ? "채팅 닫기" : "AI Librarian"}</span>}
           </button>
         </div>
       </nav>

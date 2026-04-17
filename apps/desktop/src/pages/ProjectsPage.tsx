@@ -165,34 +165,36 @@ function AddProjectModal({ onClose }: { onClose: () => void }) {
   ) ?? false;
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
+    <div className="fixed inset-0 bg-gray-950/60 backdrop-blur-md flex items-center justify-center z-50 animate-in fade-in duration-300">
       <form
         onSubmit={handleSubmit}
-        className="bg-gray-900 border border-gray-800 rounded-2xl p-6 w-full max-w-md flex flex-col gap-5 shadow-2xl"
+        className="glass-card border-white/10 rounded-3xl p-8 w-full max-w-lg flex flex-col gap-6 shadow-[0_0_50px_-12px_rgba(99,102,241,0.25)] animate-in zoom-in-95 duration-300"
       >
         <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold text-gray-100">프로젝트 추가</h2>
-          <button type="button" onClick={onClose} className="text-gray-500 hover:text-gray-300 text-lg">✕</button>
+          <div className="flex flex-col gap-1">
+            <h2 className="text-xl font-bold text-white tracking-tight">새 지식 저장소 추가</h2>
+            <p className="text-xs text-gray-500">통합 검색에 포함할 새로운 소스를 연결합니다.</p>
+          </div>
+          <button type="button" onClick={onClose} className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/5 text-gray-500 hover:text-white transition-colors">✕</button>
         </div>
 
         {/* Plugin type selector */}
-        <div className="flex flex-col gap-2">
-          <label className="text-xs text-gray-500 uppercase tracking-wider">소스 유형</label>
-          <div className="grid grid-cols-3 gap-2">
+        <div className="flex flex-col gap-3">
+          <label className="text-[10px] text-gray-500 font-bold uppercase tracking-widest px-1">소스 유형 선택</label>
+          <div className="grid grid-cols-3 gap-3">
             {availableOptions.map((opt) => (
               <button
                 key={opt.id}
                 type="button"
                 onClick={() => { setPluginType(opt.id); setFields({}); }}
-                className={`flex flex-col items-center gap-1 p-3 rounded-xl border text-sm transition-colors ${
+                className={`flex flex-col items-center gap-2 p-4 rounded-2xl border text-sm transition-all duration-300 ${
                   pluginType === opt.id
-                    ? 'border-indigo-500 bg-indigo-950 text-indigo-300'
-                    : 'border-gray-700 bg-gray-800 text-gray-400 hover:border-gray-600 hover:text-gray-200'
+                    ? 'border-indigo-500 bg-indigo-500/10 text-indigo-300 shadow-lg shadow-indigo-500/10'
+                    : 'border-white/5 bg-white/[0.02] text-gray-500 hover:border-white/10 hover:bg-white/5'
                 }`}
               >
-                <span className="text-xl">{opt.icon}</span>
-                <span className="font-medium">{opt.label}</span>
-                <span className="text-xs text-center leading-tight opacity-70">{opt.description}</span>
+                <span className="text-2xl mb-1">{opt.icon}</span>
+                <span className="font-bold tracking-tight">{opt.label}</span>
               </button>
             ))}
           </div>
@@ -212,14 +214,14 @@ function AddProjectModal({ onClose }: { onClose: () => void }) {
           <p className="text-xs text-red-400 bg-red-950 border border-red-800 rounded-lg px-3 py-2">{error}</p>
         )}
 
-        <div className="flex gap-2 justify-end">
+        <div className="flex gap-4 justify-end pt-4 border-t border-white/5">
           <button type="button" onClick={onClose}
-            className="px-3 py-1.5 text-sm text-gray-400 hover:text-gray-200 transition-colors">
-            취소
+            className="px-4 py-2 text-sm font-semibold text-gray-500 hover:text-gray-200 transition-colors">
+            닫기
           </button>
           <button type="submit" disabled={isSubmitting || !canSubmit}
-            className="px-4 py-1.5 text-sm bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg disabled:opacity-50 transition-colors">
-            {isSubmitting ? '추가 중...' : '프로젝트 추가'}
+            className="px-6 py-2.5 text-sm font-bold bg-white text-gray-950 rounded-xl hover:bg-gray-200 disabled:opacity-30 transition-all duration-300">
+            {isSubmitting ? '추가 중...' : '연결 완료'}
           </button>
         </div>
       </form>
@@ -280,16 +282,15 @@ export function ProjectsPage() {
         </div>
       )}
 
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-gray-100">프로젝트</h1>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex flex-col gap-1">
+          <h1 className="text-3xl font-extrabold text-white tracking-tight">프로젝트 매니저</h1>
+          <p className="text-xs text-gray-500">연결된 모든 지식 소스를 관리합니다.</p>
+        </div>
         <div className="flex gap-2">
-          <button onClick={fetch} disabled={isLoading}
-            className="text-sm px-3 py-1.5 border border-gray-700 text-gray-400 rounded-lg hover:bg-gray-800 hover:text-gray-200 disabled:opacity-50 transition-colors">
-            {isLoading ? '로딩 중...' : '새로고침'}
-          </button>
           <button onClick={() => setShowModal(true)}
-            className="text-sm px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition-colors">
-            + 프로젝트 추가
+            className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-bold rounded-xl shadow-lg shadow-indigo-600/20 transition-all duration-300 transform hover:-translate-y-0.5">
+            + 새 프로젝트
           </button>
         </div>
       </div>
@@ -322,39 +323,51 @@ export function ProjectsPage() {
                 <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">{label}</span>
                 <span className="text-xs text-gray-700">({items.length})</span>
               </div>
-              {items.map((p) => (
-                <div key={p.name}
-                  className="p-4 bg-gray-900 border border-gray-800 rounded-xl flex items-center justify-between hover:border-gray-700 transition-colors">
-                  <div className="min-w-0">
-                    <h3 className="font-medium text-gray-100">{p.display_name}</h3>
-                    <p className="text-sm text-gray-500 truncate max-w-md">{p.path}</p>
+              <div className="grid grid-cols-1 gap-4">
+                {items.map((p) => (
+                  <div key={p.name}
+                    className="glass-card border-white/5 rounded-2xl p-5 flex flex-col gap-5 hover:border-white/10 transition-all duration-300 group">
+                    <div className="flex items-start justify-between">
+                      <div className="flex flex-col gap-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-bold text-gray-100 truncate">{p.display_name}</h3>
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded uppercase font-bold tracking-tighter ${
+                            p.status === 'active'
+                              ? 'bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20'
+                              : 'bg-gray-800 text-gray-500'
+                          }`}>
+                            {p.status}
+                          </span>
+                        </div>
+                        <p className="text-xs text-gray-500 font-mono truncate">{p.path}</p>
+                      </div>
+                      
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={() => handleIndex(p.name)}
+                          disabled={indexingNames.has(p.name)}
+                          className="px-3 py-1.5 bg-white/5 hover:bg-indigo-500 text-gray-300 hover:text-white rounded-lg text-[11px] font-bold transition-all duration-300 disabled:opacity-30"
+                        >
+                          {indexingNames.has(p.name) ? 'Indexing...' : 'Index Now'}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between pt-4 border-t border-white/5">
+                      <div className="flex items-center gap-4">
+                        <button onClick={() => handleToggleStatus(p.name, p.status)} disabled={togglingId === p.name}
+                          className="text-[11px] font-semibold text-gray-500 hover:text-gray-200 transition-colors">
+                          {togglingId === p.name ? '...' : p.status === 'active' ? '비활성화' : '활성화'}
+                        </button>
+                      </div>
+                      <button onClick={() => handleRemove(p.name, p.display_name)} disabled={removingId === p.name}
+                        className="text-[11px] font-semibold text-gray-600 hover:text-red-400 transition-colors">
+                        {removingId === p.name ? '...' : '삭제'}
+                      </button>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-3 flex-shrink-0 ml-4">
-                    <span className={`text-xs px-2 py-1 rounded-full font-medium ${
-                      p.status === 'active'
-                        ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
-                        : 'bg-gray-800 text-gray-500 border border-gray-700'
-                    }`}>
-                      {p.status}
-                    </span>
-                    <button
-                      onClick={() => handleIndex(p.name)}
-                      disabled={indexingNames.has(p.name)}
-                      className="text-xs px-2.5 py-1 border border-indigo-700 text-indigo-400 rounded-lg hover:bg-indigo-950 disabled:opacity-50 transition-colors"
-                    >
-                      {indexingNames.has(p.name) ? '인덱싱 중...' : '인덱싱'}
-                    </button>
-                    <button onClick={() => handleToggleStatus(p.name, p.status)} disabled={togglingId === p.name}
-                      className="text-xs px-2.5 py-1 border border-gray-700 text-gray-400 rounded-lg hover:bg-gray-800 hover:text-gray-200 disabled:opacity-50 transition-colors">
-                      {togglingId === p.name ? '...' : p.status === 'active' ? '비활성화' : '활성화'}
-                    </button>
-                    <button onClick={() => handleRemove(p.name, p.display_name)} disabled={removingId === p.name}
-                      className="text-xs px-2.5 py-1 border border-red-900 text-red-500 rounded-lg hover:bg-red-950 hover:text-red-400 disabled:opacity-50 transition-colors">
-                      {removingId === p.name ? '...' : '삭제'}
-                    </button>
-                  </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
           );
         });
