@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="apps/desktop/src/assets/doxus-logo-minimal.png" width="120" alt="doxus logo">
+</p>
+
 # doxus (도커스)
 
 > **WASM 플러그인 기반의 다중 소스 통합 문서 검색 허브**

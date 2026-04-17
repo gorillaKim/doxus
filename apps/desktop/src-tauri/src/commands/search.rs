@@ -1092,7 +1092,9 @@ pub fn reindex_if_stale(
 
 pub fn list_all_documents_impl(conn: &rusqlite::Connection) -> Result<serde_json::Value, String> {
     let mut stmt = conn.prepare(
-        "SELECT MIN(d.id), MIN(d.title), MIN(d.source_doc_id), p.name, COALESCE(p.source_type, 'obsidian'), MIN(d.file_path), p.path, MIN(d.url)
+        "SELECT MIN(d.id), MIN(d.title), MIN(d.source_doc_id), p.name, COALESCE(p.source_type, 'obsidian'), \
+                MIN(d.file_path), p.path, MIN(d.url), MIN(COALESCE(d.updated_at, d.last_indexed)), \
+                (SELECT GROUP_CONCAT(tag) FROM document_tags WHERE document_id = MIN(d.id))
          FROM documents d
          JOIN projects p ON d.project_id = p.id
          WHERE p.status = 'active'
@@ -1109,6 +1111,11 @@ pub fn list_all_documents_impl(conn: &rusqlite::Connection) -> Result<serde_json
             let file_path = r.get::<_, Option<String>>(5)?;
             let project_path = r.get::<_, String>(6).unwrap_or_default();
             let url = r.get::<_, Option<String>>(7)?;
+            let updated_at = r.get::<_, i64>(8).unwrap_or(0);
+            let tags_str: Option<String> = r.get(9)?;
+            let tags: Vec<String> = tags_str
+                .map(|s| s.split(',').map(|t| t.to_string()).collect())
+                .unwrap_or_default();
 
             // Normalize file_path for UI tree: strip project_path if it's an absolute path
             // Also strip "virtual root" if it matches name part (e.g. '컨플/테크스펙' -> strip '테크스펙/')
@@ -1147,6 +1154,8 @@ pub fn list_all_documents_impl(conn: &rusqlite::Connection) -> Result<serde_json
                 "source_type": source_type,
                 "file_path": display_file_path,
                 "url": url,
+                "updated_at": updated_at,
+                "tags": tags,
             }))
         })
         .map_err(|e| e.to_string())?
