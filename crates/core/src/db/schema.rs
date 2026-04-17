@@ -71,5 +71,6 @@ pub struct SearchHit {
     pub heading_path: Option<String>,
     pub snippet: String,
     pub context_content: Option<String>,
+    pub metadata_json: Option<String>,
     pub score: f64,
 }

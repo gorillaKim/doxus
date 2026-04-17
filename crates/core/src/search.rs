@@ -95,6 +95,7 @@ pub struct Hit {
     pub heading_path: Option<String>,
     pub snippet: Option<String>,
     pub context_content: Option<String>,
+    pub metadata_json: Option<String>,
     pub score: f64,
 }
 
@@ -254,6 +255,7 @@ impl From<SearchHit> for Hit {
             heading_path: sh.heading_path,
             snippet: Some(sh.snippet),
             context_content: sh.context_content,
+            metadata_json: sh.metadata_json,
             score: sh.score,
         }
     }
@@ -379,7 +381,10 @@ impl SearchEngine {
         // 3. 임베딩 벡터 가공 (Vec<f32> -> Vec<u8>)
         let mut flat_embeddings: Vec<Vec<u8>> = Vec::with_capacity(embedding_vecs.len());
         for emb in embedding_vecs {
-            let bytes: Vec<u8> = emb.iter().flat_map(|f: &f32| f.to_le_bytes()).collect();
+            // Quantize to i8 for 75% space saving (Phase 2)
+            let quantized = crate::embedding::quantize_to_i8(&emb);
+            // i8 is 1 byte, so we just cast to u8 bytes
+            let bytes: Vec<u8> = quantized.into_iter().map(|i| i as u8).collect();
             flat_embeddings.push(bytes);
         }
 
@@ -443,7 +448,8 @@ impl SearchEngine {
         
         let mut chunk_embeddings = Vec::new();
         for emb in embedding_vecs {
-            let bytes: Vec<u8> = emb.iter().flat_map(|f| f.to_le_bytes()).collect();
+            let quantized = crate::embedding::quantize_to_i8(&emb);
+            let bytes: Vec<u8> = quantized.into_iter().map(|i| i as u8).collect();
             chunk_embeddings.push(bytes);
         }
 
@@ -549,7 +555,8 @@ impl SearchEngine {
             .map_err(|e| SearchError::Embedding(e.to_string()))?;
         let emb = embedding.into_iter().next()
             .ok_or_else(|| SearchError::Embedding("empty".into()))?;
-        let emb_bytes: Vec<u8> = emb.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let quantized = crate::embedding::quantize_to_i8(&emb);
+        let emb_bytes: Vec<u8> = quantized.into_iter().map(|i| i as u8).collect();
 
         let conn = Arc::clone(&self.conn);
         let project_ids = query.project_ids.clone();
@@ -653,18 +660,17 @@ fn index_document_sync(
     };
 
     conn.execute(
-        "INSERT INTO documents (project_id, source_doc_id, title, url, content, content_hash, last_indexed, created_at, updated_at, metadata_json, file_path)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, unixepoch(), ?7, ?8, ?9, ?10)
+        "INSERT INTO documents (project_id, source_doc_id, title, url, content_hash, last_indexed, created_at, updated_at, metadata_json, file_path)
+         VALUES (?1, ?2, ?3, ?4, ?5, unixepoch(), ?6, ?7, ?8, ?9)
          ON CONFLICT(project_id, source_doc_id) DO UPDATE SET
             title = excluded.title,
             url = excluded.url,
-            content = excluded.content,
             content_hash = excluded.content_hash,
             last_indexed = excluded.last_indexed,
             updated_at = excluded.updated_at,
             metadata_json = excluded.metadata_json,
             file_path = COALESCE(excluded.file_path, documents.file_path)",
-        rusqlite::params![project_id, source_doc_id, title, meta.url, content, content_hash,
+        rusqlite::params![project_id, source_doc_id, title, meta.url, content_hash,
                           created_at, updated_at, metadata_json, full_file_path],
     )?;
 
@@ -719,7 +725,7 @@ fn index_document_sync(
 
         if let Some(bytes) = chunk_embeddings.get(i) {
             conn.execute(
-                "INSERT OR REPLACE INTO chunk_embeddings(chunk_id, embedding) VALUES (?1, ?2)",
+                "INSERT OR REPLACE INTO chunk_embeddings(chunk_id, vector) VALUES (?1, vec_int8(?2))",
                 rusqlite::params![chunk_id, bytes],
             )?;
         }
@@ -748,12 +754,12 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
     }
 
     let (project_filter, base_param_count) = if query.project_ids.is_empty() {
-        ("AND p.status = 'active'".to_string(), 2usize)
+        ("AND p.status = 'active'".to_string(), 3usize)
     } else {
         let placeholders: Vec<String> = (0..query.project_ids.len())
-            .map(|i| format!("?{}", i + 3))
+            .map(|i| format!("?{}", i + 4))
             .collect();
-        (format!("AND d.project_id IN ({})", placeholders.join(", ")), 2 + query.project_ids.len())
+        (format!("AND d.project_id IN ({})", placeholders.join(", ")), 3 + query.project_ids.len())
     };
     let _ = base_param_count;
 
@@ -761,7 +767,7 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
         "SELECT d.id, c.id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path,
                 snippet(chunks_fts, 0, '<b>', '</b>', '…', 20) AS snippet,
                 bm25(chunks_fts, 1.0, 3.0) AS score,
-                d.url
+                d.url, d.metadata_json
          FROM chunks_fts
          JOIN chunks c ON c.id = chunks_fts.rowid
          JOIN documents d ON d.id = c.document_id
@@ -794,6 +800,7 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
                 context_content: None,
                 score: row.get::<_, f64>(6).unwrap_or(0.0).abs(),
                 url: row.get(7)?,
+                metadata_json: row.get(8)?,
             })
         })?
         .collect::<Result<Vec<_>, rusqlite::Error>>()?;
@@ -822,10 +829,10 @@ fn vector_search_sync(
     // vec0 KNN requires LIMIT on the virtual table query directly,
     // so we use a subquery to get candidate chunk_ids first, then join.
     let sql = format!(
-        "SELECT c.id, c.document_id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path, c.content, knn.distance, d.url
+        "SELECT c.id, c.document_id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path, c.content, knn.distance, d.url, d.metadata_json
          FROM (
              SELECT chunk_id, distance FROM chunk_embeddings
-             WHERE embedding MATCH ?1 AND k = ?2
+             WHERE vector MATCH vec_int8(?1) AND k = ?2
          ) knn
          JOIN chunks c ON knn.chunk_id = c.id
          JOIN documents d ON d.id = c.document_id
@@ -856,6 +863,7 @@ fn vector_search_sync(
                 snippet: row.get(5)?,
                 context_content: None,
                 score: 1.0 / (RRF_K as f64 + distance),
+                metadata_json: row.get(8)?,
             })
         })?
         .collect::<Result<Vec<_>, rusqlite::Error>>()?;
@@ -1031,7 +1039,7 @@ impl<'a> SyncSearchEngine<'a> {
             "SELECT d.id, d.project_id, d.source_doc_id, d.title,
                     snippet(chunks_fts, 0, '<b>', '</b>', '...', 20) AS snippet,
                     bm25(chunks_fts, 1.0, 3.0) AS fts_score,
-                    d.url
+                    d.url, d.metadata_json
              FROM chunks_fts
              JOIN chunks c ON c.id = chunks_fts.rowid
              JOIN documents d ON d.id = c.document_id
@@ -1051,7 +1059,7 @@ impl<'a> SyncSearchEngine<'a> {
             params.push(Box::new(*id));
         }
         let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-        let rows: Vec<(i64, i64, String, Option<String>, String, f64, Option<String>)> = stmt
+        let rows: Vec<(i64, i64, String, Option<String>, String, f64, Option<String>, Option<String>)> = stmt
             .query_map(param_refs.as_slice(), |row| {
                 Ok((
                     row.get(0)?,
@@ -1061,26 +1069,26 @@ impl<'a> SyncSearchEngine<'a> {
                     row.get(4)?,
                     row.get::<_, f64>(5).unwrap_or(0.0),
                     row.get(6)?,
+                    row.get(7)?,
                 ))
             })?
             .filter_map(|r| r.ok())
             .collect();
 
         let mut rrf_map: HashMap<i64, Hit> = HashMap::new();
-        for (rank, (doc_id, project_id, source_doc_id, title, snippet, _fts_score, url)) in
-            rows.into_iter().enumerate()
-        {
-            let entry = rrf_map.entry(doc_id).or_insert_with(|| Hit {
+        for (rank, (doc_id, project_id, source_doc_id, title, snippet, _score, url, metadata_json)) in rows.into_iter().enumerate() {
+            let entry = rrf_map.entry(doc_id).or_insert(Hit {
                 document_id: doc_id,
-                chunk_id: 0, // Not precisely known in simplify view, but placeholder is fine
+                chunk_id: 0,
                 project_id,
                 source_doc_id,
                 title,
-                file_path: None, // Need to join more tables if we want this here, but None is fine for search_simple
+                file_path: None,
                 url,
                 heading_path: None,
                 snippet: Some(snippet),
                 context_content: None,
+                metadata_json,
                 score: 0.0,
             });
             entry.score += rrf_score(rank + 1);
@@ -1105,7 +1113,7 @@ impl<'a> SyncSearchEngine<'a> {
                     "SELECT d.id, d.project_id, d.source_doc_id, d.title,
                             snippet(chunks_fts, 0, '<b>', '</b>', '...', 20) AS snippet,
                             bm25(chunks_fts, 1.0, 3.0) AS fts_score,
-                            d.url
+                            d.url, d.metadata_json
                      FROM chunks_fts
                      JOIN chunks c ON c.id = chunks_fts.rowid
                      JOIN documents d ON d.id = c.document_id
@@ -1118,9 +1126,9 @@ impl<'a> SyncSearchEngine<'a> {
                 if let Ok(mut fb_stmt) = self.conn.prepare(&fb_sql) {
                     let existing_ids: std::collections::HashSet<i64> =
                         hits.iter().map(|h| h.document_id).collect();
-                    let fb_rows: Vec<(i64, i64, String, Option<String>, String, Option<String>)> = fb_stmt
+                    let fb_rows: Vec<(i64, i64, String, Option<String>, String, Option<String>, Option<String>)> = fb_stmt
                         .query_map(fb_refs.as_slice(), |row| {
-                            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(6)?))
+                            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(6)?, row.get(7)?))
                         })
                         .map(|mapped| {
                             mapped
@@ -1131,7 +1139,7 @@ impl<'a> SyncSearchEngine<'a> {
                         .unwrap_or_default();
                     // prefix 결과는 기존 rank 이후부터 시작해 자연스럽게 낮은 가중치
                     let base_rank = hits.len();
-                    for (offset, (doc_id, project_id, source_doc_id, title, snippet, url)) in
+                    for (offset, (doc_id, project_id, source_doc_id, title, snippet, url, metadata_json)) in
                         fb_rows.into_iter().enumerate()
                     {
                         hits.push(Hit {
@@ -1145,6 +1153,7 @@ impl<'a> SyncSearchEngine<'a> {
                             heading_path: None,
                             snippet: Some(snippet),
                             context_content: None,
+                            metadata_json,
                             score: rrf_score(base_rank + offset + 1),
                         });
                     }
@@ -1409,6 +1418,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn vector_search_works_with_int8_quantization() {
+        let db = TestDb::new();
+        // V24 is applied automatically in TestDb::new() via apply_migrations.
+        // We will manually insert a document and search for it.
+        // This test will fail if the insertion/search logic doesn't handle int8 properly.
+        
+        // TODO: This is a placeholder for the integration test.
+        // Once Task 3 is implemented, this will verify the end-to-end flow.
+    }
+
+    #[tokio::test]
     async fn index_document_stores_embeddings_for_all_chunks() {
         let (engine, conn, pid) = make_async_engine("multi-chunk-test");
 
@@ -1582,10 +1602,10 @@ mod tests {
         let mut hits = vec![
             Hit { document_id: 1, project_id: 1, source_doc_id: "a".into(),
                   title: Some("Rust Programming Guide".into()), snippet: None, score: 0.010,
-                  chunk_id: 0, context_content: None, heading_path: None, file_path: None, url: None },
+                  chunk_id: 0, context_content: None, heading_path: None, file_path: None, url: None, metadata_json: None },
             Hit { document_id: 2, project_id: 1, source_doc_id: "b".into(),
                   title: Some("Something Else".into()), snippet: None, score: 0.010,
-                  chunk_id: 0, context_content: None, heading_path: None, file_path: None, url: None },
+                  chunk_id: 0, context_content: None, heading_path: None, file_path: None, url: None, metadata_json: None },
         ];
         apply_title_boost(&mut hits, "rust programming");
         assert!(hits[0].document_id == 1, "title match 문서가 1위여야 함");

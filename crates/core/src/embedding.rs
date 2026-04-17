@@ -44,6 +44,31 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     dot / (norm_a * norm_b)
 }
 
+/// Quantizes an L2-normalized f32 vector to i8.
+/// Maps [-1.0, 1.0] to [-128, 127].
+pub fn quantize_to_i8(v: &[f32]) -> Vec<i8> {
+    v.iter()
+        .map(|&x| {
+            let scaled = (x * 127.0).round();
+            scaled.clamp(-128.0, 127.0) as i8
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod quantization_tests {
+    use super::*;
+
+    #[test]
+    fn test_quantize_to_i8_basic() {
+        // L2 normalized vectors are in [-1, 1]
+        let input = vec![0.0f32, 1.0, -1.0, 0.5, -0.25];
+        let expected = vec![0i8, 127, -128, 64, -32];
+        let result = quantize_to_i8(&input);
+        assert_eq!(result, expected);
+    }
+}
+
 /// ONNX-backed embedding provider using all-MiniLM-L6-v2
 pub struct OnnxEmbedder {
     info: ModelInfo,

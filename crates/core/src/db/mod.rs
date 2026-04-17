@@ -84,7 +84,7 @@ pub fn ensure_vec_extension() {
 pub fn create_vec0_table(conn: &Connection) -> Result<(), DbError> {
     conn.execute_batch(
         "CREATE VIRTUAL TABLE IF NOT EXISTS chunk_embeddings \
-         USING vec0(chunk_id INTEGER PRIMARY KEY, embedding FLOAT[384]);",
+         USING vec0(chunk_id INTEGER PRIMARY KEY, vector int8[384]);",
     )
     .map_err(DbError::Sqlite)?;
     Ok(())
@@ -122,6 +122,12 @@ static MIGRATIONS: &[(&str, &str)] = &[
     ("V17__content_cache_data",     include_str!("migrations/V17__content_cache_data.sql")),
     ("V18__remove_default_workspace", include_str!("migrations/V18__remove_default_workspace.sql")),
     ("V19__add_url_to_documents",      include_str!("migrations/V19__add_url_to_documents.sql")),
+    ("V20__clear_document_content",    include_str!("migrations/V20__clear_document_content.sql")),
+    ("V21__add_cascade_triggers",      include_str!("migrations/V21__add_cascade_triggers.sql")),
+    ("V23__remove_document_content_column", include_str!("migrations/V23__remove_document_content_column.sql")),
+    ("V24__vector_int8_schema", include_str!("migrations/V24__vector_int8_schema.sql")),
+    ("V25__force_reindex_after_quantization", include_str!("migrations/V25__force_reindex_after_quantization.sql")),
+    ("V26__force_resync", include_str!("migrations/V26__force_resync.sql")),
 ];
 
 // ── Test helper ──────────────────────────────────────────────────────────────
@@ -263,25 +269,24 @@ mod tests {
     #[test]
     fn can_insert_and_query_embedding() {
         let db = TestDb::new();
-        // Insert a fake embedding (384-dim, all 0.1)
-        let embedding: Vec<f32> = vec![0.1f32; 384];
-        let emb_bytes: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+        // Insert a fake int8 embedding (384-dim, all 64)
+        let embedding: Vec<i8> = vec![64i8; 384];
+        let emb_bytes: Vec<u8> = embedding.iter().map(|&i| i as u8).collect();
 
         db.conn
             .execute(
-                "INSERT INTO chunk_embeddings(chunk_id, embedding) VALUES (?1, ?2)",
+                "INSERT INTO chunk_embeddings(chunk_id, vector) VALUES (?1, vec_int8(?2))",
                 rusqlite::params![1i64, emb_bytes],
             )
             .expect("insert embedding");
 
         // KNN query
-        let query_emb: Vec<f32> = vec![0.1f32; 384];
-        let query_bytes: Vec<u8> = query_emb.iter().flat_map(|f| f.to_le_bytes()).collect();
+        let query_bytes = emb_bytes.clone();
 
         let (chunk_id, distance): (i64, f64) = db
             .conn
             .query_row(
-                "SELECT chunk_id, distance FROM chunk_embeddings WHERE embedding MATCH ?1 ORDER BY distance LIMIT 1",
+                "SELECT chunk_id, distance FROM chunk_embeddings WHERE vector MATCH vec_int8(?1) ORDER BY distance LIMIT 1",
                 rusqlite::params![query_bytes],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
