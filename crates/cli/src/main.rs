@@ -175,6 +175,7 @@ fn handle_project(conn: &rusqlite::Connection, action: ProjectAction) -> Result<
 async fn handle_index(conn: &rusqlite::Connection) -> Result<()> {
     use doxus_plugin_sdk::{DocSource, FetchAllOpts, PluginConfig, PluginSecrets};
     use doxus_plugin_obsidian::ObsidianPlugin;
+    use doxus_core::search::{SearchEngine, DocMeta};
 
     let mut stmt = conn.prepare(
         "SELECT id, name, path FROM projects WHERE status='active'",
@@ -206,31 +207,26 @@ async fn handle_index(conn: &rusqlite::Connection) -> Result<()> {
                 .await
                 .map_err(|e| anyhow::anyhow!("fetch error: {e}"))?;
 
-            for doc in &stream.documents {
-                let content_hash = content_hash(&doc.content);
-                conn.execute(
-                    "INSERT INTO documents(project_id, source_doc_id, title, content, content_hash, file_path, last_indexed)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, unixepoch())
-                     ON CONFLICT(project_id, source_doc_id) DO UPDATE SET
-                       content=excluded.content,
-                       content_hash=excluded.content_hash,
-                       last_indexed=excluded.last_indexed",
-                    rusqlite::params![
-                        pid, doc.id.0, doc.title, doc.content, content_hash, doc.id.0
-                    ],
-                )?;
+            let engine = SearchEngine::new(conn);
 
-                // Insert chunk
-                let doc_id: i64 = conn.query_row(
-                    "SELECT id FROM documents WHERE project_id=?1 AND source_doc_id=?2",
-                    rusqlite::params![pid, doc.id.0],
-                    |r| r.get(0),
-                )?;
-                conn.execute(
-                    "INSERT OR REPLACE INTO chunks(document_id, content, chunk_index)
-                     VALUES (?1, ?2, 0)",
-                    rusqlite::params![doc_id, doc.content],
-                )?;
+            for doc in &stream.documents {
+                let meta = DocMeta {
+                    url: doc.url.clone(),
+                    tags: doc.tags.clone(),
+                    metadata: doc.metadata.clone(),
+                    created_at: doc.created_at,
+                    updated_at: doc.updated_at,
+                    aliases: doc.aliases.clone(),
+                    relative_path: doc.relative_path.clone(),
+                };
+
+                engine.index_document_with_meta(
+                    pid,
+                    &doc.id.0,
+                    doc.title.as_deref().unwrap_or("Untitled"),
+                    &doc.content,
+                    &meta,
+                ).map_err(|e| anyhow::anyhow!("indexing error: {e}"))?;
             }
 
             total += stream.documents.len();
@@ -296,6 +292,11 @@ async fn handle_search(
         let path = hit.file_path.as_deref().unwrap_or("");
         println!("{}. {} [score: {:.6}]", i + 1, title, hit.score);
         println!("   📄 {path}");
+        if let Some(ref meta) = hit.metadata_json {
+            if meta != "{}" {
+                println!("   🏷️  Meta: {}", meta);
+            }
+        }
         println!("   {}", hit.snippet.as_deref().unwrap_or_default());
         println!();
     }
