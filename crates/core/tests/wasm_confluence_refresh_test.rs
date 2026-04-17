@@ -1,12 +1,13 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 use wiremock::matchers::{method, path, header};
 use serde_json::json;
 
-use doxus_core::plugin::wasm_adapter::{WasmDocSourceAdapter, MemoryBackend};
+use doxus_core::plugin::wasm_adapter::WasmDocSourceAdapter;
 use doxus_core::plugin::manifest::PluginManifest;
+use doxus_core::secrets::{SecretStore, MemorySecretStore};
 use doxus_plugin_sdk::{DocSource, PluginConfig, PluginSecrets, SecretValue, FetchAllOpts};
 
 /// WASM 플러그인 바이너리 경로를 워크스페이스 루트 기준으로 계산
@@ -76,15 +77,14 @@ async fn test_token_refresh_pushes_to_secret_backend() {
         secrets: vec!["access_token".into(), "refresh_token".into(), "expires_at".into()],
     };
 
-    // 프로덕션에서는 KeyringBackend가 기본값, 테스트에서는 MemoryBackend 주입
-    let captured_secrets: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
-    let test_backend = Arc::new(MemoryBackend(captured_secrets.clone()));
+    // 프로덕션에서는 KeyringBackend가 기본값, 테스트에서는 MemorySecretStore 주입
+    let test_backend = Arc::new(MemorySecretStore::new());
 
     let mut adapter = WasmDocSourceAdapter::from_bytes(
         wasm_bytes,
         manifest,
         None,
-        Some(test_backend), // None이면 KeyringBackend(Keychain)가 사용됨
+        Some(test_backend.clone()), // None이면 KeyringBackend(Keychain)가 사용됨
     ).expect("어댑터 생성 실패");
 
     // ── 초기화: 만료된 토큰 주입 ──────────────────────────────────────────────
@@ -120,15 +120,15 @@ async fn test_token_refresh_pushes_to_secret_backend() {
     assert_eq!(stream.documents[0].title, Some("Test Page".into()));
 
     // ── 핵심 검증: 시크릿 백엔드에 새 토큰이 저장됐는지 확인 ──────────────────
-    let stored = captured_secrets.lock().unwrap();
+    let service = "com.doxus.com.doxus.confluence"; // wasm_adapter uses com.doxus.{plugin_id}
     assert_eq!(
-        stored.get("access_token").map(|s| s.as_str()),
-        Some("new-access-token"),
+        test_backend.get(service, "access_token").unwrap(),
+        "new-access-token",
         "access_token이 SecretBackend(Keychain)에 저장돼야 함"
     );
     assert_eq!(
-        stored.get("refresh_token").map(|s| s.as_str()),
-        Some("new-refresh-token"),
+        test_backend.get(service, "refresh_token").unwrap(),
+        "new-refresh-token",
         "refresh_token이 SecretBackend(Keychain)에 저장돼야 함"
     );
 

@@ -1,3 +1,5 @@
+use doxus_core::secrets::SecretStore;
+
 fn find_doxus_mcp_binary() -> Option<std::path::PathBuf> {
     // 1. exe 옆 (프로덕션 번들 및 dev target/debug/)
     if let Ok(exe) = std::env::current_exe() {
@@ -328,42 +330,38 @@ pub async fn plugin_save_auth(
     plugin_id: String,
     auth_fields: std::collections::HashMap<String, String>,
 ) -> Result<serde_json::Value, String> {
-    for (key, value) in &auth_fields {
-        let service = "doxus";
-        let username = format!("doxus:{}:{}", plugin_id, key);
-        match keyring::Entry::new(service, &username) {
-            Ok(entry) => {
-                if let Err(e) = entry.set_password(value) {
-                    eprintln!("keyring set_password failed for {}: {}", username, e);
-                }
-            }
-            Err(e) => {
-                eprintln!("keyring entry creation failed for {}: {}", username, e);
-            }
-        }
-    }
-    Ok(serde_json::json!({ "status": "ok" }))
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = doxus_core::secrets::UnifiedKeychainStore::new("doxus", "com.doxus.secrets.v1");
+        let _ = store.load_from_keychain();
+        store.set_bulk(&plugin_id, &auth_fields)
+            .map_err(|e| format!("Failed to save auth fields: {}", e))?;
+        println!("[Market] saved {} auth fields for {} to unified store", auth_fields.len(), plugin_id);
+        Ok(serde_json::json!({ "status": "ok" }))
+    }).await.map_err(|e| format!("Internal thread error: {}", e))?
 }
 
 #[tauri::command]
 pub async fn plugin_get_auth_status(
     plugin_id: String,
 ) -> Result<serde_json::Value, String> {
-    let keys_to_check: &[&str] = match plugin_id.as_str() {
-        "com.doxus.confluence" => &["api_token", "email"],
-        "com.doxus.github" => &["access_token", "token"],
-        _ => &[],
-    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let keys_to_check: &[&str] = match plugin_id.as_str() {
+            "com.doxus.confluence" => &["api_token", "email"],
+            "com.doxus.github" => &["access_token", "token"],
+            _ => &[],
+        };
 
-    let configured = keys_to_check.iter().any(|key| {
-        keyring::Entry::new("doxus", &format!("doxus:{}:{}", plugin_id, key))
-            .ok()
-            .and_then(|e| e.get_password().ok())
-            .map(|p| !p.is_empty())
-            .unwrap_or(false)
-    });
+        let store = doxus_core::secrets::UnifiedKeychainStore::new("doxus", "com.doxus.secrets.v1");
+        let _ = store.load_from_keychain();
 
-    Ok(serde_json::json!({ "configured": configured, "plugin_id": plugin_id }))
+        let configured = keys_to_check.iter().any(|key| {
+            store.get(&plugin_id, key)
+                .map(|p: String| !p.is_empty())
+                .unwrap_or(false)
+        });
+
+        Ok(serde_json::json!({ "configured": configured, "plugin_id": plugin_id }))
+    }).await.map_err(|e| format!("Internal thread error: {}", e))?
 }
 
 // ── PKCE helpers ────────────────────────────────────────────────────────────
@@ -513,18 +511,15 @@ pub async fn plugin_oauth_exchange(
         .unwrap_or("")
         .to_string();
 
-    let kr_access =
-        keyring::Entry::new("doxus", &format!("doxus:{}:access_token", plugin_id))
-            .map_err(|e| e.to_string())?;
-    kr_access.set_password(&access_token).map_err(|e| e.to_string())?;
+    let store = doxus_core::secrets::UnifiedKeychainStore::new("doxus", "com.doxus.secrets.v1");
+    let _ = store.load_from_keychain();
 
+    let mut fields = std::collections::HashMap::new();
+    fields.insert("access_token".to_string(), access_token.clone());
     if !refresh_token.is_empty() {
-        if let Ok(kr_refresh) =
-            keyring::Entry::new("doxus", &format!("doxus:{}:refresh_token", plugin_id))
-        {
-            let _ = kr_refresh.set_password(&refresh_token);
-        }
+        fields.insert("refresh_token".to_string(), refresh_token);
     }
+    let _ = store.set_bulk(&plugin_id, &fields);
 
     // Atlassian Cloud OAuth 토큰은 api.atlassian.com/ex/confluence/{cloudId} 로만 유효.
     // accessible-resources에서 cloudId를 가져와 저장.
@@ -542,12 +537,7 @@ pub async fn plugin_oauth_exchange(
                     .and_then(|arr| arr.first())
                     .and_then(|site| site["id"].as_str())
                 {
-                    if let Ok(kr_cloud) = keyring::Entry::new(
-                        "doxus",
-                        &format!("doxus:{}:cloud_id", plugin_id),
-                    ) {
-                        let _ = kr_cloud.set_password(cloud_id);
-                    }
+                    let _ = store.set(&plugin_id, "cloud_id", cloud_id);
                 }
             }
         }

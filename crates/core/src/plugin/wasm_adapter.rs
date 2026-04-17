@@ -28,78 +28,8 @@ pub enum WasmError {
     HostFn(String),
 }
 
-// ── SecretBackend trait ───────────────────────────────────────────────────────
-
-pub trait SecretBackend: Send + Sync {
-    fn get_secret(&self, service: &str, key: &str) -> Option<String>;
-    fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), WasmError>;
-}
-
-pub(crate) struct KeyringBackend;
-
-impl SecretBackend for KeyringBackend {
-    fn get_secret(&self, service: &str, key: &str) -> Option<String> {
-        keyring::Entry::new(service, key).ok()?.get_password().ok()
-    }
-
-    fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), WasmError> {
-        keyring::Entry::new(service, key)
-            .map_err(|e| WasmError::HostFn(format!("keyring entry error: {e}")))?
-            .set_password(value)
-            .map_err(|e| WasmError::HostFn(format!("keyring set error: {e}")))
-    }
-}
-
-/// Session-scoped cache wrapper for any `SecretBackend`.
-/// First call per (service, key) hits Keychain; subsequent calls are served from memory.
-pub(crate) struct CachedKeyringBackend<B> {
-    inner: B,
-    cache: std::sync::RwLock<std::collections::HashMap<(String, String), String>>,
-}
-
-impl<B: SecretBackend> CachedKeyringBackend<B> {
-    pub fn new(inner: B) -> Self {
-        Self {
-            inner,
-            cache: std::sync::RwLock::new(std::collections::HashMap::new()),
-        }
-    }
-}
-
-impl<B: SecretBackend + Send + Sync> SecretBackend for CachedKeyringBackend<B> {
-    fn get_secret(&self, service: &str, key: &str) -> Option<String> {
-        let cache_key = (service.to_string(), key.to_string());
-        {
-            let r = self.cache.read().unwrap();
-            if let Some(v) = r.get(&cache_key) {
-                return Some(v.clone());
-            }
-        }
-        let value = self.inner.get_secret(service, key)?;
-        self.cache.write().unwrap().insert(cache_key, value.clone());
-        Some(value)
-    }
-
-    fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), WasmError> {
-        self.inner.set_secret(service, key, value)?;
-        let cache_key = (service.to_string(), key.to_string());
-        self.cache.write().unwrap().insert(cache_key, value.to_string());
-        Ok(())
-    }
-}
-
-pub struct MemoryBackend(pub Arc<Mutex<std::collections::HashMap<String, String>>>);
-
-impl SecretBackend for MemoryBackend {
-    fn get_secret(&self, _service: &str, key: &str) -> Option<String> {
-        self.0.lock().unwrap().get(key).cloned()
-    }
-
-    fn set_secret(&self, _service: &str, key: &str, value: &str) -> Result<(), WasmError> {
-        self.0.lock().unwrap().insert(key.to_string(), value.to_string());
-        Ok(())
-    }
-}
+// Secret handling for WASM plugins now uses crate::secrets::SecretStore.
+// KeyringBackend and MemoryBackend are removed in favor of UnifiedKeychainStore and MemorySecretStore.
 
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -109,7 +39,7 @@ pub struct WasmDocSourceAdapter {
     manifest: PluginManifest,
     kv_store: KvStore,
     progress_tx: Option<broadcast::Sender<ProgressEvent>>,
-    secret_backend: Arc<dyn SecretBackend>,
+    secret_store: Arc<dyn crate::secrets::SecretStore>,
 }
 
 impl WasmDocSourceAdapter {
@@ -117,7 +47,7 @@ impl WasmDocSourceAdapter {
         wasm_bytes: impl Into<Vec<u8>>,
         manifest: PluginManifest,
         progress_tx: Option<broadcast::Sender<ProgressEvent>>,
-        secret_backend: Option<Arc<dyn SecretBackend>>,
+        secret_store: Option<Arc<dyn crate::secrets::SecretStore>>,
     ) -> Result<Self, PluginError> {
         if manifest.abi_version != SUPPORTED_ABI_VERSION {
             return Err(PluginError::ConfigInvalid(format!(
@@ -137,13 +67,17 @@ impl WasmDocSourceAdapter {
         }
 
         // Define host functions
-        let secret_backend_inner = secret_backend.clone().unwrap_or_else(|| Arc::new(CachedKeyringBackend::new(KeyringBackend)));
+        let secret_store_inner = secret_store.unwrap_or_else(|| {
+            Arc::new(crate::secrets::CachedSecretStore::new(
+                crate::secrets::UnifiedKeychainStore::new("doxus", "com.doxus.secrets.v1")
+            ))
+        });
         let plugin_id_inner = manifest.plugin_id.clone();
         let secrets_manifest = manifest.secrets.clone();
 
         use extism::{Function, ValType, CurrentPlugin, Val, UserData};
 
-        let secret_backend_inner_set = secret_backend_inner.clone();
+        let secret_backend_inner_set = secret_store_inner.clone();
         let plugin_id_inner_set = plugin_id_inner.clone();
         let secrets_manifest_set = secrets_manifest.clone();
 
@@ -159,15 +93,15 @@ impl WasmDocSourceAdapter {
                 let value = plugin.memory_str(val_h).unwrap_or_default().to_string();
                 
                 if secrets_manifest_set.contains(&key) {
-                    let service = format!("doxus-{}", plugin_id_inner_set);
-                    secret_backend_inner_set.set_secret(&service, &key, &value)
+                    let service = plugin_id_inner_set.clone();
+                    secret_backend_inner_set.set(&service, &key, &value)
                         .map_err(|e| extism::Error::msg(e.to_string()))?;
                 }
                 Ok(())
             }
         );
 
-        let secret_backend_inner_get = secret_backend_inner.clone();
+        let secret_backend_inner_get = secret_store_inner.clone();
         let plugin_id_inner_get = plugin_id_inner.clone();
         let secrets_manifest_get = secrets_manifest.clone();
 
@@ -185,13 +119,13 @@ impl WasmDocSourceAdapter {
                     return Ok(());
                 }
 
-                let service = format!("doxus-{}", plugin_id_inner_get);
-                match secret_backend_inner_get.get_secret(&service, &key) {
-                    Some(secret) => {
+                let service = plugin_id_inner_get.clone();
+                match secret_backend_inner_get.get(&service, &key) {
+                    Ok(secret) => {
                         let handle = plugin.memory_new(&secret)?;
                         outputs[0] = Val::I64(handle.offset() as i64);
                     }
-                    None => {
+                    Err(_) => {
                         outputs[0] = Val::I64(0);
                     }
                 }
@@ -227,8 +161,8 @@ impl WasmDocSourceAdapter {
         kv_store
             .init_table()
             .map_err(|e| PluginError::Internal(format!("kv table init: {e}")))?;
-        let secret_backend: Arc<dyn SecretBackend> =
-            secret_backend.unwrap_or_else(|| Arc::new(CachedKeyringBackend::new(KeyringBackend)));
+        let secret_store: Arc<dyn crate::secrets::SecretStore> =
+            secret_store_inner.clone();
         Ok(Self {
             meta: PluginMetadata {
                 id: manifest.plugin_id.clone(),
@@ -240,7 +174,7 @@ impl WasmDocSourceAdapter {
             manifest,
             kv_store,
             progress_tx,
-            secret_backend,
+            secret_store,
         })
     }
 
@@ -280,8 +214,8 @@ impl WasmDocSourceAdapter {
         }
 
         // Try backend first (keychain in production, injected mock in tests)
-        let service = format!("doxus-{}", self.manifest.plugin_id);
-        if let Some(secret) = self.secret_backend.get_secret(&service, key) {
+        let service = self.manifest.plugin_id.clone();
+        if let Ok(secret) = self.secret_store.get(&service, key) {
             return Some(secret);
         }
 
@@ -540,6 +474,7 @@ impl DocSource for WasmDocSourceAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::secrets::SecretStore;
     use doxus_plugin_sdk::FetchAllOpts;
 
     fn minimal_wasm_bytes() -> Vec<u8> {
@@ -876,14 +811,17 @@ mod tests {
 
     #[test]
     fn test_secrets_get_uses_injected_backend() {
-        let mut map = std::collections::HashMap::new();
-        map.insert("api_token".to_string(), "secret123".to_string());
+        let store = crate::secrets::MemorySecretStore::new();
+        let plugin_id = "com.test.plugin";
+        let service = plugin_id.to_string();
+        store.set(&service, "api_token", "secret123").unwrap();
+
         let manifest = manifest_with_secrets(vec!["api_token"]);
         let adapter = WasmDocSourceAdapter::from_bytes(
             minimal_wasm_bytes(),
             manifest,
             None,
-            Some(Arc::new(MemoryBackend(Arc::new(Mutex::new(map))))),
+            Some(Arc::new(store)),
         )
         .unwrap();
         assert_eq!(adapter.secrets_get("api_token"), Some("secret123".to_string()));

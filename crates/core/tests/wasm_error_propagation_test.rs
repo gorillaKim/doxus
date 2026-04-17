@@ -5,8 +5,9 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use wiremock::matchers::{method, path};
 use serde_json::json;
 
-use doxus_core::plugin::wasm_adapter::{WasmDocSourceAdapter, SecretBackend, WasmError};
+use doxus_core::plugin::wasm_adapter::WasmDocSourceAdapter;
 use doxus_core::plugin::manifest::PluginManifest;
+use doxus_core::secrets::{SecretStore, SecretsError};
 use doxus_plugin_sdk::{DocSource, PluginConfig, PluginSecrets, SecretValue, FetchAllOpts};
 
 fn wasm_path() -> PathBuf {
@@ -19,12 +20,15 @@ fn wasm_path() -> PathBuf {
 
 /// 항상 실패하는 시크릿 백엔드
 struct FailingBackend;
-impl SecretBackend for FailingBackend {
-    fn get_secret(&self, _service: &str, _key: &str) -> Option<String> {
-        None
+impl SecretStore for FailingBackend {
+    fn get(&self, _service: &str, _key: &str) -> Result<String, SecretsError> {
+        Err(SecretsError::NotFound("Simulated".into()))
     }
-    fn set_secret(&self, _service: &str, _key: &str, _value: &str) -> Result<(), WasmError> {
-        Err(WasmError::HostFn("Simulated backend failure".into()))
+    fn set(&self, _service: &str, _key: &str, _value: &str) -> Result<(), SecretsError> {
+        Err(SecretsError::Keychain("Simulated backend failure".into()))
+    }
+    fn delete(&self, _service: &str, _key: &str) -> Result<(), SecretsError> {
+        Ok(())
     }
 }
 

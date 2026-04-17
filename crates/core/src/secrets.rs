@@ -95,6 +95,144 @@ impl<S: SecretStore> SecretStore for CachedSecretStore<S> {
     }
 }
 
+/// Unified store that packs everything into a single JSON blob in the OS keychain.
+/// Reduces the number of permission prompts in macOS.
+pub struct UnifiedKeychainStore {
+    service: String,
+    account: String,
+    cache: RwLock<HashMap<String, String>>,
+}
+
+impl UnifiedKeychainStore {
+    pub fn new(service: &str, account: &str) -> Self {
+        Self {
+            service: service.to_string(),
+            account: account.to_string(),
+            cache: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Load the entire JSON blob from keychain and populate the cache.
+    pub fn load_from_keychain(&self) -> Result<(), SecretsError> {
+        let entry = keyring::Entry::new(&self.service, &self.account)
+            .map_err(|e| SecretsError::Keychain(e.to_string()))?;
+        
+        match entry.get_password() {
+            Ok(json) => {
+                let data: HashMap<String, String> = serde_json::from_str(&json)
+                    .map_err(|e| SecretsError::Keychain(format!("json parse error: {}", e)))?;
+                *self.cache.write().unwrap() = data;
+                Ok(())
+            }
+            Err(keyring::Error::NoEntry) => {
+                tracing::info!("[Secrets] Unified store entry not found (expected on first run)");
+                *self.cache.write().unwrap() = HashMap::new();
+                Ok(())
+            }
+            Err(e) => Err(SecretsError::Keychain(e.to_string())),
+        }
+    }
+
+    /// Persist the current cache to the keychain as a JSON blob.
+    fn save_to_keychain(&self) -> Result<(), SecretsError> {
+        let entry = keyring::Entry::new(&self.service, &self.account)
+            .map_err(|e| SecretsError::Keychain(e.to_string()))?;
+        
+        let json = {
+            let cache = self.cache.read().unwrap();
+            serde_json::to_string(&*cache)
+                .map_err(|e| SecretsError::Keychain(format!("json serialize error: {}", e)))?
+        };
+        
+        entry.set_password(&json).map_err(|e| SecretsError::Keychain(e.to_string()))
+    }
+
+    fn make_key(service: &str, key: &str) -> String {
+        format!("{}:{}", service, key)
+    }
+
+    /// Update multiple keys at once and save to the keychain in a single operation.
+    pub fn set_bulk(&self, service: &str, updates: &std::collections::HashMap<String, String>) -> Result<(), SecretsError> {
+        {
+            let mut cache = self.cache.write().unwrap();
+            for (key, value) in updates {
+                let store_key = Self::make_key(service, key);
+                cache.insert(store_key, value.to_string());
+            }
+        }
+        self.save_to_keychain()
+    }
+}
+
+/// Migrate secrets from old naming patterns to the UnifiedKeychainStore.
+pub fn migrate_legacy_secrets(
+    unified_store: &UnifiedKeychainStore,
+    plugin_ids: &[&str],
+) -> Result<(), SecretsError> {
+    unified_store.load_from_keychain()?;
+
+    for &plugin_id in plugin_ids {
+        let legacy_patterns = vec![
+            // Pattern 1: (doxus.{id}, key)
+            (format!("doxus.{}", plugin_id), vec!["api_token".to_string(), "token".to_string(), "email".to_string()]),
+            // Pattern 2: (doxus, doxus:{id}:{key})
+            ("doxus".to_string(), vec![
+                format!("doxus:{}:api_token", plugin_id),
+                format!("doxus:{}:token", plugin_id),
+                format!("doxus:{}:email", plugin_id),
+            ]),
+            // Pattern 3: (doxus-{id}, key)
+            (format!("doxus-{}", plugin_id), vec!["api_token".to_string(), "token".to_string(), "email".to_string()]),
+        ];
+
+        for (service, keys) in legacy_patterns {
+            for key in &keys {
+                let entry = keyring::Entry::new(&service, key)
+                    .map_err(|e| SecretsError::Keychain(e.to_string()))?;
+                
+                if let Ok(password) = entry.get_password() {
+                    tracing::info!("[Secrets] Migrating legacy secret '{}' to unified store", key);
+                    let target_service = plugin_id.to_string();
+                    let target_key = if key.starts_with("doxus:") {
+                        key.split(':').last().unwrap_or(key)
+                    } else {
+                        key
+                    };
+                    
+                    unified_store.set(&target_service, target_key, &password)?;
+                    // Delete legacy entry after successful migration
+                    let _ = entry.delete_credential();
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+impl SecretStore for UnifiedKeychainStore {
+    fn get(&self, service: &str, key: &str) -> Result<String, SecretsError> {
+        let store_key = Self::make_key(service, key);
+        let cache = self.cache.read().unwrap();
+        cache.get(&store_key).cloned().ok_or(SecretsError::NotFound(key.to_string()))
+    }
+
+    fn set(&self, service: &str, key: &str, value: &str) -> Result<(), SecretsError> {
+        let store_key = Self::make_key(service, key);
+        let mut cache = self.cache.write().unwrap();
+        cache.insert(store_key, value.to_string());
+        self.save_to_keychain()
+    }
+
+    fn delete(&self, service: &str, key: &str) -> Result<(), SecretsError> {
+        let store_key = Self::make_key(service, key);
+        let mut cache = self.cache.write().unwrap();
+        if cache.remove(&store_key).is_none() {
+            return Err(SecretsError::NotFound(key.to_string()));
+        }
+        self.save_to_keychain()
+    }
+}
+
 /// In-memory store for tests
 pub struct MemorySecretStore {
     inner: Mutex<HashMap<String, String>>,
@@ -151,7 +289,7 @@ pub fn store_plugin_token(
     if token.trim().is_empty() {
         return Err(SecretsError::NotFound("empty token".into()));
     }
-    store.set(&format!("doxus.{plugin_id}"), key, token)
+    store.set(plugin_id, key, token)
 }
 
 #[cfg(test)]
@@ -326,5 +464,43 @@ mod tests {
 
         let err2 = store_plugin_token(&store, "com.doxus.test", "api_token", "   ").unwrap_err();
         assert!(matches!(err2, SecretsError::NotFound(_)));
+    }
+
+    // ── UnifiedKeychainStore tests ───────────────────────────────────────────
+
+    #[test]
+    fn unified_store_namespace_isolation() {
+        let store = UnifiedKeychainStore::new("test", "test_account");
+        // Mock save/load not implemented yet, using in-memory part for now.
+        store.set("svc1", "k1", "v1").unwrap();
+        store.set("svc2", "k1", "v2").unwrap();
+
+        assert_eq!(store.get("svc1", "k1").unwrap(), "v1");
+        assert_eq!(store.get("svc2", "k1").unwrap(), "v2");
+    }
+
+    #[test]
+    fn unified_store_get_not_found() {
+        let store = UnifiedKeychainStore::new("test", "test_account");
+        let err = store.get("svc", "missing").unwrap_err();
+        assert!(matches!(err, SecretsError::NotFound(_)));
+    }
+
+    #[test]
+    #[ignore = "touches real keychain"]
+    fn unified_store_persistence() {
+        let service = "doxus_test_service";
+        let account = "doxus_test_account";
+        let store1 = UnifiedKeychainStore::new(service, account);
+        
+        store1.set("svc", "key", "secret_value").unwrap();
+        
+        let store2 = UnifiedKeychainStore::new(service, account);
+        store2.load_from_keychain().unwrap();
+        
+        assert_eq!(store2.get("svc", "key").unwrap(), "secret_value");
+        
+        // Cleanup
+        store2.delete("svc", "key").unwrap();
     }
 }

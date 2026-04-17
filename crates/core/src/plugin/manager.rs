@@ -36,7 +36,11 @@ pub struct PluginManager {
 impl PluginManager {
     pub fn new(plugins_dir: PathBuf) -> Self {
         let installer = PluginInstaller::new(plugins_dir.clone());
-        Self { plugins_dir, installer, factories: HashMap::new() }
+        Self {
+            plugins_dir,
+            installer,
+            factories: HashMap::new(),
+        }
     }
 
     /// Normalize short plugin names to official IDs (e.g., "obsidian" -> "com.doxus.obsidian")

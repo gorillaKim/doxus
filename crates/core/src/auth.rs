@@ -2,8 +2,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-// Bring secrets::SecretStore into scope for method dispatch on CachedSecretStore
-use crate::secrets::SecretStore as _;
+use crate::secrets::SecretStore;
 
 // ── Errors ────────────────────────────────────────────────────────────────────
 
@@ -34,68 +33,18 @@ pub enum OAuthError {
     InvalidUrl(String),
 }
 
-// ── Secret store (kept for backward-compat; secrets.rs has the canonical impl) ─
+// ── Secret store implementations ──────────────────────────────────────────────
 
-pub trait SecretStore: Send + Sync {
-    fn get(&self, service: &str, account: &str) -> Result<String, AuthError>;
-    fn set(&self, service: &str, account: &str, secret: &str) -> Result<(), AuthError>;
-    fn delete(&self, service: &str, account: &str) -> Result<(), AuthError>;
-}
-
-/// In-memory implementation for tests and CI
-#[derive(Default)]
-pub struct MemorySecretStore {
-    inner: std::sync::RwLock<std::collections::HashMap<String, String>>,
-}
-
-impl MemorySecretStore {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl SecretStore for MemorySecretStore {
-    fn get(&self, service: &str, account: &str) -> Result<String, AuthError> {
-        let key = format!("{service}:{account}");
-        self.inner
-            .read()
-            .map_err(|_| AuthError::Keychain("lock poisoned".into()))?
-            .get(&key)
-            .cloned()
-            .ok_or(AuthError::NotFound(key))
-    }
-
-    fn set(&self, service: &str, account: &str, secret: &str) -> Result<(), AuthError> {
-        let key = format!("{service}:{account}");
-        self.inner
-            .write()
-            .map_err(|_| AuthError::Keychain("lock poisoned".into()))?
-            .insert(key, secret.to_string());
-        Ok(())
-    }
-
-    fn delete(&self, service: &str, account: &str) -> Result<(), AuthError> {
-        let key = format!("{service}:{account}");
-        self.inner
-            .write()
-            .map_err(|_| AuthError::Keychain("lock poisoned".into()))?
-            .remove(&key);
-        Ok(())
-    }
-}
-
-/// Keychain-backed implementation using the `keyring` crate (production default).
-/// Wraps `crate::secrets::CachedSecretStore<SystemKeychain>` so Keychain is only
-/// queried once per (service, account) per process lifetime.
+/// Keyring-backed implementation that uses UnifiedKeychainStore.
 pub struct KeyringSecretStore {
-    inner: crate::secrets::CachedSecretStore<crate::secrets::SystemKeychain>,
+    inner: crate::secrets::UnifiedKeychainStore,
 }
 
 impl KeyringSecretStore {
     pub fn new() -> Self {
-        Self {
-            inner: crate::secrets::CachedSecretStore::new(crate::secrets::SystemKeychain),
-        }
+        let store = crate::secrets::UnifiedKeychainStore::new("doxus", "com.doxus.secrets.v1");
+        let _ = store.load_from_keychain();
+        Self { inner: store }
     }
 }
 
@@ -106,22 +55,19 @@ impl Default for KeyringSecretStore {
 }
 
 impl SecretStore for KeyringSecretStore {
-    fn get(&self, service: &str, account: &str) -> Result<String, AuthError> {
+    fn get(&self, service: &str, account: &str) -> Result<String, crate::secrets::SecretsError> {
         self.inner
             .get(service, account)
-            .map_err(|e| AuthError::NotFound(format!("{service}:{account} — {e}")))
     }
 
-    fn set(&self, service: &str, account: &str, secret: &str) -> Result<(), AuthError> {
+    fn set(&self, service: &str, account: &str, secret: &str) -> Result<(), crate::secrets::SecretsError> {
         self.inner
             .set(service, account, secret)
-            .map_err(|e| AuthError::Keychain(e.to_string()))
     }
 
-    fn delete(&self, service: &str, account: &str) -> Result<(), AuthError> {
+    fn delete(&self, service: &str, account: &str) -> Result<(), crate::secrets::SecretsError> {
         self.inner
             .delete(service, account)
-            .map_err(|e| AuthError::Keychain(e.to_string()))
     }
 }
 
@@ -312,6 +258,7 @@ impl OAuthFlow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::secrets::MemorySecretStore;
 
     fn make_flow(token_url: &str) -> OAuthFlow {
         OAuthFlow::new(OAuthConfig {
@@ -338,7 +285,7 @@ mod tests {
     fn memory_store_not_found() {
         let store = MemorySecretStore::new();
         let result = store.get("svc", "missing");
-        assert!(matches!(result, Err(AuthError::NotFound(_))));
+        assert!(matches!(result, Err(crate::secrets::SecretsError::NotFound(_))));
     }
 
     #[test]
@@ -347,7 +294,7 @@ mod tests {
         store.set("svc", "acct", "val").unwrap();
         store.delete("svc", "acct").unwrap();
         let result = store.get("svc", "acct");
-        assert!(matches!(result, Err(AuthError::NotFound(_))));
+        assert!(matches!(result, Err(crate::secrets::SecretsError::NotFound(_))));
     }
 
     #[test]
@@ -454,36 +401,36 @@ pub fn inject_keychain_auth(
     config: &mut doxus_plugin_sdk::PluginConfig,
     secrets: &mut doxus_plugin_sdk::PluginSecrets,
 ) {
+    let store = crate::secrets::UnifiedKeychainStore::new("doxus", "com.doxus.secrets.v1");
+    let _ = store.load_from_keychain();
+
     match plugin_id {
         "com.doxus.confluence" => {
             // 1. API Token 로드
-            if let Ok(entry) = keyring::Entry::new("doxus", "doxus:com.doxus.confluence:api_token") {
-                if let Ok(token) = entry.get_password() {
-                    secrets
-                        .fields
-                        .insert("api_token".to_string(), doxus_plugin_sdk::SecretValue::Text(token.clone()));
-                    config
-                        .fields
-                        .insert("api_token".to_string(), serde_json::json!(token));
-                }
+            if let Ok(token) = store.get(plugin_id, "api_token") {
+                tracing::info!("[Auth] Loaded api_token for {} from unified store", plugin_id);
+                secrets
+                    .fields
+                    .insert("api_token".to_string(), doxus_plugin_sdk::SecretValue::Text(token.clone()));
+                config
+                    .fields
+                    .insert("api_token".to_string(), serde_json::json!(token));
             }
             // 2. Email 로드 (컨플루언스 Basic Auth 필수 항목)
-            if let Ok(entry) = keyring::Entry::new("doxus", "doxus:com.doxus.confluence:email") {
-                if let Ok(email) = entry.get_password() {
-                    config
-                        .fields
-                        .insert("email".to_string(), serde_json::json!(email));
-                    tracing::info!("Loaded email and token from keychain for Confluence");
-                }
+            if let Ok(email) = store.get(plugin_id, "email") {
+                tracing::info!("[Auth] Loaded email for {} from unified store", plugin_id);
+                config
+                    .fields
+                    .insert("email".to_string(), serde_json::json!(email));
+                tracing::info!("Loaded email and token from keychain for Confluence");
             }
         }
         "com.doxus.github" => {
-            if let Ok(entry) = keyring::Entry::new("doxus", "doxus:com.doxus.github:token") {
-                if let Ok(token) = entry.get_password() {
-                    secrets
-                        .fields
-                        .insert("token".to_string(), doxus_plugin_sdk::SecretValue::Text(token));
-                }
+            if let Ok(token) = store.get(plugin_id, "token") {
+                tracing::info!("[Auth] Loaded token for {} from unified store", plugin_id);
+                secrets
+                    .fields
+                    .insert("token".to_string(), doxus_plugin_sdk::SecretValue::Text(token));
             }
         }
         _ => {}

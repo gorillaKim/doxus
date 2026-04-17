@@ -57,6 +57,16 @@ impl AppState {
 
         let plugin_manager = Arc::new(plugin_manager);
 
+        // Background keychain migration – spawned to avoid blocking UI thread on startup prompts
+        tauri::async_runtime::spawn_blocking(|| {
+            let unified_store =
+                doxus_core::secrets::UnifiedKeychainStore::new("doxus", "com.doxus.secrets.v1");
+            let _ = doxus_core::secrets::migrate_legacy_secrets(
+                &unified_store,
+                &["com.doxus.confluence", "com.doxus.github"],
+            );
+        });
+
         Self {
             conn: Arc::new(Mutex::new(conn)),
             plugin_manager,
