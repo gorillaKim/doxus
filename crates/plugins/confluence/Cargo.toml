@@ -19,6 +19,8 @@ htmd = "0.5"
 quick-xml = { version = "0.37", features = ["serialize"] }
 urlencoding = "2.1"
 pulldown-cmark = "0.11"
+anyhow = "1"
+once_cell = "1"
 
 # Native-only dependencies for testing and oauth helper
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -27,8 +29,8 @@ async-trait = "0.1"
 doxus-core = { path = "../../core" }
 url = "2"
 doxus-plugin-sdk = { path = "../../plugin-sdk", features = ["native"] }
+reqwest = { version = "0.12", features = ["blocking", "json"] }
 
 [dev-dependencies]
 tempfile = "3"
 wiremock = "0.6"
-reqwest = "0.12"

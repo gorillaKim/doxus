@@ -435,11 +435,13 @@ retry_with_backoff(
 - ✅ 40개 MCP 도구
 - ✅ 36개 Tauri 커맨드
 - ✅ OAuth 2.0 플로우
-- ✅ 플러그인 마켓 레지스트리 + 서명
+- ✅ 플러그인 마켓 레지스트리 클라이언트 + 서명 검증
+- ✅ 레지스트리 서버 인터페이스 명세서 (`docs/specs/registry-server-spec.md`)
 - ✅ 동기화 retry/backoff/conflict 해결
 - ✅ Desktop UI (5개 페이지, Zustand 상태 관리)
 
 ### 미완료 항목
+- 🔶 공식 플러그인 레지스트리 서버 구축 (명세서 작성 완료)
 - 🔶 GitHub 마켓 배포 CI/CD 파이프라인
 - 🔶 Desktop 빌드 최적화 (chunking, lazy load)
 - 🔶 Tauri IPC 성능 프로파일링

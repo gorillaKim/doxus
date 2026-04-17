@@ -68,6 +68,17 @@ updated: 2026-04-09
 
 ---
 
+## Phase 9: 에코시스템 및 마켓플레이스
+
+### 레지스트리 서버 구축
+
+- [ ] `docs/specs/registry-server-spec.md` 기반 정적 서버 구성 (GitHub Pages/S3)
+- [ ] 공식 플러그인(Confluence, GitHub) WASM 바이너리 서명 및 배포
+- [ ] `plugins.json` 메타데이터 관리 및 버전 이력 구축
+- [ ] 플러그인 가이드 문서(Markdown) 서버 호스팅
+
+---
+
 ## 기타 미완성 항목
 
 ### MCP 서버 등록 ✅ 완료 (2026-04-09)

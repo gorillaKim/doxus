@@ -208,8 +208,8 @@ fn search_query_api_finds_indexed_document() {
     let pid = add_project(&db, "docs", "Docs", "/docs");
     db.conn
         .execute(
-            "INSERT INTO documents (project_id, source_doc_id, title, content, content_hash)
-             VALUES (?1, 'api-guide', 'API 가이드', 'REST API 설계 원칙과 모범 사례', 'h1')",
+            "INSERT INTO documents (project_id, source_doc_id, title, content_hash)
+             VALUES (?1, 'api-guide', 'API 가이드', 'h1')",
             [pid],
         )
         .unwrap();
@@ -235,4 +235,6 @@ fn search_query_api_finds_indexed_document() {
 
     assert!(!hits.is_empty());
     assert_eq!(hits[0].title.as_deref(), Some("API 가이드"));
+    // Verify metadata presence
+    assert!(hits[0].metadata_json.is_some(), "Metadata should be retrieved");
 }

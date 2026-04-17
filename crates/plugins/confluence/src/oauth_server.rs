@@ -25,7 +25,7 @@ impl OAuthCallbackServer {
         timeout: Duration,
         expected_state: &str,
     ) -> Result<(String, String), Box<dyn std::error::Error + Send + Sync>> {
-        let mut listener = &self.listener;
+        let listener = &self.listener;
 
         let result = tokio::time::timeout(timeout, async {
             // Explicitly type the socket to help compiler inference

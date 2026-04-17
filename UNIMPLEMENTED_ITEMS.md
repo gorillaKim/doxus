@@ -187,10 +187,10 @@ doxus is substantially **Phase 1 complete** with extensive infrastructure in pla
 | `installer.rs` | **Stub** | Doesn't download .wasm files |
 
 **Missing Completely:**
+- Official Registry Server (Documentation spec created, implementation pending)
 - Plugin marketplace UI (searches local DB only)
-- Registry API client (GitHub / Cloudflare Workers)
 - Plugin code signing automation
-- Plugin version resolution
+- Plugin version resolution (semver range)
 - Dependency management
 
 **Phase Status:** Phase 4 (marketplace) — not started.
@@ -375,6 +375,7 @@ _ => panic!("expected Project command"), // Line 581 — test only
 | `secrets_get` keychain 연동 | 80 | 2c | env var만 지원, 보안 취약 |
 | `kv_get` / `kv_set` Host Function | 100 | 2b | WASM 플러그인 상태 저장 불가 |
 | Implement OAuth flow | 250 | 2d | External plugins can't auth |
+| Plugin registry server 구축 | 300 | 9 | No official hosting |
 | Plugin registry client | 200 | 4 | No marketplace |
 | Sync incremental logic (플러그인 레벨) | 300 | 6 | 플러그인 `fetch_changes()` 전부 stub |
 | Confluence/GitHub plugins | 600 | 3-5 | Can't ingest data sources |
