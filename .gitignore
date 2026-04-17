@@ -11,3 +11,7 @@
 apps/desktop/src-tauri/binaries/
 build_errors.log
 request.json
+
+# Local files
+doxus.db
+scratch/

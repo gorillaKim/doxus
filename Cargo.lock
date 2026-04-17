@@ -1705,6 +1705,8 @@ dependencies = [
  "doxus-agent",
  "doxus-core",
  "doxus-mcp",
+ "doxus-plugin-confluence",
+ "doxus-plugin-github",
  "doxus-plugin-obsidian",
  "doxus-plugin-sdk",
  "ed25519-dalek",
@@ -1735,6 +1737,8 @@ dependencies = [
  "async-trait",
  "dirs 5.0.1",
  "doxus-core",
+ "doxus-plugin-confluence",
+ "doxus-plugin-github",
  "doxus-plugin-obsidian",
  "doxus-plugin-sdk",
  "keyring 2.3.3",
@@ -1754,6 +1758,7 @@ dependencies = [
 name = "doxus-plugin-confluence"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "base64 0.22.1",
  "chrono",
@@ -1761,6 +1766,7 @@ dependencies = [
  "doxus-plugin-sdk",
  "extism-pdk",
  "htmd",
+ "once_cell",
  "pulldown-cmark",
  "quick-xml 0.37.5",
  "reqwest 0.12.28",
