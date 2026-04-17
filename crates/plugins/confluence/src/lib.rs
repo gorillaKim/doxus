@@ -173,6 +173,16 @@ impl PluginState {
         self.config.get(key).and_then(|v| v.as_str())
     }
 
+    fn get_config_string(&self, key: &str) -> Option<String> {
+        self.config.get(key).and_then(|v| {
+            match v {
+                serde_json::Value::String(s) => Some(s.clone()),
+                serde_json::Value::Number(n) => Some(n.to_string()),
+                _ => None,
+            }
+        })
+    }
+
     fn update_hierarchy_cache(&mut self, id: &str, title: &str, parent_id: Option<&str>) {
         let cache = self.hierarchy_cache.get_or_insert_with(HashMap::new);
         cache.insert(id.to_string(), (title.to_string(), parent_id.map(|s| s.to_string())));
@@ -334,9 +344,10 @@ struct ConfluenceFolderV2 {
 
 #[derive(Deserialize)]
 struct ConfluenceV2Version {
-    #[serde(rename = "createdAt")]
-    created_at: String,
-    number: i64,
+    #[serde(rename = "createdAt", default)]
+    created_at: Option<String>,
+    #[serde(default)]
+    number: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -394,9 +405,8 @@ pub(crate) fn fetch_all_impl(opts: FetchAllOptsWasm) -> FnResult<DocumentStreamW
     ensure_valid_token(&mut state)?;
 
     let base_url = get_base_url(&state)?;
-    let space_key = state.get_config("space_key")
-        .ok_or_else(|| Error::msg("space_key missing"))?
-        .to_string();
+    let space_key = state.get_config_string("space_key")
+        .ok_or_else(|| Error::msg("space_key missing"))?;
 
     let space_url = format!("{base_url}/api/v2/spaces?keys={space_key}");
     let space_resp = request_with_auth(&state, "GET", &space_url, None)?;
@@ -410,15 +420,14 @@ pub(crate) fn fetch_all_impl(opts: FetchAllOptsWasm) -> FnResult<DocumentStreamW
     let limit = opts.page_size as i64;
     
     let mut doc_tags = HashMap::new();
-    let ancestor_id = state.get_config("ancestor_id");
-    let (pages_results, has_next) = if let Some(aid) = ancestor_id {
+    let ancestor_id = state.get_config_string("ancestor_id");
+    let (pages_results, has_next) = if let Some(aid) = &ancestor_id {
         let cql = format!("ancestor = \"{}\" ORDER BY created ASC", aid);
         let url = format!("{base_url}/rest/api/content/search?cql={}&expand=metadata.labels&start={start}&limit={limit}", urlencoding::encode(&cql));
         println!("[Confluence-Debug] CQL URL: {}", url);
         
         let resp = request_with_auth(&state, "GET", &url, None)?;
         let r: ConfluenceCqlResult = serde_json::from_slice(&resp.body())?;
-        println!("[Confluence-Debug] Found {} V1 results", r.results.len());
         
         let mut details = Vec::new();
         if !r.results.is_empty() {
@@ -436,7 +445,6 @@ pub(crate) fn fetch_all_impl(opts: FetchAllOptsWasm) -> FnResult<DocumentStreamW
                 })
                 .collect();
 
-            println!("[Confluence-Debug] Filtered {} page IDs", page_ids.len());
 
             if !page_ids.is_empty() {
                 let ids_str = page_ids.join(",");
@@ -464,9 +472,9 @@ pub(crate) fn fetch_all_impl(opts: FetchAllOptsWasm) -> FnResult<DocumentStreamW
 
     let documents = pages_results.into_iter()
         .map(|p| {
-            let ancestor_id = state.get_config("ancestor_id");
+            let ancestor_id = state.get_config_string("ancestor_id");
             let tags = doc_tags.remove(&p.id).unwrap_or_default();
-            page_to_doc_v2(&state, &mut hierarchy, p, root_folder_name, &space_key, &base_url, ancestor_id, tags)
+            page_to_doc_v2(&state, &mut hierarchy, p, root_folder_name, &space_key, &base_url, ancestor_id.as_deref(), tags)
         })
         .collect();
 
@@ -492,7 +500,7 @@ pub(crate) fn fetch_document_impl(opts: FetchDocumentOptsWasm) -> FnResult<RawDo
     let resp = request_with_auth(&state, "GET", &url, None)?;
     let p: ConfluencePageV2 = serde_json::from_slice(&resp.body())?;
 
-    let space_key = state.get_config("space_key").unwrap_or("Unknown").to_string();
+    let space_key = state.get_config_string("space_key").unwrap_or_else(|| "Unknown".to_string());
     let space_url = format!("{base_url}/api/v2/spaces?keys={space_key}");
     let space_resp = request_with_auth(&state, "GET", &space_url, None)?;
     let space_list: ConfluenceV2ListResponse<ConfluenceSpace> = serde_json::from_slice(&space_resp.body())?;
@@ -501,8 +509,8 @@ pub(crate) fn fetch_document_impl(opts: FetchDocumentOptsWasm) -> FnResult<RawDo
 
     let mut hierarchy = get_full_hierarchy(&mut state, &base_url, &space_info.id)?;
 
-    let ancestor_id = state.get_config("ancestor_id");
-    Ok(page_to_doc_v2(&state, &mut hierarchy, p, root_name, &space_key, &base_url, ancestor_id, vec![]))
+    let ancestor_id = state.get_config_string("ancestor_id");
+    Ok(page_to_doc_v2(&state, &mut hierarchy, p, root_name, &space_key, &base_url, ancestor_id.as_deref(), vec![]))
 }
 
 #[cfg_attr(target_arch = "wasm32", plugin_fn)]
@@ -515,9 +523,8 @@ pub(crate) fn fetch_changes_impl(opts: FetchChangesOptsWasm) -> FnResult<ChangeS
     ensure_valid_token(&mut state)?;
 
     let base_url = get_base_url(&state)?;
-    let space_key = state.get_config("space_key")
-        .ok_or_else(|| Error::msg("space_key missing"))?
-        .to_string();
+    let space_key = state.get_config_string("space_key")
+        .ok_or_else(|| Error::msg("space_key missing"))?;
 
     let start = opts.cursor.and_then(|c| c.parse::<i64>().ok()).unwrap_or(0);
     let limit = opts.page_size as i64;
@@ -525,7 +532,7 @@ pub(crate) fn fetch_changes_impl(opts: FetchChangesOptsWasm) -> FnResult<ChangeS
     let now_str = since_dt.format("%Y-%m-%dT%H:%M:%S").to_string();
     
     let mut cql = format!("space = \"{space_key}\" AND lastModified > \"{now_str}\"");
-    if let Some(aid) = state.get_config("ancestor_id") {
+    if let Some(aid) = state.get_config_string("ancestor_id") {
         cql.push_str(&format!(" AND ancestor = \"{}\"", aid));
     }
     cql.push_str(" ORDER BY id ASC");
@@ -546,7 +553,7 @@ pub(crate) fn fetch_changes_impl(opts: FetchChangesOptsWasm) -> FnResult<ChangeS
     let mut updated = Vec::new();
     let mut hierarchy = get_full_hierarchy(&mut state, &base_url, &space_info.id)?;
 
-    let ancestor_id = state.get_config("ancestor_id");
+    let ancestor_id = state.get_config_string("ancestor_id");
 
     for v1_page in r.results {
         let v2_url = format!("{base_url}/api/v2/pages/{}?body-format=storage", v1_page.id);
@@ -557,7 +564,7 @@ pub(crate) fn fetch_changes_impl(opts: FetchChangesOptsWasm) -> FnResult<ChangeS
                     .and_then(|m| m.labels.as_ref())
                     .map(|l| l.results.iter().map(|lab| lab.name.clone()).collect())
                     .unwrap_or_default();
-                 updated.push(page_to_doc_v2(&state, &mut hierarchy, p_v2, root_name, &space_key, &base_url, ancestor_id, tags));
+                 updated.push(page_to_doc_v2(&state, &mut hierarchy, p_v2, root_name, &space_key, &base_url, ancestor_id.as_deref(), tags));
              }
         }
     }
@@ -653,7 +660,7 @@ pub(crate) fn create_document_impl(opts: CreateDocumentOptsWasm) -> FnResult<Cre
     let get_url = format!("{base_url}/api/v2/pages/{final_id}");
     let get_resp = request_with_auth(&state, "GET", &get_url, None)?;
     let current_page: ConfluencePageV2 = serde_json::from_slice(&get_resp.body())?;
-    let current_version = current_page.version.map(|v| v.number).unwrap_or(1);
+    let current_version = current_page.version.and_then(|v| v.number).unwrap_or(1);
 
     let req_body = UpdatePageRequestV2 {
         id: final_id.clone(),
@@ -689,7 +696,7 @@ pub(crate) fn update_document_impl(opts: UpdateDocumentOptsWasm) -> FnResult<()>
     let get_url = format!("{base_url}/api/v2/pages/{}", opts.id);
     let get_resp = request_with_auth(&state, "GET", &get_url, None)?;
     let current_page: ConfluencePageV2 = serde_json::from_slice(&get_resp.body())?;
-    let current_version = current_page.version.map(|v| v.number).unwrap_or(1);
+    let current_version = current_page.version.and_then(|v| v.number).unwrap_or(1);
 
     let html_content = if let Some(content) = opts.content {
         html_convert::markdown_to_html(&content)
@@ -864,21 +871,35 @@ fn page_to_doc_v2(
     let markdown = html_convert::confluence_html_to_markdown(storage_content);
     println!("[Confluence-Doc-Debug] Generated Markdown Length: {}", markdown.len());
 
-    let (ancestor_titles, root_name) = resolve_ancestors(state, base_url, &p.id, hierarchy, stop_id);
+    let (mut ancestor_titles, root_name) = resolve_ancestors(state, base_url, &p.id, hierarchy, stop_id);
     
     let final_root_name = if !root_name.is_empty() {
-        root_name
-    } else if stop_id.is_some() {
-        "".to_string() 
+        // stop_id 매칭 성공 시: 사용자는 해당 페이지를 루트로 원함.
+        // Doxus 표준에 따라 루트 디렉토리명 자체는 생략하기 위해 빈 문자열 사용 가능하지만,
+        // 현재는 하위 트리를 위해 ancestors만 사용하도록 build_relative_path를 조정하거나
+        // 여기서 root_name을 비워줍니다.
+        "".to_string() // 루트 페이지 제목을 경로에서 제외
+    } else if let Some(_) = stop_id {
+        // stop_id가 있었는데 매칭되지 않은 경우 (Fallback)
+        // 스페이스 이름을 붙이지 않고 최상위 제목을 루트로 사용
+        if !ancestor_titles.is_empty() {
+            ancestor_titles.remove(0)
+        } else {
+            "".to_string() // 경로 간소화
+        }
     } else {
-        space_name.to_string()
+        // stop_id가 없는 전체 스페이스 인덱싱의 경우에도 스페이스 이름을 제외하고
+        // 최상위 페이지부터 시작하도록 유도 (선택 사항)
+        "".to_string()
     };
 
     let relative_path = path_utils::build_relative_path(&final_root_name, &ancestor_titles, &p.title);
-    println!("[Confluence-Doc-Debug] Relative Path: {}", relative_path);
+    println!("[Confluence-Doc-Debug] Final Result - Title: {}, Path: {}", p.title, relative_path);
 
     let updated_at = p.version.as_ref().and_then(|v| {
-        chrono::DateTime::parse_from_rfc3339(&v.created_at).ok().map(|dt| dt.timestamp())
+        v.created_at.as_ref()
+            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+            .map(|dt| dt.timestamp())
     });
 
     let url = p.links.webui.map(|ui| format!("{}{}", base_url, ui));
@@ -997,6 +1018,8 @@ fn resolve_ancestors(
     let mut cursor = current_id.to_string();
     let mut root_title = String::new();
 
+    println!("[Confluence-Ancestors-Debug] Resolving ancestors for: {}, stop_id: {:?}", current_id, stop_id);
+
     loop {
         let (title, parent_id) = if let Some(info) = hierarchy.get(&cursor) {
             info.clone()
@@ -1005,22 +1028,31 @@ fn resolve_ancestors(
                 hierarchy.insert(cursor.clone(), info.clone());
                 info
             } else {
+                println!("[Confluence-Ancestors-Debug] - Could not fetch info for cursor: {}. Breaking loop.", cursor);
                 break;
             }
         };
 
         if let Some(sid) = stop_id {
-            if cursor == sid {
+            if cursor.trim() == sid.trim() {
+                println!("[Confluence-Ancestors-Debug] - Found stop_id match: {} ({})", title, cursor);
                 root_title = title.clone();
                 break;
             }
         }
 
+        println!("[Confluence-Ancestors-Debug] - Adding to chain: {} ({})", title, cursor);
         ancestors.push(title.clone());
+
         if let Some(pid) = parent_id {
-            let next_pid = pid.clone();
-            if next_pid == cursor { break; }
-            cursor = next_pid;
+            if pid.is_empty() {
+                if stop_id.is_none() {
+                    root_title = title.clone();
+                }
+                break;
+            }
+            if pid == cursor { break; }
+            cursor = pid;
         } else {
             if stop_id.is_none() {
                 root_title = title.clone();
@@ -1030,9 +1062,12 @@ fn resolve_ancestors(
     }
 
     if !ancestors.is_empty() {
+        // Current page's own title is always added first, remove it
         ancestors.remove(0);
     }
     ancestors.reverse();
+    
+    println!("[Confluence-Ancestors-Debug] - Final ancestors list: {:?}", ancestors);
     (ancestors, root_title)
 }
 

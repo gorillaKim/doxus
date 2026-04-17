@@ -38,6 +38,7 @@ mod tests {
 
     #[test]
     fn test_build_relative_path() {
+        // Space root case (not used in our fix anymore, but good for coverage)
         let space = "ENG";
         let ancestors = vec!["Project A".to_string(), "Design".to_string()];
         let title = "Architecture";
@@ -48,7 +49,6 @@ mod tests {
 
     #[test]
     fn test_build_relative_path_nested_hierarchy() {
-        // 이미지 예시 재현: 테크스펙(Space) -> 규칙 생성/수정 모달(Parent Page/Folder) -> 규칙 생성... (Child Page)
         let root = "테크스펙"; 
         let ancestors = vec!["규칙 생성_수정 모달".to_string()];
         let title = "규칙 생성_수정 모달 리팩토링 테크";
@@ -59,12 +59,23 @@ mod tests {
 
     #[test]
     fn test_build_relative_path_with_folder_feature() {
-        // 컨플루언스 '폴더' 기능을 사용하는 경우
         let space_name = "테크스펙";
-        let ancestors = vec!["FloatingBottomPanel".to_string()]; // 이 요소가 폴더인 경우
+        let ancestors = vec!["FloatingBottomPanel".to_string()]; 
         let title = "FloatingBottomPanel 구현 가이드";
         
         let path = build_relative_path(space_name, &ancestors, title);
         assert_eq!(path, "테크스펙/FloatingBottomPanel/FloatingBottomPanel 구현 가이드.md");
+    }
+
+    #[test]
+    fn test_build_relative_path_empty_root_omits_redundant_folder() {
+        // [Doxus Fix] ancestor_id 혹은 스페이스 최상위 루트인 경우 
+        // root_name을 비워서 최상위 폴더가 중복 출력되는 것을 방지합니다.
+        let root = "";
+        let ancestors = vec!["Folder A".to_string(), "Folder B".to_string()];
+        let title = "Page";
+        
+        let path = build_relative_path(root, &ancestors, title);
+        assert_eq!(path, "Folder A/Folder B/Page.md");
     }
 }
