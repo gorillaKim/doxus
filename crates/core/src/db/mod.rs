@@ -121,6 +121,7 @@ static MIGRATIONS: &[(&str, &str)] = &[
     ("V16__expand_doc_type",        include_str!("migrations/V16__expand_doc_type.sql")),
     ("V17__content_cache_data",     include_str!("migrations/V17__content_cache_data.sql")),
     ("V18__remove_default_workspace", include_str!("migrations/V18__remove_default_workspace.sql")),
+    ("V19__add_url_to_documents",      include_str!("migrations/V19__add_url_to_documents.sql")),
 ];
 
 // ── Test helper ──────────────────────────────────────────────────────────────
@@ -400,5 +401,27 @@ mod tests {
                 .collect()
         };
         assert!(old_tables.is_empty(), "V15 이후 구 워크스페이스 테이블이 없어야 함: {:?}", old_tables);
+    }
+
+    #[test]
+    fn test_document_url_persistence() {
+        let db = TestDb::new();
+        db.conn.execute(
+            "INSERT INTO projects(name, display_name, path, created_at, updated_at)
+             VALUES ('test-proj', 'Test', '/tmp', unixepoch(), unixepoch())",
+            []
+        ).unwrap();
+        let project_id: i64 = db.conn.last_insert_rowid();
+
+        let test_url = "obsidian://open?path=/tmp/test.md";
+        
+        // This is expected to fail initially (TDD)
+        let res = db.conn.execute(
+            "INSERT INTO documents(project_id, source_doc_id, title, content, content_hash, url)
+             VALUES (?1, 'doc1', 'Doc 1', 'hello', 'abc', ?2)",
+            rusqlite::params![project_id, test_url]
+        );
+
+        assert!(res.is_ok(), "Failed to insert document with url: {:?}", res.err());
     }
 }

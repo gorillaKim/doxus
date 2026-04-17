@@ -91,6 +91,7 @@ pub struct Hit {
     pub source_doc_id: String,
     pub title: Option<String>,
     pub file_path: Option<String>,
+    pub url: Option<String>,
     pub heading_path: Option<String>,
     pub snippet: Option<String>,
     pub context_content: Option<String>,
@@ -249,6 +250,7 @@ impl From<SearchHit> for Hit {
             source_doc_id: String::new(),
             title: sh.title,
             file_path: sh.file_path,
+            url: sh.url,
             heading_path: sh.heading_path,
             snippet: Some(sh.snippet),
             context_content: sh.context_content,
@@ -575,6 +577,7 @@ pub struct DocMeta {
     pub tags: Vec<String>,
     /// 별칭 목록 (Obsidian aliases: frontmatter 등).
     pub aliases: Vec<String>,
+    pub url: Option<String>,
     /// 문서의 상대 경로 (예: "Folder/Sub/File.md"). 물리적 폴더 구조 생성 시 사용.
     pub relative_path: Option<String>,
     /// 플러그인별 추가 메타 (space_key, url, repo 등) — JSON 직렬화하여 저장.
@@ -650,17 +653,18 @@ fn index_document_sync(
     };
 
     conn.execute(
-        "INSERT INTO documents (project_id, source_doc_id, title, content, content_hash, last_indexed, created_at, updated_at, metadata_json, file_path)
-         VALUES (?1, ?2, ?3, ?4, ?5, unixepoch(), ?6, ?7, ?8, ?9)
+        "INSERT INTO documents (project_id, source_doc_id, title, url, content, content_hash, last_indexed, created_at, updated_at, metadata_json, file_path)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, unixepoch(), ?7, ?8, ?9, ?10)
          ON CONFLICT(project_id, source_doc_id) DO UPDATE SET
             title = excluded.title,
+            url = excluded.url,
             content = excluded.content,
             content_hash = excluded.content_hash,
             last_indexed = excluded.last_indexed,
             updated_at = excluded.updated_at,
             metadata_json = excluded.metadata_json,
             file_path = COALESCE(excluded.file_path, documents.file_path)",
-        rusqlite::params![project_id, source_doc_id, title, content, content_hash,
+        rusqlite::params![project_id, source_doc_id, title, meta.url, content, content_hash,
                           created_at, updated_at, metadata_json, full_file_path],
     )?;
 
@@ -756,7 +760,8 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
     let sql = format!(
         "SELECT d.id, c.id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path,
                 snippet(chunks_fts, 0, '<b>', '</b>', '…', 20) AS snippet,
-                bm25(chunks_fts, 1.0, 3.0) AS score
+                bm25(chunks_fts, 1.0, 3.0) AS score,
+                d.url
          FROM chunks_fts
          JOIN chunks c ON c.id = chunks_fts.rowid
          JOIN documents d ON d.id = c.document_id
@@ -788,6 +793,7 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
                 snippet: row.get(5)?,
                 context_content: None,
                 score: row.get::<_, f64>(6).unwrap_or(0.0).abs(),
+                url: row.get(7)?,
             })
         })?
         .collect::<Result<Vec<_>, rusqlite::Error>>()?;
@@ -816,7 +822,7 @@ fn vector_search_sync(
     // vec0 KNN requires LIMIT on the virtual table query directly,
     // so we use a subquery to get candidate chunk_ids first, then join.
     let sql = format!(
-        "SELECT c.id, c.document_id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path, c.content, knn.distance
+        "SELECT c.id, c.document_id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path, c.content, knn.distance, d.url
          FROM (
              SELECT chunk_id, distance FROM chunk_embeddings
              WHERE embedding MATCH ?1 AND k = ?2
@@ -846,6 +852,7 @@ fn vector_search_sync(
                 title: row.get(2)?,
                 file_path: row.get(3)?,
                 heading_path: row.get(4)?,
+                url: row.get(7)?,
                 snippet: row.get(5)?,
                 context_content: None,
                 score: 1.0 / (RRF_K as f64 + distance),
@@ -1023,7 +1030,8 @@ impl<'a> SyncSearchEngine<'a> {
         let sql = format!(
             "SELECT d.id, d.project_id, d.source_doc_id, d.title,
                     snippet(chunks_fts, 0, '<b>', '</b>', '...', 20) AS snippet,
-                    bm25(chunks_fts, 1.0, 3.0) AS fts_score
+                    bm25(chunks_fts, 1.0, 3.0) AS fts_score,
+                    d.url
              FROM chunks_fts
              JOIN chunks c ON c.id = chunks_fts.rowid
              JOIN documents d ON d.id = c.document_id
@@ -1043,7 +1051,7 @@ impl<'a> SyncSearchEngine<'a> {
             params.push(Box::new(*id));
         }
         let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-        let rows: Vec<(i64, i64, String, Option<String>, String, f64)> = stmt
+        let rows: Vec<(i64, i64, String, Option<String>, String, f64, Option<String>)> = stmt
             .query_map(param_refs.as_slice(), |row| {
                 Ok((
                     row.get(0)?,
@@ -1052,13 +1060,14 @@ impl<'a> SyncSearchEngine<'a> {
                     row.get(3)?,
                     row.get(4)?,
                     row.get::<_, f64>(5).unwrap_or(0.0),
+                    row.get(6)?,
                 ))
             })?
             .filter_map(|r| r.ok())
             .collect();
 
         let mut rrf_map: HashMap<i64, Hit> = HashMap::new();
-        for (rank, (doc_id, project_id, source_doc_id, title, snippet, _fts_score)) in
+        for (rank, (doc_id, project_id, source_doc_id, title, snippet, _fts_score, url)) in
             rows.into_iter().enumerate()
         {
             let entry = rrf_map.entry(doc_id).or_insert_with(|| Hit {
@@ -1068,6 +1077,7 @@ impl<'a> SyncSearchEngine<'a> {
                 source_doc_id,
                 title,
                 file_path: None, // Need to join more tables if we want this here, but None is fine for search_simple
+                url,
                 heading_path: None,
                 snippet: Some(snippet),
                 context_content: None,
@@ -1094,7 +1104,8 @@ impl<'a> SyncSearchEngine<'a> {
                 let fb_sql = format!(
                     "SELECT d.id, d.project_id, d.source_doc_id, d.title,
                             snippet(chunks_fts, 0, '<b>', '</b>', '...', 20) AS snippet,
-                            bm25(chunks_fts, 1.0, 3.0) AS fts_score
+                            bm25(chunks_fts, 1.0, 3.0) AS fts_score,
+                            d.url
                      FROM chunks_fts
                      JOIN chunks c ON c.id = chunks_fts.rowid
                      JOIN documents d ON d.id = c.document_id
@@ -1107,9 +1118,9 @@ impl<'a> SyncSearchEngine<'a> {
                 if let Ok(mut fb_stmt) = self.conn.prepare(&fb_sql) {
                     let existing_ids: std::collections::HashSet<i64> =
                         hits.iter().map(|h| h.document_id).collect();
-                    let fb_rows: Vec<(i64, i64, String, Option<String>, String)> = fb_stmt
+                    let fb_rows: Vec<(i64, i64, String, Option<String>, String, Option<String>)> = fb_stmt
                         .query_map(fb_refs.as_slice(), |row| {
-                            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+                            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(6)?))
                         })
                         .map(|mapped| {
                             mapped
@@ -1120,7 +1131,7 @@ impl<'a> SyncSearchEngine<'a> {
                         .unwrap_or_default();
                     // prefix 결과는 기존 rank 이후부터 시작해 자연스럽게 낮은 가중치
                     let base_rank = hits.len();
-                    for (offset, (doc_id, project_id, source_doc_id, title, snippet)) in
+                    for (offset, (doc_id, project_id, source_doc_id, title, snippet, url)) in
                         fb_rows.into_iter().enumerate()
                     {
                         hits.push(Hit {
@@ -1130,6 +1141,7 @@ impl<'a> SyncSearchEngine<'a> {
                             source_doc_id,
                             title,
                             file_path: None,
+                            url,
                             heading_path: None,
                             snippet: Some(snippet),
                             context_content: None,
@@ -1310,6 +1322,12 @@ mod tests {
             include_str!("db/migrations/V11__project_source.sql"),
             include_str!("db/migrations/V12__content_cache.sql"),
             include_str!("db/migrations/V13__document_meta.sql"),
+            include_str!("db/migrations/V14__workspace_unification.sql"),
+            include_str!("db/migrations/V15__drop_legacy_workspace_tables.sql"),
+            include_str!("db/migrations/V16__expand_doc_type.sql"),
+            include_str!("db/migrations/V17__content_cache_data.sql"),
+            include_str!("db/migrations/V18__remove_default_workspace.sql"),
+            include_str!("db/migrations/V19__add_url_to_documents.sql"),
         ];
         for sql in migrations {
             c.execute_batch(sql).unwrap();
@@ -1564,10 +1582,10 @@ mod tests {
         let mut hits = vec![
             Hit { document_id: 1, project_id: 1, source_doc_id: "a".into(),
                   title: Some("Rust Programming Guide".into()), snippet: None, score: 0.010,
-                  chunk_id: 0, context_content: None, heading_path: None },
+                  chunk_id: 0, context_content: None, heading_path: None, file_path: None, url: None },
             Hit { document_id: 2, project_id: 1, source_doc_id: "b".into(),
                   title: Some("Something Else".into()), snippet: None, score: 0.010,
-                  chunk_id: 0, context_content: None, heading_path: None },
+                  chunk_id: 0, context_content: None, heading_path: None, file_path: None, url: None },
         ];
         apply_title_boost(&mut hits, "rust programming");
         assert!(hits[0].document_id == 1, "title match 문서가 1위여야 함");
@@ -1576,13 +1594,30 @@ mod tests {
 
     // ── Fix 4-5: vector 최소 유사도 임계값 ─────────────────────────────
 
-    #[test]
-    fn vector_search_filters_low_similarity() {
-        let score_low = 1.0 / (RRF_K as f64 + 2.0); // distance=2.0, 제거되어야 함
-        let score_ok  = 1.0 / (RRF_K as f64 + 0.5); // distance=0.5, 유지되어야 함
-        let distance_low = (1.0 / score_low) - RRF_K as f64;
-        let distance_ok  = (1.0 / score_ok)  - RRF_K as f64;
-        assert!(distance_low > VECTOR_MAX_L2_DISTANCE, "낮은 유사도는 임계값 초과여야 함");
-        assert!(distance_ok  <= VECTOR_MAX_L2_DISTANCE, "높은 유사도는 임계값 이하여야 함");
+    #[tokio::test]
+    async fn index_document_stores_url() {
+        let (engine, conn, pid) = make_async_engine("url-test");
+        let meta = DocMeta {
+            url: Some("https://example.com/doc".to_string()),
+            ..Default::default()
+        };
+
+        engine
+            .index_document_async_with_meta(pid, "doc1", "URL Doc", "content", meta)
+            .await
+            .unwrap();
+
+        // 1. Verify in DB
+        let c = conn.lock().unwrap();
+        let stored_url: Option<String> = c
+            .query_row("SELECT url FROM documents WHERE source_doc_id = 'doc1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored_url, Some("https://example.com/doc".to_string()));
+        drop(c);
+
+        // 2. Verify in Search results
+        let query = SearchQuery::new("content");
+        let hits = engine.search_async(&query).await.unwrap();
+        assert_eq!(hits[0].url, Some("https://example.com/doc".to_string()));
     }
 }

@@ -482,14 +482,14 @@ pub async fn search_documents(
     let doc_ids: Vec<i64> = hits.iter().map(|h| h.document_id).collect();
     
     // 3. Document metadata batch fetching (scoped lock)
-    let mut doc_info: std::collections::HashMap<i64, (String, String, String, Vec<String>, i64, serde_json::Value, String)> = std::collections::HashMap::new();
+    let mut doc_info: std::collections::HashMap<i64, (String, String, String, Vec<String>, i64, serde_json::Value, String, Option<String>)> = std::collections::HashMap::new();
     {
         let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
         for chunk in doc_ids.chunks(50) {
             let placeholders = chunk.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
             let sql = format!(
                 "SELECT d.id, p.name, COALESCE(p.source_type, 'obsidian'), d.source_doc_id, \
-                        COALESCE(d.updated_at, d.last_indexed), COALESCE(d.metadata_json, '{{}}'), p.path \
+                        COALESCE(d.updated_at, d.last_indexed), COALESCE(d.metadata_json, '{{}}'), p.path, d.url \
                  FROM documents d JOIN projects p ON d.project_id = p.id \
                  WHERE d.id IN ({})",
                 placeholders
@@ -505,6 +505,7 @@ pub async fn search_documents(
                     r.get::<_, i64>(4).unwrap_or(0),
                     r.get::<_, String>(5).unwrap_or_else(|_| "{}".to_string()),
                     r.get::<_, String>(6).unwrap_or_default(),
+                    r.get::<_, Option<String>>(7)?,
                 ))
             }).map_err(|e| e.to_string())?;
 
@@ -518,12 +519,14 @@ pub async fn search_documents(
                     let metadata: serde_json::Value = serde_json::from_str(&row.5).unwrap_or(serde_json::json!({}));
                     let project_path = row.6;
                     
+                    let url = row.7;
+                    
                     // Tags look up
                     let mut tag_stmt = conn.prepare("SELECT tag FROM document_tags WHERE document_id = ?1").map_err(|e| e.to_string())?;
                     let tags: Vec<String> = tag_stmt.query_map([doc_id], |tr| tr.get(0)).map_err(|e| e.to_string())?
                         .filter_map(|tr| tr.ok()).collect();
 
-                    doc_info.insert(doc_id, (project_name, source_type, source_doc_id, tags, updated_at, metadata, project_path));
+                    doc_info.insert(doc_id, (project_name, source_type, source_doc_id, tags, updated_at, metadata, project_path, url));
                 }
             }
         }
@@ -540,7 +543,8 @@ pub async fn search_documents(
             let updated_at = info.map(|i| i.4).unwrap_or(0);
             let metadata = info.map(|i| i.5.clone()).unwrap_or(serde_json::json!({}));
             let project_path = info.map(|i| i.6.as_str()).unwrap_or("");
-
+            let url = info.and_then(|i| i.7.clone()).or_else(|| h.url.clone());
+            
             // Normalize file_path for UI tree: strip project_path if it's an absolute path
             // Also strip "virtual root" if it matches name part (e.g. '컨플/테크스펙' -> strip '테크스펙/')
             let display_file_path = if let Some(ref path) = h.file_path {
@@ -586,6 +590,7 @@ pub async fn search_documents(
                 "tags": tags,
                 "updated_at": updated_at,
                 "metadata": metadata,
+                "url": url,
             })
         })
         .collect();
@@ -704,6 +709,7 @@ pub async fn index_project(
                         aliases: doc.aliases.clone(),
                         created_at: doc.created_at,
                         updated_at: doc.updated_at,
+                        url: doc.url.clone(),
                         relative_path,
                         metadata: doc.metadata.clone(),
                     };
@@ -753,6 +759,7 @@ pub async fn index_project(
                         aliases: doc.aliases.clone(),
                         created_at: doc.created_at,
                         updated_at: doc.updated_at,
+                        url: doc.url.clone(),
                         relative_path,
                         metadata: doc.metadata.clone(),
                     };
@@ -791,6 +798,7 @@ pub async fn index_project(
                         aliases: doc.aliases.clone(),
                         created_at: doc.created_at,
                         updated_at: doc.updated_at,
+                        url: doc.url.clone(),
                         relative_path,
                         metadata: doc.metadata.clone(),
                     };
@@ -877,10 +885,10 @@ pub async fn trigger_reindex(
 
 pub(crate) fn get_document_content_impl(conn: &rusqlite::Connection, file_path: &str) -> Result<serde_json::Value, String> {
     let mut stmt = conn.prepare(
-        "SELECT id, title, content, created_at, updated_at, metadata_json \
+        "SELECT id, title, content, created_at, updated_at, metadata_json, url \
          FROM documents WHERE source_doc_id = ?1 OR file_path = ?1 ORDER BY id ASC"
     ).map_err(|e| e.to_string())?;
-    let rows: Vec<(i64, Option<String>, String, Option<i64>, Option<i64>, Option<String>)> = stmt
+    let rows: Vec<(i64, Option<String>, String, Option<i64>, Option<i64>, Option<String>, Option<String>)> = stmt
         .query_map(rusqlite::params![file_path], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
@@ -889,6 +897,7 @@ pub(crate) fn get_document_content_impl(conn: &rusqlite::Connection, file_path: 
                 r.get::<_, Option<i64>>(3)?,
                 r.get::<_, Option<i64>>(4)?,
                 r.get::<_, Option<String>>(5)?,
+                r.get::<_, Option<String>>(6)?,
             ))
         })
         .map_err(|e| e.to_string())?
@@ -904,7 +913,8 @@ pub(crate) fn get_document_content_impl(conn: &rusqlite::Connection, file_path: 
     let metadata_json: serde_json::Value = rows[0].5.as_deref()
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or(serde_json::json!({}));
-    let content = rows.into_iter().map(|(_, _, c, _, _, _)| c).collect::<Vec<_>>().join("\n\n");
+    let url = rows[0].6.clone();
+    let content = rows.into_iter().map(|(_, _, c, _, _, _, _)| c).collect::<Vec<_>>().join("\n\n");
 
     // Tags
     let tags: Vec<String> = conn.prepare(
@@ -930,6 +940,7 @@ pub(crate) fn get_document_content_impl(conn: &rusqlite::Connection, file_path: 
         "tags": tags,
         "aliases": aliases,
         "metadata": metadata_json,
+        "url": url,
     }))
 }
 
@@ -941,7 +952,7 @@ fn get_doc_meta_from_db(
 ) -> Result<Option<serde_json::Value>, String> {
     // 1. 문서 기본 정보 및 metadata_json 조회
     let doc_info = conn.query_row(
-        "SELECT id, title, created_at, updated_at, metadata_json 
+        "SELECT id, title, created_at, updated_at, metadata_json, url 
          FROM documents 
          WHERE project_id = ?1 AND source_doc_id = ?2",
         rusqlite::params![project_id, source_doc_id],
@@ -952,11 +963,12 @@ fn get_doc_meta_from_db(
                 row.get::<_, Option<i64>>(2)?,
                 row.get::<_, Option<i64>>(3)?,
                 row.get::<_, String>(4)?,
+                row.get::<_, Option<String>>(5)?,
             ))
         }
     );
 
-    let (db_doc_id, title, created_at, updated_at, metadata_json) = match doc_info {
+    let (db_doc_id, title, created_at, updated_at, metadata_json, url) = match doc_info {
         Ok(val) => val,
         Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
         Err(e) => return Err(e.to_string()),
@@ -983,6 +995,7 @@ fn get_doc_meta_from_db(
         "created_at": created_at,
         "updated_at": updated_at,
         "metadata": metadata,
+        "url": url,
     })))
 }
 
@@ -1142,6 +1155,7 @@ pub async fn get_document_content(
                     aliases: vec![],
                     created_at: raw.created_at,
                     updated_at: raw.updated_at,
+                    url: raw.url.clone(),
                     relative_path,
                     metadata: raw.metadata.clone(),
                 };
@@ -1215,6 +1229,7 @@ pub async fn get_document_content(
                     aliases: vec![],
                     created_at: None,
                     updated_at: raw.updated_at,
+                    url: raw.url.clone(),
                     relative_path,
                     metadata: raw.metadata.clone(),
                 };
@@ -1322,7 +1337,7 @@ pub fn reindex_if_stale(
 
 pub fn list_all_documents_impl(conn: &rusqlite::Connection) -> Result<serde_json::Value, String> {
     let mut stmt = conn.prepare(
-        "SELECT MIN(d.id), MIN(d.title), MIN(d.source_doc_id), p.name, COALESCE(p.source_type, 'obsidian'), MIN(d.file_path), p.path
+        "SELECT MIN(d.id), MIN(d.title), MIN(d.source_doc_id), p.name, COALESCE(p.source_type, 'obsidian'), MIN(d.file_path), p.path, MIN(d.url)
          FROM documents d
          JOIN projects p ON d.project_id = p.id
          WHERE p.status = 'active'
@@ -1338,6 +1353,7 @@ pub fn list_all_documents_impl(conn: &rusqlite::Connection) -> Result<serde_json
             let source_type = r.get::<_, String>(4)?;
             let file_path = r.get::<_, Option<String>>(5)?;
             let project_path = r.get::<_, String>(6).unwrap_or_default();
+            let url = r.get::<_, Option<String>>(7)?;
 
             // Normalize file_path for UI tree: strip project_path if it's an absolute path
             // Also strip "virtual root" if it matches name part (e.g. '컨플/테크스펙' -> strip '테크스펙/')
@@ -1375,6 +1391,7 @@ pub fn list_all_documents_impl(conn: &rusqlite::Connection) -> Result<serde_json
                 "project_name": project_name,
                 "source_type": source_type,
                 "file_path": display_file_path,
+                "url": url,
             }))
         })
         .map_err(|e| e.to_string())?

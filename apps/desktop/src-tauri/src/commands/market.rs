@@ -620,11 +620,23 @@ pub async fn plugin_validate_config(
 
 #[tauri::command]
 pub async fn plugin_open_url(url: String) -> Result<(), String> {
-    if !url.starts_with("https://") && !url.starts_with("http://") {
-        return Err("only http/https URLs are allowed".into());
+    if url.starts_with("obsidian://") {
+        // Deep link protocols are allowed to be opened directly via 'open'
+    } else {
+        if !url.starts_with("https://") && !url.starts_with("http://") {
+            return Err("only http/https or obsidian:// URLs are allowed".into());
+        }
+        validate_base_url(&url)?;
     }
-    validate_base_url(&url)?;
-    std::process::Command::new("open")
+
+    #[cfg(target_os = "macos")]
+    let open_cmd = "open";
+    #[cfg(target_os = "windows")]
+    let open_cmd = "explorer";
+    #[cfg(target_os = "linux")]
+    let open_cmd = "xdg-open";
+
+    std::process::Command::new(open_cmd)
         .arg(&url)
         .spawn()
         .map_err(|e| e.to_string())?;
@@ -634,8 +646,8 @@ pub async fn plugin_open_url(url: String) -> Result<(), String> {
 fn validate_base_url(url: &str) -> Result<(), String> {
     let parsed = reqwest::Url::parse(url).map_err(|e| format!("잘못된 URL: {}", e))?;
 
-    if parsed.scheme() != "https" {
-        return Err("HTTPS URL만 허용됩니다 (SSRF 방지)".to_string());
+    if parsed.scheme() != "https" && parsed.scheme() != "http" {
+        return Err("HTTP 또는 HTTPS URL만 허용됩니다 (SSRF 방지)".to_string());
     }
 
     let host = parsed.host_str().ok_or_else(|| "URL에 호스트가 없습니다".to_string())?;

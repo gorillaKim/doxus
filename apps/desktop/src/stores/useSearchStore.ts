@@ -16,6 +16,7 @@ export interface SearchHit {
   tags: string[];
   updated_at: number;
   metadata: Record<string, any>;
+  url: string | null;
 }
 
 export interface AllDocument {
@@ -25,6 +26,7 @@ export interface AllDocument {
   project_name: string;
   source_type: string;
   file_path: string | null;
+  url: string | null;
 }
 
 export interface SearchFilters {

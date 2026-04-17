@@ -30,6 +30,7 @@ interface DocEntry {
   tags?: string[];
   updated_at?: number;
   metadata?: Record<string, any>;
+  url?: string | null;
 }
 
 function hitToEntry(hit: SearchHit): DocEntry {
@@ -47,6 +48,7 @@ function hitToEntry(hit: SearchHit): DocEntry {
     tags: hit.tags,
     updated_at: hit.updated_at,
     metadata: hit.metadata,
+    url: hit.url,
   };
 }
 
@@ -58,6 +60,7 @@ function allDocToEntry(doc: AllDocument): DocEntry {
     hierarchy_path: doc.file_path || doc.source_doc_id, // 계층 경로
     project_name: doc.project_name,
     source_type: doc.source_type,
+    url: doc.url,
   };
 }
 
@@ -587,6 +590,7 @@ export function SearchPage() {
     tags: string[]; aliases: string[];
     created_at: number | null; updated_at: number | null;
     metadata: Record<string, unknown>;
+    url: string | null;
   } | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -646,6 +650,7 @@ export function SearchPage() {
         tags?: string[]; aliases?: string[];
         created_at?: number | null; updated_at?: number | null;
         metadata?: Record<string, unknown>;
+        url?: string | null;
       }>('get_document_content', {
         filePath: identifier,
         projectName: doc.project_name || undefined,
@@ -658,6 +663,7 @@ export function SearchPage() {
         created_at: result.created_at ?? null,
         updated_at: result.updated_at ?? null,
         metadata: result.metadata ?? {},
+        url: result.url ?? doc.url ?? null,
       });
       if (forceRefresh) {
         if (refreshToastTimer.current) clearTimeout(refreshToastTimer.current);
@@ -826,7 +832,17 @@ export function SearchPage() {
                     <p className="text-xs text-gray-600 truncate mt-0.5">{selectedDoc.source_doc_id}</p>
                   )}
                 </div>
-                <div className="flex items-center gap-1 shrink-0 ml-3">
+                <div className="flex items-center gap-1.5 shrink-0 ml-3">
+                  {previewMeta?.url && (
+                    <button
+                      onClick={() => invoke('plugin_open_url', { url: previewMeta.url })}
+                      className="flex items-center gap-1.5 px-2.5 py-1 bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 rounded-lg text-xs font-medium transition-all group mr-1"
+                      title="외부 앱에서 열기"
+                    >
+                      <span className="opacity-70 group-hover:scale-110 transition-transform">🚀</span>
+                      <span>앱에서 열기</span>
+                    </button>
+                  )}
                   <button
                     onClick={handleRefresh}
                     disabled={previewLoading}
