@@ -91,65 +91,96 @@ fn parse_tags(content: &str) -> Vec<String> {
 }
 
 /// Extract `aliases:` and `created:` / `date:` from YAML frontmatter.
-fn parse_frontmatter_meta(fm: &str) -> (Vec<String>, Option<i64>) {
+fn parse_frontmatter_meta(fm: &str) -> (Vec<String>, Option<i64>, std::collections::HashMap<String, serde_json::Value>) {
     let mut aliases: Vec<String> = Vec::new();
     let mut created_at: Option<i64> = None;
+    let mut metadata = std::collections::HashMap::new();
+    
     let mut lines = fm.lines().peekable();
     while let Some(line) = lines.next() {
         let trimmed = line.trim();
-        // aliases: [a, b] or block list
-        if let Some(after) = trimmed.strip_prefix("aliases:") {
-            let after = after.trim();
-            if after.starts_with('[') {
-                let inner = after.trim_start_matches('[').trim_end_matches(']');
-                for item in inner.split(',') {
-                    let a = item.trim().trim_matches('"').trim_matches('\'');
-                    if !a.is_empty() { aliases.push(a.to_string()); }
+        if trimmed.is_empty() || trimmed.starts_with('#') { continue; }
+        
+        if let Some((key, value)) = trimmed.split_once(':') {
+            let key = key.trim().to_string();
+            let raw_value = value.trim();
+            
+            let parsed_value = if raw_value.starts_with('[') {
+                // inline list: [a, b]
+                let inner = raw_value.trim_start_matches('[').trim_end_matches(']');
+                let items: Vec<serde_json::Value> = inner.split(',')
+                    .map(|s| {
+                        let val = s.trim().trim_matches('"').trim_matches('\'');
+                        serde_json::Value::String(val.to_string())
+                    })
+                    .filter(|v| v.as_str().map(|s| !s.is_empty()).unwrap_or(false))
+                    .collect();
+                
+                if key == "aliases" {
+                    for item in &items {
+                        if let Some(s) = item.as_str() { aliases.push(s.to_string()); }
+                    }
                 }
-            } else if after.is_empty() {
+                
+                serde_json::Value::Array(items)
+            } else if raw_value.is_empty() {
+                // check for block list:
+                // - item
+                let mut items = Vec::new();
                 while let Some(next) = lines.peek() {
                     let nt = next.trim();
-                    if let Some(item) = nt.strip_prefix("- ") {
-                        aliases.push(item.trim().trim_matches('"').trim_matches('\'').to_string());
+                    if let Some(item_str) = nt.strip_prefix("- ") {
+                        let val = item_str.trim().trim_matches('"').trim_matches('\'').to_string();
+                        items.push(serde_json::Value::String(val.clone()));
+                        if key == "aliases" { aliases.push(val); }
                         lines.next();
                     } else { break; }
                 }
+                if !items.is_empty() {
+                    serde_json::Value::Array(items)
+                } else {
+                    serde_json::Value::Null
+                }
             } else {
-                // aliases: single value
-                let a = after.trim_matches('"').trim_matches('\'');
-                if !a.is_empty() { aliases.push(a.to_string()); }
-            }
-        }
-        // created: / date: → Unix timestamp (ISO 8601 or YYYY-MM-DD)
-        if trimmed.starts_with("created:") || trimmed.starts_with("date:") {
-            let val = trimmed.split_once(':').map(|x| x.1).unwrap_or("").trim();
-            let val = val.trim_matches('"').trim_matches('\'');
-            // Try ISO 8601 parsing via simple heuristic (YYYY-MM-DD prefix)
-            if val.len() >= 10 {
-                let date_part = &val[..10]; // "YYYY-MM-DD"
-                let parts: Vec<&str> = date_part.split('-').collect();
-                if parts.len() == 3 {
-                    if let (Ok(y), Ok(m), Ok(d)) = (
-                        parts[0].parse::<i64>(),
-                        parts[1].parse::<u32>(),
-                        parts[2].parse::<u32>(),
-                    ) {
-                        // Rough Unix timestamp: days since epoch
-                        let _ = (y, m, d); // suppress unused warnings
-                        // Simple approximation: (y-1970)*365.25 + day_of_year
-                        let days = (y - 1970) * 365 + (y - 1969) / 4
-                            + match m {
-                                1 => 0, 2 => 31, 3 => 59, 4 => 90, 5 => 120, 6 => 151,
-                                7 => 181, 8 => 212, 9 => 243, 10 => 273, 11 => 304, _ => 334,
-                            } as i64
-                            + d as i64 - 1;
-                        created_at = Some(days * 86400);
+                // single value
+                let val = raw_value.trim_matches('"').trim_matches('\'');
+                
+                if key == "aliases" {
+                    aliases.push(val.to_string());
+                }
+                
+                // date/created extraction logic
+                if key == "created" || key == "date" {
+                    if val.len() >= 10 {
+                        let date_part = &val[..10];
+                        let parts: Vec<&str> = date_part.split('-').collect();
+                        if parts.len() == 3 {
+                            if let (Ok(y), Ok(m), Ok(d)) = (
+                                parts[0].parse::<i64>(),
+                                parts[1].parse::<u32>(),
+                                parts[2].parse::<u32>(),
+                            ) {
+                                let days = (y - 1970) * 365 + (y - 1969) / 4
+                                    + match m {
+                                        1 => 0, 2 => 31, 3 => 59, 4 => 90, 5 => 120, 6 => 151,
+                                        7 => 181, 8 => 212, 9 => 243, 10 => 273, 11 => 304, _ => 334,
+                                    } as i64
+                                    + d as i64 - 1;
+                                created_at = Some(days * 86400);
+                            }
+                        }
                     }
                 }
+                
+                serde_json::Value::String(val.to_string())
+            };
+            
+            if parsed_value != serde_json::Value::Null {
+                metadata.insert(key, parsed_value);
             }
         }
     }
-    (aliases, created_at)
+    (aliases, created_at, metadata)
 }
 
 /// Parse `tags:` field from YAML frontmatter string (no external crate).
@@ -268,21 +299,19 @@ impl ObsidianPlugin {
             .and_then(|m| m.created().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs() as i64));
 
-        // frontmatter aliases + created_at
-        let (aliases, fm_created_at) = if let Some(rest) = content.strip_prefix("---") {
+        // frontmatter aliases + created_at + generic metadata
+        let (aliases, fm_created_at, mut metadata) = if let Some(rest) = content.strip_prefix("---") {
             let rest = rest.strip_prefix('\n').unwrap_or(rest);
             if let Some(end) = rest.find("\n---") {
                 parse_frontmatter_meta(&rest[..end])
             } else {
-                (vec![], None)
+                (vec![], None, Default::default())
             }
         } else {
-            (vec![], None)
+            (vec![], None, Default::default())
         };
         let created_at = fm_created_at.or(fs_created_at);
 
-        let mut metadata: std::collections::HashMap<String, serde_json::Value> =
-            Default::default();
         if !links.is_empty() {
             metadata.insert(
                 "links".into(),
@@ -405,16 +434,27 @@ impl DocSource for ObsidianPlugin {
             .or_else(|| path.file_stem().map(|s| s.to_string_lossy().to_string()));
 
         let tags = parse_tags(&content);
+        let (aliases, fm_created_at, metadata) = if let Some(rest) = content.strip_prefix("---") {
+            let rest = rest.strip_prefix('\n').unwrap_or(rest);
+            if let Some(end) = rest.find("\n---") {
+                parse_frontmatter_meta(&rest[..end])
+            } else {
+                (vec![], None, Default::default())
+            }
+        } else {
+            (vec![], None, Default::default())
+        };
+
         Ok(RawDocument {
             id: id.clone(),
             title,
             content,
             content_type: ContentType::Markdown,
             url: Some(format!("obsidian://open?path={}", id.0)),
-            metadata: Default::default(),
+            metadata,
             tags,
-            aliases: vec![],
-            created_at: None,
+            aliases,
+            created_at: fm_created_at,
             updated_at: None,
             relative_path: Some(id.0.clone()),
         })
@@ -732,6 +772,39 @@ mod tests {
         let stream = plugin.fetch_all(FetchAllOpts { cursor: None, page_size: 100 }).await.unwrap();
         assert_eq!(stream.documents.len(), 1);
         assert_eq!(stream.documents[0].id.0, "note.md");
+    }
+
+    #[tokio::test]
+    async fn fetch_all_collects_full_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let content = "---
+status: in-progress
+category: research
+author: \"John Doe\"
+priority: 5
+aliases: [alias1, alias2]
+---
+# Note
+body context";
+        std::fs::write(dir.path().join("meta.md"), content).unwrap();
+
+        let mut plugin = ObsidianPlugin::new();
+        let mut config = PluginConfig::default();
+        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
+        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+
+        let stream = plugin.fetch_all(FetchAllOpts { cursor: None, page_size: 100 }).await.unwrap();
+        assert_eq!(stream.documents.len(), 1);
+        let doc = &stream.documents[0];
+        
+        assert_eq!(doc.metadata.get("status").unwrap().as_str().unwrap(), "in-progress");
+        assert_eq!(doc.metadata.get("category").unwrap().as_str().unwrap(), "research");
+        assert_eq!(doc.metadata.get("author").unwrap().as_str().unwrap(), "John Doe");
+        assert_eq!(doc.metadata.get("priority").unwrap().as_str().unwrap(), "5");
+        
+        // Aliases check
+        assert!(doc.aliases.contains(&"alias1".to_string()));
+        assert!(doc.aliases.contains(&"alias2".to_string()));
     }
 
     #[tokio::test]
