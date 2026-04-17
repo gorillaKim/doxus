@@ -19,7 +19,7 @@ pub type PendingMessages = Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sende
 
 pub struct AppState {
     pub conn: Arc<Mutex<Connection>>,
-    pub plugin_manager: PluginManager,
+    pub plugin_manager: Arc<PluginManager>,
     pub plugins_dir: PathBuf,
     pub oauth_pending: Mutex<HashMap<String, OAuthPending>>,
     pub embedder: Arc<dyn EmbeddingProvider + Send + Sync>,
@@ -48,6 +48,14 @@ impl AppState {
         plugin_manager.register_factory(&PluginManager::normalize_id("obsidian"), || {
             Box::new(doxus_plugin_obsidian::ObsidianPlugin::new())
         });
+        plugin_manager.register_factory(&PluginManager::normalize_id("confluence"), || {
+            Box::new(doxus_plugin_confluence::ConfluencePlugin::new())
+        });
+        plugin_manager.register_factory(&PluginManager::normalize_id("github"), || {
+            Box::new(doxus_plugin_github::GitHubPlugin::new())
+        });
+
+        let plugin_manager = Arc::new(plugin_manager);
 
         Self {
             conn: Arc::new(Mutex::new(conn)),

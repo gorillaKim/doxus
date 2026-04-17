@@ -11,3 +11,4 @@ pub mod observability;
 pub mod plugin;
 pub mod search;
 pub mod sync;
+pub mod indexing;
