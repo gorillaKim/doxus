@@ -1,3 +1,32 @@
+use std::collections::HashSet;
+use std::sync::RwLock;
+use once_cell::sync::Lazy;
+
+static ENABLED_TAGS: Lazy<RwLock<HashSet<String>>> = Lazy::new(|| RwLock::new(HashSet::new()));
+
+/// Set the enabled debug tags from configuration.
+pub fn set_debug_tags(tags: Vec<String>) {
+    if let Ok(mut guard) = ENABLED_TAGS.write() {
+        *guard = tags.into_iter().collect();
+    }
+}
+
+/// Check if a specific debug tag is enabled.
+pub fn is_debug_enabled(tag: &str) -> bool {
+    ENABLED_TAGS.read().map(|guard| guard.contains(tag)).unwrap_or(false)
+}
+
+/// Log a message if the given tag is enabled.
+/// This macro is exported so it can be used across crates.
+#[macro_export]
+macro_rules! log_d {
+    ($tag:expr, $($arg:tt)*) => {
+        if $crate::observability::is_debug_enabled($tag) {
+            println!($($arg)*);
+        }
+    };
+}
+
 /// Initialize tracing subscriber (call once at app startup)
 pub fn init_tracing() {
     use tracing_subscriber::EnvFilter;

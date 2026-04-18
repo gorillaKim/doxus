@@ -1674,6 +1674,7 @@ dependencies = [
  "hex",
  "keyring 3.6.3",
  "mockito",
+ "once_cell",
  "ort",
  "rand 0.8.5",
  "reqwest 0.12.28",
