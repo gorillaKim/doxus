@@ -739,309 +739,292 @@ pub async fn get_document_content(
 ) -> Result<serde_json::Value, String> {
     use doxus_plugin_sdk::{PluginConfig, PluginSecrets, SourceDocId};
 
-    // project_name이 있으면 플러그인을 통해 실시간으로 가져옴
-    if let Some(ref pname) = project_name {
-        let (path, source_type, config_json_str) = {
-            let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
-            conn.query_row(
-                "SELECT path, COALESCE(source_type, 'obsidian'), COALESCE(config_json, '{}') FROM projects WHERE name = ?1",
-                rusqlite::params![pname],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
-            )
-            .map_err(|_| format!("프로젝트 '{pname}'을 찾을 수 없습니다"))?
-        };
+    let conn_arc = state.conn.clone();
+    let plugin_manager = state.plugin_manager.clone();
+    let embedder_arc = state.embedder.clone();
 
-        let config_map: serde_json::Value = serde_json::from_str(&config_json_str)
-            .unwrap_or(serde_json::json!({}));
+    // Heavy I/O and plugin operations are moved to spawn_blocking
+    tauri::async_runtime::spawn_blocking(move || {
+        let rt = tokio::runtime::Handle::current();
 
-        let doc_id = SourceDocId(file_path.clone());
+        // project_name이 있으면 플러그인을 통해 실시간으로 가져옴
+        if let Some(ref pname) = project_name {
+            let (path, source_type, config_json_str) = {
+                let conn = conn_arc.lock().unwrap_or_else(|e| e.into_inner());
+                conn.query_row(
+                    "SELECT path, COALESCE(source_type, 'obsidian'), COALESCE(config_json, '{}') FROM projects WHERE name = ?1",
+                    rusqlite::params![pname],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)),
+                )
+                .map_err(|_| format!("프로젝트 '{pname}'을 찾을 수 없습니다"))?
+            };
 
-        match source_type.as_str() {
-            "confluence" => {
-                use doxus_core::cache::ContentCache;
-    
-                let force = force_refresh.unwrap_or(false);
-                // TTL은 plugin_kv["com.doxus.confluence"]["settings"]["cache_ttl_minutes"]에서 읽음
-                // None = 캐시 비활성화 (opt-in), 최소 10분
-                let cache_ttl: Option<u32> = {
-                    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
-                    conn.query_row(
-                        "SELECT CAST(value AS INTEGER) FROM plugin_kv
-                         WHERE plugin_id = 'com.doxus.confluence'
-                           AND namespace = 'settings'
-                           AND key = 'cache_ttl_minutes'",
-                        [],
-                        |r| r.get::<_, i64>(0),
-                    ).ok().map(|v| v as u32).filter(|&v| v >= 10)
-                };
+            let config_map: serde_json::Value = serde_json::from_str(&config_json_str)
+                .unwrap_or(serde_json::json!({}));
 
-                let project_id: i64 = {
-                    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
-                    conn.query_row("SELECT id FROM projects WHERE name = ?1", [pname], |r| r.get(0)).unwrap_or(0)
-                };
+            let doc_id = SourceDocId(file_path.clone());
 
-                // DB에서 메타데이터 우선 조회
-                let db_meta = {
-                    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
-                    get_doc_meta_from_db(&conn, project_id, &file_path).unwrap_or(None)
-                };
+            match source_type.as_str() {
+                "confluence" => {
+                    use doxus_core::cache::ContentCache;
+        
+                    let force = force_refresh.unwrap_or(false);
+                    let cache_ttl: Option<u32> = {
+                        let conn = conn_arc.lock().unwrap_or_else(|e| e.into_inner());
+                        conn.query_row(
+                            "SELECT CAST(value AS INTEGER) FROM plugin_kv
+                             WHERE plugin_id = 'com.doxus.confluence'
+                               AND namespace = 'settings'
+                               AND key = 'cache_ttl_minutes'",
+                            [],
+                            |r| r.get::<_, i64>(0),
+                        ).ok().map(|v| v as u32).filter(|&v| v >= 10)
+                    };
 
-                // Cache hit 확인 (force_refresh가 아니고 TTL이 설정된 경우)
-                if let Some(ttl) = cache_ttl {
-                    if !force {
-                        let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
-                        let cache = ContentCache::new(&conn);
-                        
-                        // 캐시된 본문 조회
-                        if let Ok(Some(cached_content)) = cache.get("com.doxus.confluence", &doc_id.0) {
-                            let _ = cache.touch("com.doxus.confluence", &doc_id.0, ttl);
+                    let project_id: i64 = {
+                        let conn = conn_arc.lock().unwrap_or_else(|e| e.into_inner());
+                        conn.query_row("SELECT id FROM projects WHERE name = ?1", [pname], |r| r.get(0)).unwrap_or(0)
+                    };
+
+                    // DB에서 메타데이터 우선 조회
+                    let db_meta = {
+                        let conn = conn_arc.lock().unwrap_or_else(|e| e.into_inner());
+                        get_doc_meta_from_db(&conn, project_id, &file_path).unwrap_or(None)
+                    };
+
+                    // Cache hit 확인 (force_refresh가 아니고 TTL이 설정된 경우)
+                    if let Some(ttl) = cache_ttl {
+                        if !force {
+                            let conn = conn_arc.lock().unwrap_or_else(|e| e.into_inner());
+                            let cache = ContentCache::new(&conn);
                             
-                            // DB 메타데이터가 있으면 그것을 사용, 없으면 캐시된 JSON에서 복구 시도 (fallback)
-                            let final_meta = if let Some(meta) = db_meta {
-                                meta
-                            } else if let Some(data_json) = cache.get_full("com.doxus.confluence", &doc_id.0).unwrap_or(None) {
-                                serde_json::from_str::<serde_json::Value>(&data_json).unwrap_or(serde_json::json!({}))
-                            } else {
-                                serde_json::json!({})
-                            };
+                            // 캐시된 본문 조회
+                            if let Ok(Some(cached_content)) = cache.get("com.doxus.confluence", &doc_id.0) {
+                                let _ = cache.touch("com.doxus.confluence", &doc_id.0, ttl);
+                                
+                                let final_meta = if let Some(meta) = db_meta {
+                                    meta
+                                } else if let Some(data_json) = cache.get_full("com.doxus.confluence", &doc_id.0).unwrap_or(None) {
+                                    serde_json::from_str::<serde_json::Value>(&data_json).unwrap_or(serde_json::json!({}))
+                                } else {
+                                    serde_json::json!({})
+                                };
 
-                            return Ok(serde_json::json!({
-                                "title": final_meta.get("title"),
-                                "content": cached_content,
-                                "file_path": file_path,
-                                "from_cache": true,
-                                "reindex_triggered": false,
-                                "tags": final_meta.get("tags"),
-                                "aliases": final_meta.get("aliases").or(Some(&serde_json::json!([]))),
-                                "created_at": final_meta.get("created_at"),
-                                "updated_at": final_meta.get("updated_at"),
-                                "metadata": final_meta.get("metadata"),
-                            }));
+                                return Ok(serde_json::json!({
+                                    "title": final_meta.get("title"),
+                                    "content": cached_content,
+                                    "file_path": file_path,
+                                    "from_cache": true,
+                                    "reindex_triggered": false,
+                                    "tags": final_meta.get("tags"),
+                                    "aliases": final_meta.get("aliases").or(Some(&serde_json::json!([]))),
+                                    "created_at": final_meta.get("created_at"),
+                                    "updated_at": final_meta.get("updated_at"),
+                                    "metadata": final_meta.get("metadata"),
+                                }));
+                            }
+                        } else {
+                            let conn = conn_arc.lock().unwrap_or_else(|e| e.into_inner());
+                            let cache = ContentCache::new(&conn);
+                            let _ = cache.invalidate("com.doxus.confluence", &doc_id.0);
                         }
-                    } else {
-                        // force_refresh: 기존 캐시 항목 제거
-                        let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
-                        let cache = ContentCache::new(&conn);
-                        let _ = cache.invalidate("com.doxus.confluence", &doc_id.0);
                     }
-                }
 
-                let plugin_id = doxus_core::plugin::PluginManager::normalize_id("confluence");
-                let mut plugin = state.plugin_manager.get_source(&plugin_id)
-                    .ok_or_else(|| format!("Confluence 플러그인을 찾을 수 없습니다 ({plugin_id})"))?;
+                    let plugin_id = doxus_core::plugin::PluginManager::normalize_id("confluence");
+                    let mut plugin = plugin_manager.get_source(&plugin_id)
+                        .ok_or_else(|| format!("Confluence 플러그인을 찾을 수 없습니다 ({plugin_id})"))?;
 
-                let mut config = PluginConfig::default();
-                if let Some(base_url) = config_map.get("base_url").and_then(|v| v.as_str()) {
-                    config.fields.insert("base_url".to_string(), serde_json::json!(base_url));
-                }
-                if let Some(space_key) = config_map.get("space_key").and_then(|v| v.as_str()) {
-                    if !space_key.is_empty() {
-                        config.fields.insert("space_key".to_string(), serde_json::json!(space_key));
+                    let mut config = PluginConfig::default();
+                    if let Some(base_url) = config_map.get("base_url").and_then(|v| v.as_str()) {
+                        config.fields.insert("base_url".to_string(), serde_json::json!(base_url));
                     }
+                    if let Some(space_key) = config_map.get("space_key").and_then(|v| v.as_str()) {
+                        if !space_key.is_empty() {
+                            config.fields.insert("space_key".to_string(), serde_json::json!(space_key));
+                        }
+                    }
+
+                    // 통합 스토리지 기반 인증 로드
+                    let mut secrets = PluginSecrets::default();
+                    doxus_core::auth::inject_keychain_auth(&plugin_id, &mut config, &mut secrets);
+
+                    rt.block_on(async {
+                        plugin.initialize(config, secrets).await
+                            .map_err(|e| format!("Confluence 플러그인 초기화 실패: {e}"))?;
+                        let raw = plugin.fetch_document(&doc_id).await
+                            .map_err(|e| format!("문서 가져오기 실패: {e}"))?;
+                        
+                        let conn_arc_inner = std::sync::Arc::clone(&conn_arc);
+                        let embedder = std::sync::Arc::clone(&embedder_arc) as std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider>;
+                        let engine = doxus_core::search::SearchEngine::with_embedder(conn_arc_inner, embedder);
+
+                        let project_id: i64 = {
+                            let conn = conn_arc.lock().unwrap_or_else(|e| e.into_inner());
+                            conn.query_row("SELECT id FROM projects WHERE name = ?1", [pname], |r| r.get(0)).unwrap_or(0)
+                        };
+
+                        let relative_path = raw.relative_path.clone().or_else(|| { raw.metadata.get("relative_path")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()) });
+
+                        let meta = doxus_core::search::DocMeta {
+                            tags: raw.tags.clone(),
+                            aliases: vec![],
+                            created_at: raw.created_at,
+                            updated_at: raw.updated_at,
+                            url: raw.url.clone(),
+                            relative_path,
+                            metadata: raw.metadata.clone(),
+                        };
+
+                        let _ = engine.index_document_async_with_meta(
+                            project_id, 
+                            &raw.id.0, 
+                            raw.title.as_deref().unwrap_or("Untitled"), 
+                            &raw.content, 
+                            meta
+                        ).await;
+
+                        let conn = conn_arc.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Some(ttl) = cache_ttl {
+                            let cache = ContentCache::new(&conn);
+                            let data_json = serde_json::to_string(&raw).unwrap_or_default();
+                            let _ = cache.set_full("com.doxus.confluence", &raw.id.0, &raw.content, &data_json, ttl);
+                        }
+
+                        Ok(serde_json::json!({
+                            "title": raw.title,
+                            "content": raw.content,
+                            "file_path": file_path,
+                            "from_cache": false,
+                            "reindex_triggered": true,
+                            "tags": raw.tags,
+                            "aliases": Vec::<String>::new(),
+                            "created_at": raw.created_at,
+                            "updated_at": raw.updated_at,
+                            "metadata": raw.metadata,
+                        }))
+                    })
                 }
-                let api_token = keyring::Entry::new("doxus", "doxus:com.doxus.confluence:api_token")
-                    .ok().and_then(|e| e.get_password().ok()).unwrap_or_default();
-                let access_token = keyring::Entry::new("doxus", "doxus:com.doxus.confluence:access_token")
-                    .ok().and_then(|e| e.get_password().ok()).unwrap_or_default();
-                let email = keyring::Entry::new("doxus", "doxus:com.doxus.confluence:email")
-                    .ok().and_then(|e| e.get_password().ok()).unwrap_or_default();
-                let token = if !access_token.is_empty() && email.is_empty() {
-                    access_token
-                } else {
-                    api_token
-                };
-                if !email.is_empty() {
-                    config.fields.insert("email".to_string(), serde_json::json!(email));
+                "github" => {
+                    let plugin_id = doxus_core::plugin::PluginManager::normalize_id("github");
+                    let mut plugin = plugin_manager.get_source(&plugin_id)
+                        .ok_or_else(|| format!("GitHub 플러그인을 찾을 수 없습니다 ({plugin_id})"))?;
+
+                    let mut config = PluginConfig::default();
+                    if let Some(repo) = config_map.get("repo").and_then(|v| v.as_str()) {
+                        config.fields.insert("repo".to_string(), serde_json::json!(repo));
+                    }
+                    
+                    let mut secrets = PluginSecrets::default();
+                    doxus_core::auth::inject_keychain_auth(&plugin_id, &mut config, &mut secrets);
+
+                    rt.block_on(async {
+                        plugin.initialize(config, secrets).await
+                            .map_err(|e| format!("GitHub 플러그인 초기화 실패: {e}"))?;
+                        let raw = plugin.fetch_document(&doc_id).await
+                            .map_err(|e| format!("문서 가져오기 실패: {e}"))?;
+
+                        let conn_arc_inner = std::sync::Arc::clone(&conn_arc);
+                        let embedder = std::sync::Arc::clone(&embedder_arc) as std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider>;
+                        let engine = doxus_core::search::SearchEngine::with_embedder(conn_arc_inner, embedder);
+
+                        let project_id: i64 = {
+                            let conn = conn_arc.lock().unwrap_or_else(|e| e.into_inner());
+                            conn.query_row("SELECT id FROM projects WHERE name = ?1", [pname], |r| r.get(0)).unwrap_or(0)
+                        };
+
+                        let relative_path = raw.relative_path.clone().or_else(|| { raw.metadata.get("relative_path")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()) });
+
+                        let meta = doxus_core::search::DocMeta {
+                            tags: raw.tags.clone(),
+                            aliases: vec![],
+                            created_at: None,
+                            updated_at: raw.updated_at,
+                            url: raw.url.clone(),
+                            relative_path,
+                            metadata: raw.metadata.clone(),
+                        };
+
+                        let _ = engine.index_document_async_with_meta(
+                            project_id, 
+                            &raw.id.0, 
+                            raw.title.as_deref().unwrap_or("Untitled"), 
+                            &raw.content, 
+                            meta
+                        ).await;
+
+                        Ok(serde_json::json!({
+                            "title": raw.title,
+                            "content": raw.content,
+                            "file_path": file_path,
+                            "reindex_triggered": true,
+                        }))
+                    })
                 }
-                let token_len = token.len();
-                config.fields.insert("api_token".to_string(), serde_json::json!(token.clone()));
-                let mut secrets = PluginSecrets::default();
-                secrets.fields.insert("api_token".to_string(), doxus_plugin_sdk::SecretValue::Text(token));
-                eprintln!("[get_document_content] confluence base_url={:?} doc_id={} email={} token_len={}",
-                    config_map.get("base_url"),
-                    file_path,
-                    if email.is_empty() { "none" } else { &email },
-                    token_len,
-                );
-                plugin.initialize(config, secrets).await
-                    .map_err(|e| format!("Confluence 플러그인 초기화 실패: {e}"))?;
-                let raw = plugin.fetch_document(&doc_id).await
-                    .map_err(|e| format!("문서 가져오기 실패: {e}"))?;
-                
-                let conn_arc = std::sync::Arc::clone(&state.conn);
-                let embedder = std::sync::Arc::clone(&state.embedder) as std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider>;
-                let engine = doxus_core::search::SearchEngine::with_embedder(conn_arc, embedder);
+                _ => {
+                    let plugin_id = doxus_core::plugin::PluginManager::normalize_id(&source_type);
+                    let mut plugin = plugin_manager.get_source(&plugin_id)
+                        .ok_or_else(|| format!("플러그인을 찾을 수 없습니다 ({plugin_id})"))?;
 
-                let project_id: i64 = {
-                    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
-                    conn.query_row("SELECT id FROM projects WHERE name = ?1", [pname], |r| r.get(0)).unwrap_or(0)
-                };
+                    let mut config = PluginConfig::default();
+                    config.fields.insert("path".to_string(), serde_json::json!(path));
+                    
+                    rt.block_on(async {
+                        plugin.initialize(config, PluginSecrets::default()).await
+                            .map_err(|e| format!("플러그인 초기화 실패: {e}"))?;
+                        let raw = plugin.fetch_document(&doc_id).await
+                            .map_err(|e| format!("문서 가져오기 실패: {e}"))?;
 
-                let relative_path = raw.relative_path.clone().or_else(|| { raw.metadata.get("relative_path")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string()) });
+                        let conn_arc_inner = std::sync::Arc::clone(&conn_arc);
+                        let embedder = std::sync::Arc::clone(&embedder_arc) as std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider>;
+                        let engine = doxus_core::search::SearchEngine::with_embedder(conn_arc_inner, embedder);
 
-                let meta = doxus_core::search::DocMeta {
-                    tags: raw.tags.clone(),
-                    aliases: vec![],
-                    created_at: raw.created_at,
-                    updated_at: raw.updated_at,
-                    url: raw.url.clone(),
-                    relative_path,
-                    metadata: raw.metadata.clone(),
-                };
+                        let project_id: i64 = {
+                            let conn = conn_arc.lock().unwrap_or_else(|e| e.into_inner());
+                            conn.query_row("SELECT id FROM projects WHERE name = ?1", [pname], |r| r.get(0)).unwrap_or(0)
+                        };
 
-                // 실시간 인덱싱 및 파일 경로 동기화 실행
-                let _ = engine.index_document_async_with_meta(
-                    project_id, 
-                    &raw.id.0, 
-                    raw.title.as_deref().unwrap_or("Untitled"), 
-                    &raw.content, 
-                    meta
-                ).await;
+                        let meta = doxus_core::search::DocMeta {
+                            tags: raw.tags.clone(),
+                            aliases: raw.aliases.clone(),
+                            created_at: raw.created_at,
+                            updated_at: raw.updated_at,
+                            url: raw.url.clone(),
+                            relative_path: raw.relative_path.clone(),
+                            metadata: raw.metadata.clone(),
+                        };
 
-                let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
-                // 캐시에 저장 (TTL이 설정된 경우)
-                if let Some(ttl) = cache_ttl {
-                    let cache = ContentCache::new(&conn);
-                    let data_json = serde_json::to_string(&raw).unwrap_or_default();
-                    let _ = cache.set_full("com.doxus.confluence", &raw.id.0, &raw.content, &data_json, ttl);
+                        let _ = engine.index_document_async_with_meta(
+                            project_id,
+                            &raw.id.0,
+                            raw.title.as_deref().unwrap_or("Untitled"),
+                            &raw.content,
+                            meta
+                        ).await;
+
+                        Ok(serde_json::json!({
+                            "title": raw.title,
+                            "content": raw.content,
+                            "file_path": file_path,
+                            "tags": raw.tags,
+                            "aliases": raw.aliases,
+                            "created_at": raw.created_at,
+                            "updated_at": raw.updated_at,
+                            "metadata": raw.metadata,
+                            "url": raw.url,
+                            "reindex_triggered": true,
+                        }))
+                    })
                 }
-
-                return Ok(serde_json::json!({
-                    "title": raw.title,
-                    "content": raw.content,
-                    "file_path": file_path,
-                    "from_cache": false,
-                    "reindex_triggered": true,
-                    "tags": raw.tags,
-                    "aliases": Vec::<String>::new(),
-                    "created_at": raw.created_at,
-                    "updated_at": raw.updated_at,
-                    "metadata": raw.metadata,
-                }));
             }
-            "github" => {
-                let plugin_id = doxus_core::plugin::PluginManager::normalize_id("github");
-                let mut plugin = state.plugin_manager.get_source(&plugin_id)
-                    .ok_or_else(|| format!("GitHub 플러그인을 찾을 수 없습니다 ({plugin_id})"))?;
-
-                let mut config = PluginConfig::default();
-
-                if let Some(repo) = config_map.get("repo").and_then(|v| v.as_str()) {
-                    config.fields.insert("repo".to_string(), serde_json::json!(repo));
-                }
-                let token = keyring::Entry::new("doxus", "doxus:com.doxus.github:token")
-                    .ok().and_then(|e| e.get_password().ok()).unwrap_or_default();
-                config.fields.insert("token".to_string(), serde_json::json!(token.clone()));
-                let mut secrets = PluginSecrets::default();
-                secrets.fields.insert("token".to_string(), doxus_plugin_sdk::SecretValue::Text(token));
-
-                plugin.initialize(config, secrets).await
-                    .map_err(|e| format!("GitHub 플러그인 초기화 실패: {e}"))?;
-                let raw = plugin.fetch_document(&doc_id).await
-                    .map_err(|e| format!("문서 가져오기 실패: {e}"))?;
-
-                let conn_arc = std::sync::Arc::clone(&state.conn);
-                let embedder = std::sync::Arc::clone(&state.embedder) as std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider>;
-                let engine = doxus_core::search::SearchEngine::with_embedder(conn_arc, embedder);
-
-                let project_id: i64 = {
-                    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
-                    conn.query_row("SELECT id FROM projects WHERE name = ?1", [pname], |r| r.get(0)).unwrap_or(0)
-                };
-
-                let relative_path = raw.relative_path.clone().or_else(|| { raw.metadata.get("relative_path")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string()) });
-
-                let meta = doxus_core::search::DocMeta {
-                    tags: raw.tags.clone(),
-                    aliases: vec![],
-                    created_at: None,
-                    updated_at: raw.updated_at,
-                    url: raw.url.clone(),
-                    relative_path,
-                    metadata: raw.metadata.clone(),
-                };
-
-                // 실시간 인덱싱 및 파일 경로 동기화 실행
-                let _ = engine.index_document_async_with_meta(
-                    project_id, 
-                    &raw.id.0, 
-                    raw.title.as_deref().unwrap_or("Untitled"), 
-                    &raw.content, 
-                    meta
-                ).await;
-
-                return Ok(serde_json::json!({
-                    "title": raw.title,
-                    "content": raw.content,
-                    "file_path": file_path,
-                    "reindex_triggered": true,
-                }));
-            }
-            _ => {
-                // Obsidian/Workspace: 로컬 파일 직접 읽기 (워크스페이스도 같은 경로)
-                let plugin_id = doxus_core::plugin::PluginManager::normalize_id(&source_type);
-                let mut plugin = state.plugin_manager.get_source(&plugin_id)
-                    .ok_or_else(|| format!("플러그인을 찾을 수 없습니다 ({plugin_id})"))?;
-
-                let mut config = PluginConfig::default();
-                config.fields.insert("path".to_string(), serde_json::json!(path));
-                plugin.initialize(config, PluginSecrets::default()).await
-                    .map_err(|e| format!("Obsidian 플러그인 초기화 실패: {e}"))?;
-                let raw = plugin.fetch_document(&doc_id).await
-                    .map_err(|e| format!("문서 가져오기 실패: {e}"))?;
-
-                // 실시간 인덱싱 싱크 (파일이 변경되었을 가능성 대응)
-                let conn_arc = std::sync::Arc::clone(&state.conn);
-                let embedder = std::sync::Arc::clone(&state.embedder) as std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider>;
-                let engine = doxus_core::search::SearchEngine::with_embedder(conn_arc, embedder);
-
-                let project_id: i64 = {
-                    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
-                    conn.query_row("SELECT id FROM projects WHERE name = ?1", [pname], |r| r.get(0)).unwrap_or(0)
-                };
-
-                let meta = doxus_core::search::DocMeta {
-                    tags: raw.tags.clone(),
-                    aliases: raw.aliases.clone(),
-                    created_at: raw.created_at,
-                    updated_at: raw.updated_at,
-                    url: raw.url.clone(),
-                    relative_path: raw.relative_path.clone(),
-                    metadata: raw.metadata.clone(),
-                };
-
-                // 백그라운드 인덱싱 (기다리지 않음)
-                let _ = engine.index_document_async_with_meta(
-                    project_id,
-                    &raw.id.0,
-                    raw.title.as_deref().unwrap_or("Untitled"),
-                    &raw.content,
-                    meta
-                ).await;
-
-                return Ok(serde_json::json!({
-                    "title": raw.title,
-                    "content": raw.content,
-                    "file_path": file_path,
-                    "tags": raw.tags,
-                    "aliases": raw.aliases,
-                    "created_at": raw.created_at,
-                    "updated_at": raw.updated_at,
-                    "metadata": raw.metadata,
-                    "url": raw.url,
-                    "reindex_triggered": true,
-                }));
-            }
+        } else {
+            let conn = conn_arc.lock().unwrap_or_else(|e| e.into_inner());
+            get_document_content_impl(&conn, &file_path)
         }
-    }
-
-    // project_name 없으면 SQLite 캐시 fallback
-    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
-    get_document_content_impl(&conn, &file_path)
+    }).await.map_err(|e| e.to_string())?
 }
 
 /// Compares `sha256(content)` with stored `content_hash`.
