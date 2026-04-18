@@ -103,11 +103,12 @@ use doxus_plugin_sdk::{
     SourceDocId, ContentType as NativeContentType, DocumentStream, ChangeSet
 };
 
-#[cfg(target_arch = "wasm32")]
-macro_rules! log_debug {
-    ($state:expr, $($arg:tt)*) => {
-        if $state.get_config("debug") == Some("true") {
-            // extism has no standard way to log to console easily without host
+macro_rules! log_d {
+    ($tag:expr, $($arg:tt)*) => {
+        if let Ok(state) = PluginState::load() {
+            if state.debug_tags.contains($tag) {
+                println!($($arg)*);
+            }
         }
     };
 }
@@ -154,6 +155,8 @@ struct PluginState {
     hierarchy_cache: Option<HashMap<String, (String, Option<String>)>>,
     #[serde(default)]
     last_hierarchy_fetch: Option<i64>,
+    #[serde(default)]
+    debug_tags: std::collections::HashSet<String>,
 }
 
 impl PluginState {
@@ -374,6 +377,8 @@ struct TokenResponse {
 pub struct InitOpts {
     config: HashMap<String, serde_json::Value>,
     secrets: HashMap<String, String>,
+    #[serde(default)]
+    debug_tags: Vec<String>,
 }
 
 #[cfg_attr(target_arch = "wasm32", plugin_fn)]
@@ -390,6 +395,7 @@ pub fn initialize(Json(opts): Json<InitOpts>) -> FnResult<()> {
         expires_at,
         hierarchy_cache: None,
         last_hierarchy_fetch: None,
+        debug_tags: opts.debug_tags.into_iter().collect(),
     };
     state.save()?;
     Ok(())
@@ -424,7 +430,7 @@ pub(crate) fn fetch_all_impl(opts: FetchAllOptsWasm) -> FnResult<DocumentStreamW
     let (pages_results, has_next) = if let Some(aid) = &ancestor_id {
         let cql = format!("ancestor = \"{}\" ORDER BY created ASC", aid);
         let url = format!("{base_url}/rest/api/content/search?cql={}&expand=metadata.labels&start={start}&limit={limit}", urlencoding::encode(&cql));
-        println!("[Confluence-Debug] CQL URL: {}", url);
+        log_d!("confluence", "[Confluence-Debug] CQL URL: {}", url);
         
         let resp = request_with_auth(&state, "GET", &url, None)?;
         let r: ConfluenceCqlResult = serde_json::from_slice(&resp.body())?;
@@ -433,7 +439,7 @@ pub(crate) fn fetch_all_impl(opts: FetchAllOptsWasm) -> FnResult<DocumentStreamW
         if !r.results.is_empty() {
             // Filter only pages (exclude folder type if it appeared)
             let page_ids: Vec<String> = r.results.iter()
-                .inspect(|p| println!("[Confluence-Debug] - Result ID: {}, Type: {}", p.id, p.content_type))
+                .inspect(|p| log_d!("confluence", "[Confluence-Debug] - Result ID: {}, Type: {}", p.id, p.content_type))
                 .filter(|p| p.content_type.to_lowercase() == "page")
                 .map(|p| {
                     let tags: Vec<String> = p.metadata.as_ref()
@@ -449,10 +455,10 @@ pub(crate) fn fetch_all_impl(opts: FetchAllOptsWasm) -> FnResult<DocumentStreamW
             if !page_ids.is_empty() {
                 let ids_str = page_ids.join(",");
                 let v2_url = format!("{base_url}/api/v2/pages?id={}&body-format=storage", ids_str);
-                println!("[Confluence-Debug] V2 Detail URL: {}", v2_url);
+                log_d!("confluence", "[Confluence-Debug] V2 Detail URL: {}", v2_url);
                 let v2_resp = request_with_auth(&state, "GET", &v2_url, None)?;
                 let v2_list: ConfluenceV2ListResponse<ConfluencePageV2> = serde_json::from_slice(&v2_resp.body())?;
-                println!("[Confluence-Debug] Received {} V2 details", v2_list.results.len());
+                log_d!("confluence", "[Confluence-Debug] Received {} V2 details", v2_list.results.len());
                 details = v2_list.results;
             }
         }
@@ -1193,6 +1199,7 @@ impl ConfluencePlugin {
             expires_at: self.oauth_token.as_ref().and_then(|t| t.expires_at.map(|e| e as i64)),
             hierarchy_cache: None,
             last_hierarchy_fetch: None,
+            debug_tags: std::collections::HashSet::new(),
         };
         
         let bytes = serde_json::to_vec(&state).map_err(|e| PluginError::Internal(e.to_string()))?;

@@ -68,9 +68,9 @@ impl WasmDocSourceAdapter {
 
         // Define host functions
         let secret_store_inner = secret_store.unwrap_or_else(|| {
-            Arc::new(crate::secrets::CachedSecretStore::new(
-                crate::secrets::UnifiedKeychainStore::new("doxus", "com.doxus.secrets.v1")
-            ))
+            let store = crate::secrets::UnifiedKeychainStore::new("doxus", "com.doxus.secrets.v1");
+            let _ = store.load_from_keychain();
+            Arc::new(crate::secrets::CachedSecretStore::new(store))
         });
         let plugin_id_inner = manifest.plugin_id.clone();
         let secrets_manifest = manifest.secrets.clone();
@@ -332,6 +332,7 @@ impl DocSource for WasmDocSourceAdapter {
         struct InitOpts {
             config: HashMap<String, serde_json::Value>,
             secrets: HashMap<String, String>,
+            debug_tags: Vec<String>,
         }
 
         let mut wasm_secrets = HashMap::new();
@@ -361,9 +362,17 @@ impl DocSource for WasmDocSourceAdapter {
             }
         }
 
+        let mut debug_tags = Vec::new();
+        for tag in &["confluence", "confluence:ancestors", "confluence:doc"] {
+            if crate::observability::is_debug_enabled(tag) {
+                debug_tags.push(tag.to_string());
+            }
+        }
+
         let opts = InitOpts {
             config: config.fields,
             secrets: wasm_secrets,
+            debug_tags,
         };
 
         self.call_wasm::<InitOpts, ()>("initialize", &opts).await
