@@ -7,6 +7,7 @@ use std::io::{BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Find the Node.js binary. macOS GUI apps don't inherit the user's shell PATH.
 fn find_node_binary() -> std::path::PathBuf {
@@ -46,6 +47,7 @@ pub struct SyncSidecarManager {
     /// Taken by the background reader thread after ensure_running().
     reader: Mutex<Option<BufReader<ChildStdout>>>,
     child: Mutex<Option<Child>>,
+    debug_enabled: AtomicBool,
 }
 
 impl SyncSidecarManager {
@@ -54,7 +56,12 @@ impl SyncSidecarManager {
             stdin: Arc::new(Mutex::new(None)),
             reader: Mutex::new(None),
             child: Mutex::new(None),
+            debug_enabled: AtomicBool::new(false),
         }
+    }
+
+    pub fn set_debug(&self, enabled: bool) {
+        self.debug_enabled.store(enabled, Ordering::Relaxed);
     }
 
     /// Acquire a mutex, recovering from poisoning (safe — poison just means
@@ -86,7 +93,9 @@ impl SyncSidecarManager {
         }
 
         let node_bin = find_node_binary();
-        eprintln!("[sidecar] Starting: {} {}", node_bin.display(), script.display());
+        if self.debug_enabled.load(Ordering::Relaxed) {
+            eprintln!("[sidecar] Starting: {} {}", node_bin.display(), script.display());
+        }
 
         let mut child = Command::new(&node_bin)
             .arg(script)
@@ -103,7 +112,9 @@ impl SyncSidecarManager {
         *self.lock_reader() = Some(BufReader::new(stdout));
         *child_guard = Some(child);
 
-        eprintln!("[sidecar] Started");
+        if self.debug_enabled.load(Ordering::Relaxed) {
+            eprintln!("[sidecar] Started");
+        }
         Ok(())
     }
 
@@ -134,8 +145,18 @@ impl SyncSidecarManager {
         self.lock_stdin().take();
         if let Some(mut child) = self.lock_child().take() {
             match child.try_wait() {
-                Ok(Some(_)) => eprintln!("[sidecar] already exited"),
-                _ => { let _ = child.kill(); let _ = child.wait(); eprintln!("[sidecar] killed"); }
+                Ok(Some(_)) => {
+                    if self.debug_enabled.load(Ordering::Relaxed) {
+                        eprintln!("[sidecar] already exited");
+                    }
+                }
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    if self.debug_enabled.load(Ordering::Relaxed) {
+                        eprintln!("[sidecar] killed");
+                    }
+                }
             }
         }
     }
