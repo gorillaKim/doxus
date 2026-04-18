@@ -39,6 +39,13 @@ fn find_sidecar_script() -> std::path::PathBuf {
 
 fn main() {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let config_path = std::path::PathBuf::from(&home).join(".doxus/config.toml");
+    
+    // Load settings and initialize debug tags
+    if let Ok(settings) = doxus_desktop_lib::commands::settings::load_settings_from_path(&config_path) {
+        doxus_core::observability::set_debug_tags(settings.debug_tags);
+    }
+
     let db_path = std::env::var("DOXUS_DB_PATH")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| {
@@ -57,6 +64,7 @@ fn main() {
                 std::sync::Arc::new(doxus_core::embedding::NoOpEmbedder)
             });
     let state = AppState::new(conn, plugins_dir, sidecar_script, embedder);
+    state.sidecar.set_debug(doxus_core::observability::is_debug_enabled("agent"));
     let conn_arc = state.conn.clone();
 
     tauri::Builder::default()

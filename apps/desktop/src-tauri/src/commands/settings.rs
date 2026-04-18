@@ -11,6 +11,7 @@ pub struct AppSettings {
     pub embedding_model: String,
     pub language: String,
     pub theme: String,
+    pub debug_tags: Vec<String>,
 }
 
 impl Default for AppSettings {
@@ -19,6 +20,7 @@ impl Default for AppSettings {
             embedding_model: "onnx".to_string(),
             language: "ko".to_string(),
             theme: "system".to_string(),
+            debug_tags: vec![],
         }
     }
 }
@@ -74,8 +76,14 @@ fn config_path(_app_handle: &AppHandle) -> PathBuf {
 }
 
 #[tauri::command]
-pub async fn save_settings(settings: AppSettings, app_handle: AppHandle) -> Result<(), String> {
+pub async fn save_settings(
+    settings: AppSettings,
+    app_handle: AppHandle,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<(), String> {
     let path = config_path(&app_handle);
+    doxus_core::observability::set_debug_tags(settings.debug_tags.clone());
+    state.sidecar.set_debug(doxus_core::observability::is_debug_enabled("agent"));
     save_settings_to_path(&settings, &path)
 }
 
