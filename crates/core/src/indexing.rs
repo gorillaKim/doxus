@@ -58,12 +58,12 @@ impl IndexingService {
                 .map_err(|e| format!("문서 수집 실패: {e}"))?;
             
             let docs = stream.documents;
-            println!("[Core-Indexer] Received {} documents from plugin", docs.len());
+            crate::log_d!("indexer", "[Core-Indexer] Received {} documents from plugin", docs.len());
             if docs.is_empty() { break; }
 
             for doc in &docs {
                 let title = doc.title.as_deref().unwrap_or("Untitled");
-                println!("[Core-Indexer] Processing document: {} (ID: {})", title, doc.id.0);
+                crate::log_d!("indexer", "[Core-Indexer] Processing document: {} (ID: {})", title, doc.id.0);
                 let meta = DocMeta {
                     url: doc.url.clone(),
                     tags: doc.tags.clone(),
@@ -81,7 +81,7 @@ impl IndexingService {
                     &doc.content,
                     meta
                 ).await {
-                    println!("[Core-Indexer] Error indexing {}: {}", doc.id.0, e);
+                    crate::log_d!("indexer", "[Core-Indexer] Error indexing {}: {}", doc.id.0, e);
                     tracing::error!("Indexing error for {}: {}", doc.id.0, e);
                 } else {
                     total += 1;
@@ -92,7 +92,7 @@ impl IndexingService {
             if cursor.is_none() { break; }
         }
 
-        println!("[Core-Indexer] Cycle finished. Total indexed this run: {}", total);
+        crate::log_d!("indexer", "[Core-Indexer] Cycle finished. Total indexed this run: {}", total);
         Ok(total)
     }
 
