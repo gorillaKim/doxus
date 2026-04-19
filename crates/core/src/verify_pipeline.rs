@@ -5,7 +5,7 @@ use rusqlite::Connection;
 
 #[tokio::main]
 async fn main() {
-    println!("=== Doxus RAG Pipeline Verification ===");
+    eprintln!("=== Doxus RAG Pipeline Verification ===");
 
     // 1. Chunker Verification
     verify_chunker();
@@ -13,33 +13,33 @@ async fn main() {
     // 2. Search Strategy (Tiered Budgeting) Verification
     verify_search_strategy().await;
 
-    println!("\n=== Verification Complete ===");
+    eprintln!("\n=== Verification Complete ===");
 }
 
 fn verify_chunker() {
-    println!("\n[1] Chunking Quality Test");
+    eprintln!("\n[1] Chunking Quality Test");
     let text = "First sentence. Second sentence. Third sentence. Fourth sentence.";
     // Limit to 20 chars, which should force splits
     let config = ChunkConfig { max_chars: 20, overlap_chars: 5, ..Default::default() };
     let chunks = split_chunks(text, config);
     
-    println!("Text: {}", text);
+    eprintln!("Text: {}", text);
     for (i, c) in chunks.iter().enumerate() {
-        println!("Chunk {}: [{}] (len: {})", i, c.content, c.content.len());
+        eprintln!("Chunk {}: [{}] (len: {})", i, c.content, c.content.len());
         // Verify no mid-word split if possible
         assert!(!c.content.contains("sentenc") || c.content.contains("sentence"), "Should not split mid-word");
     }
 
     let ko_text = "안녕하세요. 반가워요. 오늘 날씨가 좋네요. 내일도 좋을까요?";
     let ko_chunks = split_chunks(ko_text, ChunkConfig { max_chars: 20, ..Default::default() });
-    println!("\nKorean Text: {}", ko_text);
+    eprintln!("\nKorean Text: {}", ko_text);
     for (i, c) in ko_chunks.iter().enumerate() {
-        println!("Chunk {}: [{}]", i, c.content);
+        eprintln!("Chunk {}: [{}]", i, c.content);
     }
 }
 
 async fn verify_search_strategy() {
-    println!("\n[2] Search Strategy (Statistical Tiering) Test");
+    eprintln!("\n[2] Search Strategy (Statistical Tiering) Test");
     
     // Setup in-memory DB for and indexing
     let conn = Connection::open_in_memory().unwrap();
@@ -62,14 +62,14 @@ async fn verify_search_strategy() {
     let sigma = variance.sqrt();
     let max_score = scores[0];
 
-    println!("Scores: {:?}", scores);
-    println!("Mean: {:.4}, Sigma: {:.4}, Max: {:.4}", mean, sigma, max_score);
-    println!("Threshold (Max - Sigma): {:.4}", max_score - sigma);
+    eprintln!("Scores: {:?}", scores);
+    eprintln!("Mean: {:.4}, Sigma: {:.4}, Max: {:.4}", mean, sigma, max_score);
+    eprintln!("Threshold (Max - Sigma): {:.4}", max_score - sigma);
 
     for (i, hit) in hits.iter().enumerate() {
         let is_high_confidence = hit.score >= (max_score - sigma);
         let tier = if is_high_confidence { "Tier 1 (High Budget)" } else { "Tier 2 (Low Budget)" };
-        println!("Hit {}: Score {:.4} -> {}", i + 1, hit.score, tier);
+        eprintln!("Hit {}: Score {:.4} -> {}", i + 1, hit.score, tier);
         
         if is_high_confidence {
              assert!(hit.score > 0.8, "High confidence should be high scores in this mock");

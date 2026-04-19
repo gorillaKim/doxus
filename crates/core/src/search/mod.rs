@@ -43,7 +43,7 @@ pub struct SearchQuery {
     pub mode: SearchMode,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum SearchMode {
     #[default]
     Hybrid,

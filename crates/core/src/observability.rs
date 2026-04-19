@@ -22,7 +22,7 @@ pub fn is_debug_enabled(tag: &str) -> bool {
 macro_rules! log_d {
     ($tag:expr, $($arg:tt)*) => {
         if $crate::observability::is_debug_enabled($tag) {
-            println!($($arg)*);
+            eprintln!($($arg)*);
         }
     };
 }
