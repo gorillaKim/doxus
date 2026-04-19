@@ -154,7 +154,7 @@ export default function DashboardPage() {
               color="bg-emerald-500"
             />
             <ResourceBar 
-              label="Disk (Doxus Data)" 
+              label="Knowledge Index" 
               value={resources.disk_usage} 
               max={resources.total_disk || 1} 
               sublabel={`${formatBytes(resources.disk_usage)} / ${formatBytes(resources.total_disk)}`}

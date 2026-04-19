@@ -689,12 +689,15 @@ export function SearchPage() {
     search();
   };
 
+  const [resetKey, setResetKey] = useState(0);
+
   const handleClear = () => {
     clear();
     setSelectedDoc(null);
     setPreviewContent(null);
     setPreviewError(null);
     setInputValue('');
+    setResetKey(prev => prev + 1);
   };
 
   const fetchPreview = async (doc: DocEntry, forceRefresh = false) => {
@@ -844,7 +847,10 @@ export function SearchPage() {
       {/* 하단 2-panel */}
       <div className="flex-1 overflow-hidden flex gap-4">
         {/* 좌측: 파일 목록 */}
-        <div className="w-80 shrink-0 overflow-auto glass-card border-white/5 rounded-2xl flex flex-col shadow-inner">
+        <div 
+          key={resetKey}
+          className="w-80 shrink-0 overflow-auto glass-card border-white/5 rounded-2xl flex flex-col shadow-inner"
+        >
           {/* 헤더 */}
           <div className="p-4 flex items-center justify-between border-b border-white/5 bg-white/[0.02]">
             <span className="text-[10px] text-gray-500 font-bold uppercase tracking-[0.2em]">

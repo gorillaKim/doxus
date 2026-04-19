@@ -55,6 +55,18 @@ function IconSettings() {
     </svg>
   );
 }
+function IconAgent() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5 shrink-0 text-amber-500">
+      <path d="M12 8V4H8" />
+      <rect width="16" height="12" x="4" y="8" rx="2" />
+      <path d="M2 14h2" />
+      <path d="M20 14h2" />
+      <path d="M15 13v2" />
+      <path d="M9 13v2" />
+    </svg>
+  );
+}
 function IconChat() {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5 shrink-0">
@@ -80,6 +92,7 @@ const NAV_ITEMS = [
   { to: "/search", label: "검색", icon: <IconSearch /> },
   { to: "/projects", label: "프로젝트", icon: <IconProjects /> },
   { to: "/market", label: "마켓", icon: <IconMarket /> },
+  { to: "/agent", label: "에이전트", icon: <IconAgent /> },
   { to: "/settings", label: "설정", icon: <IconSettings /> },
 ];
 
