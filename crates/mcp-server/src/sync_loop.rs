@@ -11,7 +11,8 @@ use std::time::Duration;
 
 use doxus_core::plugin::PluginManager;
 use doxus_core::sync::{SyncDb, SyncScheduler};
-use doxus_plugin_sdk::{FetchChangesOpts, PluginConfig, PluginError, PluginSecrets, SecretValue};
+use doxus_core::links::LinkResolver;
+use doxus_plugin_sdk::{FetchChangesOpts, PluginConfig, PluginError, PluginSecrets};
 use rand::Rng;
 
 use tokio::sync::watch;
@@ -339,6 +340,7 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
                                                 meta: doxus_core::search::DocMeta {
                                                     tags: doc.tags.clone(),
                                                     aliases: doc.aliases.clone(),
+                                                    links: doc.links.clone(),
                                                     url: doc.url.clone(),
                                                     created_at: doc.created_at,
                                                     updated_at: doc.updated_at,
@@ -419,6 +421,24 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
                                 plugin_id = %inst.plugin_id,
                                 "sync_loop: no source for plugin, skipping"
                             );
+                        }
+                    }
+                }
+            }
+
+            // ── 링크 해설 (위키링크 등 연결 고리 완성) ────────────────────────
+            {
+                if let Ok(guard) = conn.lock() {
+                    tracing::info!("sync_loop: starting link resolution");
+                    match LinkResolver::resolve_all_unresolved_links(&guard) {
+                        Ok(count) if count > 0 => {
+                            tracing::info!(resolved_count = count, "sync_loop: link resolution completed");
+                        }
+                        Ok(_) => {
+                            tracing::debug!("sync_loop: no new links to resolve");
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "sync_loop: link resolution failed");
                         }
                     }
                 }

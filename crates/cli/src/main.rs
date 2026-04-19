@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use doxus_core::db;
 use doxus_core::search::SearchQuery;
+use doxus_core::links::LinkResolver;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -117,8 +118,8 @@ fn handle_project(conn: &rusqlite::Connection, action: ProjectAction) -> Result<
             let display = display_name.unwrap_or_else(|| name.clone());
             let path_str = path.to_string_lossy();
             conn.execute(
-                "INSERT INTO projects(name, display_name, path, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, unixepoch(), unixepoch())",
+                "INSERT INTO projects(name, display_name, path, source_project_id, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?1, unixepoch(), unixepoch())",
                 rusqlite::params![name, display, path_str],
             )
             .context("failed to add project")?;
@@ -178,10 +179,10 @@ async fn handle_index(conn: &rusqlite::Connection) -> Result<()> {
     use doxus_core::search::{SearchEngine, DocMeta};
 
     let mut stmt = conn.prepare(
-        "SELECT id, name, path FROM projects WHERE status='active'",
+        "SELECT id, name, path, COALESCE(source_project_id, name) FROM projects WHERE status='active'",
     )?;
-    let projects: Vec<(i64, String, String)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+    let projects: Vec<(i64, String, String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
         .filter_map(|r| r.ok())
         .collect();
 
@@ -190,7 +191,7 @@ async fn handle_index(conn: &rusqlite::Connection) -> Result<()> {
         return Ok(());
     }
 
-    for (pid, name, path) in projects {
+    for (pid, name, path, source_project_id) in projects {
         println!("📚 Indexing '{name}'...");
 
         let mut plugin = ObsidianPlugin::new();
@@ -217,6 +218,7 @@ async fn handle_index(conn: &rusqlite::Connection) -> Result<()> {
                     created_at: doc.created_at,
                     updated_at: doc.updated_at,
                     aliases: doc.aliases.clone(),
+                    links: doc.links.clone(),
                     relative_path: doc.relative_path.clone(),
                 };
 
@@ -226,6 +228,7 @@ async fn handle_index(conn: &rusqlite::Connection) -> Result<()> {
                     doc.title.as_deref().unwrap_or("Untitled"),
                     &doc.content,
                     &meta,
+                    &source_project_id,
                 ).map_err(|e| anyhow::anyhow!("indexing error: {e}"))?;
             }
 
@@ -237,6 +240,13 @@ async fn handle_index(conn: &rusqlite::Connection) -> Result<()> {
         }
 
         println!("  ✅ Indexed {total} documents");
+    }
+
+    // ── 링크 해설 (위키링크 등 연결) ──────────────────────────────────────────
+    println!("🔗 Resolving document links...");
+    match LinkResolver::resolve_all_unresolved_links(conn) {
+        Ok(count) => println!("  ✅ Resolved {count} links successfully"),
+        Err(e) => println!("  ⚠️  Link resolution error: {e}"),
     }
 
     Ok(())
