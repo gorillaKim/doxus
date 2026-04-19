@@ -27,6 +27,42 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   );
 }
 
+interface ResourceUsage {
+  cpu_usage: number;
+  memory_usage: number;
+  total_memory: number;
+  disk_usage: number;
+  total_disk: number;
+  available_disk: number;
+}
+
+function formatBytes(bytes: number, decimals = 2) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
+
+function ResourceBar({ label, value, max, sublabel, color = "bg-indigo-500" }: { label: string; value: number; max: number; sublabel: string, color?: string }) {
+  const percentage = Math.min(100, Math.max(0, (value / max) * 100));
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex justify-between items-end">
+        <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">{label}</span>
+        <span className="text-[10px] text-gray-500 font-mono">{sublabel}</span>
+      </div>
+      <div className="h-1.5 w-full bg-white/5 rounded-full overflow-hidden border border-white/5">
+        <div 
+          className={`h-full ${color} transition-all duration-1000 ease-out shadow-[0_0_10px_rgba(99,102,241,0.3)]`} 
+          style={{ width: `${percentage}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
 export default function DashboardPage() {
   const navigate = useNavigate();
   const { projects, fetch: fetchProjects } = useProjectStore();
@@ -34,6 +70,7 @@ export default function DashboardPage() {
   const [totalDocs, setTotalDocs] = useState<number | null>(null);
   const [lastSync, setLastSync] = useState<string>('—');
   const [topDocs, setTopDocs] = useState<{ document_id: number; title: string; count: number }[]>([]);
+  const [resources, setResources] = useState<ResourceUsage | null>(null);
 
   useEffect(() => {
     fetchProjects();
@@ -47,7 +84,19 @@ export default function DashboardPage() {
       .then(res => setTopDocs(res.documents))
       .catch(() => setTopDocs([]));
       
+    // 리소스 정보 초기 페치 및 폴링
+    const fetchResources = () => {
+      invoke<ResourceUsage>('get_resource_usage')
+        .then(setResources)
+        .catch(console.error);
+    };
+    
+    fetchResources();
+    const interval = setInterval(fetchResources, 5000);
+    
     setLastSync('방금 전');
+
+    return () => clearInterval(interval);
   }, [fetchProjects]);
 
   const today = new Date().toLocaleDateString('ko-KR', {
@@ -85,6 +134,39 @@ export default function DashboardPage() {
           icon={<svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>}
         />
       </div>
+      
+      {/* 시스템 리소스 */}
+      {resources && (
+        <div className="flex flex-col gap-4 animate-in fade-in slide-in-from-bottom-2 duration-500">
+          <SectionTitle>시스템 리소스 모니터</SectionTitle>
+          <div className="glass-card rounded-2xl p-6 grid grid-cols-1 md:grid-cols-3 gap-8 relative overflow-hidden group border border-white/5">
+            <ResourceBar 
+              label="CPU" 
+              value={resources.cpu_usage} 
+              max={100} 
+              sublabel={`${resources.cpu_usage.toFixed(1)}%`}
+            />
+            <ResourceBar 
+              label="Memory" 
+              value={resources.memory_usage} 
+              max={resources.total_memory} 
+              sublabel={`${formatBytes(resources.memory_usage)} / ${formatBytes(resources.total_memory)}`}
+              color="bg-emerald-500"
+            />
+            <ResourceBar 
+              label="Disk (Doxus Data)" 
+              value={resources.disk_usage} 
+              max={resources.total_disk || 1} 
+              sublabel={`${formatBytes(resources.disk_usage)} / ${formatBytes(resources.total_disk)}`}
+              color="bg-amber-500"
+            />
+            {/* 배경 미세 장식 */}
+            <div className="absolute top-0 right-0 p-4 opacity-[0.03] group-hover:opacity-[0.07] transition-opacity pointer-events-none">
+                <svg className="w-24 h-24" fill="currentColor" viewBox="0 0 24 24"><path d="M13 3h-2v10h2V3zm4.83 2.17l-1.42 1.42C17.99 7.86 19 9.81 19 12c0 3.87-3.13 7-7 7s-7-3.13-7-7c0-2.19 1.01-4.14 2.58-5.42L6.17 5.17C4.23 6.82 3 9.26 3 12c0 4.97 4.03 9 9 9s9-4.03 9-9c0-2.74-1.23-5.18-3.17-6.83z"/></svg>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
         {/* 최근 검색 */}
