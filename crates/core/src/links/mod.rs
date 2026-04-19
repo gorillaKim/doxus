@@ -28,10 +28,25 @@ impl LinkResolver {
             }
         }
 
-        // 2. Search within the current project (by source_doc_id or title)
+        // Base normalization: remove extensions and common path prefixes
+        let mut normalized = raw_link.trim().trim_start_matches("./");
+        normalized = normalized.trim_start_matches("../");
+        if let Some(stripped) = normalized.strip_suffix(".md") {
+            normalized = stripped;
+        }
+
+        // a. Match by source_doc_id, title, or file_path (with suffix matching for paths)
+        let sql = "SELECT id FROM documents 
+                   WHERE project_id = ?1 
+                   AND (source_doc_id = ?2 OR title = ?2 OR file_path = ?2 
+                        OR source_doc_id = ?3 OR title = ?3 OR file_path = ?3
+                        OR file_path LIKE '%' || ?2
+                        OR file_path LIKE '%' || ?3
+                        OR file_path LIKE '%' || ?3 || '.md')";
+        
         let res: Option<i64> = conn.query_row(
-            "SELECT id FROM documents WHERE project_id = ?1 AND (source_doc_id = ?2 OR title = ?2)",
-            rusqlite::params![current_project_id, raw_link],
+            sql,
+            rusqlite::params![current_project_id, raw_link, normalized],
             |r| r.get(0)
         ).ok();
 
@@ -40,9 +55,17 @@ impl LinkResolver {
         }
 
         // 3. Global search (Fallthrough)
+        let sql_global = "SELECT id FROM documents 
+                          WHERE source_doc_id = ?1 OR title = ?1 OR file_path = ?1
+                             OR source_doc_id = ?2 OR title = ?2 OR file_path = ?2
+                             OR file_path LIKE '%' || ?1
+                             OR file_path LIKE '%' || ?2
+                             OR file_path LIKE '%' || ?2 || '.md'
+                          LIMIT 1";
+        
         let res: Option<i64> = conn.query_row(
-            "SELECT id FROM documents WHERE source_doc_id = ?1 OR title = ?1 LIMIT 1",
-            rusqlite::params![raw_link],
+            sql_global,
+            rusqlite::params![raw_link, normalized],
             |r| r.get(0)
         ).ok();
 
