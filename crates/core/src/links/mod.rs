@@ -1,36 +1,4 @@
-use regex::Regex;
-use lazy_static::lazy_static;
-
-lazy_static! {
-    static ref WIKI_LINK_RE: Regex = Regex::new(r"\[\[(.*?)\]\]").unwrap();
-    static ref MD_LINK_RE: Regex = Regex::new(r"\[.*?\]\((.*?)\)").unwrap();
-    static ref DX_URI_RE: Regex = Regex::new(r"doxus://([a-zA-Z0-9\-_]+)/([a-zA-Z0-9\-_/.]*[a-zA-Z0-9\-_/])").unwrap();
-}
-
-pub struct LinkExtractor;
-
-impl LinkExtractor {
-    pub fn extract_links(content: &str) -> Vec<String> {
-        let mut links = Vec::new();
-        
-        // 1. WikiLinks [[Target]]
-        for cap in WIKI_LINK_RE.captures_iter(content) {
-            links.push(cap[1].to_string());
-        }
-
-        // 2. Markdown Links [Text](Target)
-        for cap in MD_LINK_RE.captures_iter(content) {
-            links.push(cap[1].to_string());
-        }
-
-        // 3. Doxus Virtual URIs doxus://project/id
-        for cap in DX_URI_RE.captures_iter(content) {
-            links.push(cap[0].to_string());
-        }
-        
-        links
-    }
-}
+pub use doxus_plugin_sdk::links::{LinkExtractor, dx_uri_regex};
 
 pub struct LinkResolver;
 
@@ -43,7 +11,7 @@ impl LinkResolver {
         raw_link: &str,
     ) -> Option<i64> {
         // 1. Handle Doxus Virtual URIs: doxus://{source_project_id}/{source_doc_id}
-        if let Some(caps) = DX_URI_RE.captures(raw_link) {
+        if let Some(caps) = dx_uri_regex().captures(raw_link) {
             let source_project_id = &caps[1];
             let source_doc_id = &caps[2];
 
@@ -154,10 +122,10 @@ mod tests {
 
     #[test]
     fn test_extract_doxus_uris() {
-        let content = "Reference: doxus://my-project/source-123 and doxus://other/path/to/file.md";
+        let content = "Reference: doxus://my-project/source-123 and doxus://AI 리포트 V3/4756242498";
         let links = LinkExtractor::extract_links(content);
         assert!(links.contains(&"doxus://my-project/source-123".to_string()));
-        assert!(links.contains(&"doxus://other/path/to/file.md".to_string()));
+        assert!(links.contains(&"doxus://AI 리포트 V3/4756242498".to_string()));
     }
 
     #[test]

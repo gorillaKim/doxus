@@ -6,6 +6,7 @@ use thiserror::Error;
 
 pub mod wasm_types;
 pub mod path_utils;
+pub mod links;
 
 // ── Shared error type ─────────────────────────────────────────────────────────
 

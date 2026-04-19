@@ -8,59 +8,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 
-/// Helper for tests to parse links without a self_id
-#[cfg(test)]
-fn parse_links(content: &str) -> Vec<String> {
-    parse_links_for_doc(content, "")
-}
-
-/// Same as `parse_links` but also excludes links equal to `self_id`.
-fn parse_links_for_doc(content: &str, self_id: &str) -> Vec<String> {
-    let mut seen = std::collections::HashSet::new();
-    let mut links = Vec::new();
-
-    // [[target]] or [[target|alias]]
-    let mut rest = content;
-    while let Some(start) = rest.find("[[") {
-        rest = &rest[start + 2..];
-        if let Some(end) = rest.find("]]") {
-            let inner = &rest[..end];
-            // take target (before | if alias present)
-            let target = inner.split('|').next().unwrap_or(inner).trim();
-            if !target.is_empty() && target != self_id && seen.insert(target.to_string()) {
-                links.push(target.to_string());
-            }
-            rest = &rest[end + 2..];
-        }
-    }
-
-    // [text](path) — relative only
-    let mut rest = content;
-    while let Some(bracket) = rest.find("](") {
-        // walk back to find matching [
-        let prefix = &rest[..bracket];
-        rest = &rest[bracket + 2..];
-        if let Some(end) = rest.find(')') {
-            let path = rest[..end].trim();
-            rest = &rest[end + 1..];
-            // skip absolute URLs
-            if path.starts_with("http://")
-                || path.starts_with("https://")
-                || path.starts_with("obsidian://")
-                || path.is_empty()
-            {
-                continue;
-            }
-            // must look like a relative path (no scheme)
-            let _ = prefix; // bracket position already consumed
-            if path != self_id && seen.insert(path.to_string()) {
-                links.push(path.to_string());
-            }
-        }
-    }
-
-    links
-}
 
 /// Parse tags from YAML frontmatter and inline #hashtags.
 fn parse_tags(content: &str) -> Vec<String> {
@@ -77,12 +24,50 @@ fn parse_tags(content: &str) -> Vec<String> {
         }
     }
 
-    // Extract inline #tags from body
-    for word in body.split_whitespace() {
+    // Filter out code blocks before extracting tags to avoid picking up code as tags
+    let mut clean_body = String::new();
+    let mut in_code_block = false;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            in_code_block = !in_code_block;
+            continue;
+        }
+        if !in_code_block {
+            // Also skip inline code snippets roughly
+            let mut char_iter = line.chars().peekable();
+            let mut in_inline = false;
+            while let Some(c) = char_iter.next() {
+                if c == '`' {
+                    in_inline = !in_inline;
+                    continue;
+                }
+                if !in_inline {
+                    clean_body.push(c);
+                }
+            }
+            clean_body.push('\n');
+        }
+    }
+
+    // Extract inline #tags from clean_body (stricter rule)
+    for word in clean_body.split_whitespace() {
         if let Some(tag) = word.strip_prefix('#') {
-            let tag = tag.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_');
-            if !tag.is_empty() {
-                tags.push(tag.to_string());
+            // Obsidian tags must start with a letter and contain only alphanumeric, '-', '_', or '/'
+            if let Some(first_char) = tag.chars().next() {
+                if first_char.is_alphabetic() {
+                    let mut clean_tag = String::new();
+                    for c in tag.chars() {
+                        if c.is_alphanumeric() || c == '-' || c == '_' || c == '/' {
+                            clean_tag.push(c);
+                        } else {
+                            break;
+                        }
+                    }
+                    if !clean_tag.is_empty() {
+                        tags.push(clean_tag);
+                    }
+                }
             }
         }
     }
@@ -288,7 +273,7 @@ impl ObsidianPlugin {
             .or_else(|| file_path.file_stem().map(|s| s.to_string_lossy().to_string()));
 
         let tags = parse_tags(&content);
-        let links = parse_links_for_doc(&content, &rel_path);
+        let links = doxus_plugin_sdk::links::LinkExtractor::extract_links(&content);
         let file_meta = file_path.metadata().ok();
         let updated_at = file_meta
             .as_ref()
@@ -445,7 +430,7 @@ impl DocSource for ObsidianPlugin {
         } else {
             (vec![], None, Default::default())
         };
-        let links = parse_links_for_doc(&content, &id.0);
+        let links = doxus_plugin_sdk::links::LinkExtractor::extract_links(&content);
 
         Ok(RawDocument {
             id: id.clone(),
@@ -1091,7 +1076,7 @@ body context";
 
     #[test]
     fn parse_links_self_reference_excluded() {
-        let links = parse_links_for_doc("See [[self]] and [[Other]].", "self");
+        let links = doxus_plugin_sdk::links::LinkExtractor::extract_links("See [[self]] and [[Other]].");
         assert!(!links.contains(&"self".to_string()), "self-ref must be excluded: {links:?}");
         assert!(links.contains(&"Other".to_string()));
     }

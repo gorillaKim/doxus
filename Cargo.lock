@@ -1816,6 +1816,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "doxus-plugin-sdk",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",
@@ -1831,6 +1832,8 @@ name = "doxus-plugin-sdk"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "lazy_static",
+ "regex",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

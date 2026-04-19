@@ -9,6 +9,8 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, optional = true }
+regex = { workspace = true }
+lazy_static = "1.4"
 
 [features]
 default = ["native"]
