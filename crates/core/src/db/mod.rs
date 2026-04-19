@@ -128,6 +128,8 @@ static MIGRATIONS: &[(&str, &str)] = &[
     ("V24__vector_int8_schema", include_str!("migrations/V24__vector_int8_schema.sql")),
     ("V25__force_reindex_after_quantization", include_str!("migrations/V25__force_reindex_after_quantization.sql")),
     ("V26__force_resync", include_str!("migrations/V26__force_resync.sql")),
+    ("V27__hybrid_storage_schema", include_str!("migrations/V27__hybrid_storage_schema.sql")),
+    ("V28__hybrid_storage_repair", include_str!("migrations/V28__hybrid_storage_repair.sql")),
 ];
 
 // ── Test helper ──────────────────────────────────────────────────────────────
