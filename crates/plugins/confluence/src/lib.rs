@@ -107,7 +107,7 @@ macro_rules! log_d {
     ($tag:expr, $($arg:tt)*) => {
         if let Ok(state) = PluginState::load() {
             if state.debug_tags.contains($tag) {
-                println!($($arg)*);
+                eprintln!($($arg)*);
             }
         }
     };
@@ -1047,21 +1047,25 @@ fn resolve_ancestors(
             }
         }
 
-        log_d!("confluence:ancestors", "[Confluence-Ancestors-Debug] - Adding to chain: {} ({})", title, cursor);
-        ancestors.push(title.clone());
-
         if let Some(pid) = parent_id {
             if pid.is_empty() {
                 if stop_id.is_none() {
                     root_title = title.clone();
+                    // Do not add root-level title to ancestors to avoid redundant top folder
                 }
                 break;
             }
             if pid == cursor { break; }
+            
+            // Not root yet, add to ancestors
+            log_d!("confluence:ancestors", "[Confluence-Ancestors-Debug] - Adding to chain: {} ({})", title, cursor);
+            ancestors.push(title.clone());
+            
             cursor = pid;
         } else {
             if stop_id.is_none() {
                 root_title = title.clone();
+                // Do not add root-level title to ancestors to avoid redundant top folder
             }
             break;
         }
