@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { invoke } from '@tauri-apps/api/core';
-import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+// import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { useProjectStore } from '../stores/useProjectStore';
 import { useSearchStore } from '../stores/useSearchStore';
 

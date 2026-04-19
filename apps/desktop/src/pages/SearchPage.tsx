@@ -454,7 +454,7 @@ function DocMetaPanel({
   last_indexed,
   cache_ttl,
   metadata,
-  url,
+  // url,
   source_project_id,
   source_doc_id,
 }: PreviewMeta) {

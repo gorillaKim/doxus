@@ -41,7 +41,7 @@ export function GraphPage() {
   const [selectedProjects, setSelectedProjects] = useState<Set<string>>(new Set());
   const [selectedPlugins, setSelectedPlugins] = useState<Set<string>>(new Set());
   const [hoverNode, setHoverNode] = useState<GraphNode | null>(null);
-  const graphRef = useRef<ForceGraphMethods>();
+  const graphRef = useRef<ForceGraphMethods | undefined>(undefined);
   const navigate = useNavigate();
 
   // 데이터 로드 및 초기 필터 설정
@@ -255,7 +255,7 @@ export function GraphPage() {
         linkDirectionalArrowRelPos={1}
         linkColor={l => l.link_type === 'link' ? COLORS.link : COLORS.tag_rel}
         linkWidth={l => l.link_type === 'link' ? 1 : 0.5}
-        onNodeHover={setHoverNode}
+        onNodeHover={(node: any) => setHoverNode(node as GraphNode | null)}
         onNodeClick={handleNodeClick}
         cooldownTicks={100}
         d3AlphaDecay={0.02}

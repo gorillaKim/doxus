@@ -16,7 +16,7 @@ interface ClaudeMcpStatus {
 
 export default function AgentPage() {
   const [claudeStatus, setClaudeStatus] = useState<ClaudeMcpStatus | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [showPreview, setShowPreview] = useState(false);
   const [previewContent, setPreviewContent] = useState('');
