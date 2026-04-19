@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
-use doxus_agent::cli_detector::{detect_cli, verify_claude_version, CliKind};
+use doxus_agent::cli_detector::{detect_cli, CliKind};
 
 // ── 브리지 응답 (사이드카 → Rust) ───────────────────────────────────────────
 
@@ -179,72 +179,341 @@ pub fn chat_cancel(
     state.sidecar.send_request(&req)
 }
 
-/// Claude/Gemini 연결 상태 확인 (설정 화면용).
+// ── 에이전트 상태 및 CLI 탐색 ───────────────────────────────────────────────
+
 #[tauri::command]
-pub async fn agent_status(provider: String) -> Result<serde_json::Value, String> {
-    let cli = detect_cli();
-
-    let (status, message) = match (provider.as_str(), &cli) {
-        ("claude", CliKind::ClaudeCode { path }) => {
-            let version = verify_claude_version(path)
-                .unwrap_or_else(|| path.display().to_string());
-            ("ok", format!("Claude Code CLI 감지됨: {version}"))
+pub async fn detect_cli_path(provider: String) -> Result<serde_json::Value, String> {
+    let kind = detect_cli();
+    match kind {
+        CliKind::ClaudeCode { path } if provider == "claude" => {
+            Ok(serde_json::json!({
+                "found": true,
+                "cliType": "claude",
+                "cliPath": path.to_string_lossy(),
+            }))
         }
-        ("gemini", CliKind::GeminiCli { path }) => (
-            "ok",
-            format!("Gemini CLI 감지됨: {}", path.display()),
-        ),
-        ("claude", CliKind::GeminiCli { path }) => (
-            "warn",
-            format!("Claude CLI를 찾을 수 없습니다. Gemini CLI: {}", path.display()),
-        ),
-        ("gemini", CliKind::ClaudeCode { path }) => (
-            "warn",
-            format!("Gemini CLI를 찾을 수 없습니다. Claude CLI: {}", path.display()),
-        ),
-        (_, CliKind::None) => (
-            "warn",
-            "AI CLI를 찾을 수 없습니다. Claude Code 또는 Gemini CLI를 설치하세요.".into(),
-        ),
-        (_, CliKind::ClaudeCode { path }) => {
-            let version = verify_claude_version(path)
-                .unwrap_or_else(|| path.display().to_string());
-            ("warn", format!("알 수 없는 provider '{provider}'. Claude Code: {version}"))
+        CliKind::GeminiCli { path } if provider == "gemini" => {
+            Ok(serde_json::json!({
+                "found": true,
+                "cliType": "gemini",
+                "cliPath": path.to_string_lossy(),
+            }))
         }
-        (_, CliKind::GeminiCli { path }) => (
-            "warn",
-            format!("알 수 없는 provider '{provider}'. Gemini CLI: {}", path.display()),
-        ),
-    };
-
-    Ok(serde_json::json!({ "status": status, "message": message }))
+        _ => {
+            // 특정 프로바이더가 감지되지 않았거나 다른 프로바이더가 감지됨
+            Ok(serde_json::json!({
+                "found": false,
+                "cliType": provider,
+                "cliPath": provider,
+            }))
+        }
+    }
 }
 
-/// CLI 경로 반환 (프론트엔드에서 chat_start_session에 전달).
 #[tauri::command]
-pub fn detect_cli_path(provider: String) -> Result<serde_json::Value, String> {
-    let cli = detect_cli();
-    match (provider.as_str(), cli) {
-        ("claude", CliKind::ClaudeCode { path }) | ("", CliKind::ClaudeCode { path }) => {
-            Ok(serde_json::json!({ "found": true, "cliType": "claude", "cliPath": path.to_string_lossy() }))
+pub async fn agent_status(
+    state: tauri::State<'_, crate::AppState>,
+    _provider: String,
+) -> Result<serde_json::Value, String> {
+    let is_running = state.sidecar.is_running();
+    Ok(serde_json::json!({
+        "status": if is_running { "ok" } else { "idle" },
+        "running": is_running,
+    }))
+}
+
+// ── Claude MCP Config Management ──────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClaudeMcpConfig {
+    #[serde(default)]
+    pub mcp_servers: serde_json::Value,
+}
+
+fn get_claude_config_file_path() -> Result<std::path::PathBuf, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
+    
+    // Candidates for Claude Desktop config
+    let paths = vec![
+        std::path::PathBuf::from(&home).join("Library/Application Support/Claude/claude_desktop_config.json"),
+        std::path::PathBuf::from(&home).join(".claude/claude_desktop_config.json"),
+    ];
+
+    for path in paths {
+        if path.exists() {
+            return Ok(path);
         }
-        ("gemini", CliKind::GeminiCli { path }) | ("", CliKind::GeminiCli { path }) => {
-            Ok(serde_json::json!({ "found": true, "cliType": "gemini", "cliPath": path.to_string_lossy() }))
-        }
-        (_, CliKind::ClaudeCode { path }) => {
-            Ok(serde_json::json!({ "found": true, "cliType": "claude", "cliPath": path.to_string_lossy() }))
-        }
-        (_, CliKind::GeminiCli { path }) => {
-            Ok(serde_json::json!({ "found": true, "cliType": "gemini", "cliPath": path.to_string_lossy() }))
-        }
-        _ => Ok(serde_json::json!({ "found": false, "cliType": "", "cliPath": "" })),
     }
+
+    // Default to the official macOS location if neither exists
+    Ok(std::path::PathBuf::from(&home).join("Library/Application Support/Claude/claude_desktop_config.json"))
+}
+
+
+#[tauri::command]
+pub async fn get_claude_mcp_config() -> Result<serde_json::Value, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
+    let desktop_path = get_claude_config_file_path()?;
+    
+    // Check multiple CLI paths
+    let cli_paths = vec![
+        std::path::PathBuf::from(&home).join(".claude.json"),
+        std::path::PathBuf::from(&home).join(".mcp.json"),
+    ];
+
+    let (desktop_connected, desktop_config) = if desktop_path.exists() {
+        let content = std::fs::read_to_string(&desktop_path).unwrap_or_default();
+        let config: serde_json::Value = serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
+        let connected = config.get("mcpServers").and_then(|m| m.get("doxus")).is_some();
+        (connected, Some(config))
+    } else {
+        (false, None)
+    };
+
+    let mut cli_connected = false;
+    let mut cli_config_consolidated = serde_json::json!({"mcpServers": {}});
+
+    for cli_path in cli_paths {
+        if cli_path.exists() {
+            let content = std::fs::read_to_string(&cli_path).unwrap_or_default();
+            let config: serde_json::Value = serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
+            
+            let has_mcp = config.get("mcpServers").and_then(|m| m.get("doxus")).is_some();
+            
+            // For .claude.json, we also check is_enabled
+            let is_enabled = if cli_path.to_string_lossy().contains(".claude.json") {
+                config.get("enabledMcpjsonServers")
+                    .and_then(|a| a.as_array())
+                    .map(|arr| arr.iter().any(|v| v.as_str() == Some("doxus")))
+                    .unwrap_or(false)
+            } else {
+                true // .mcp.json is usually auto-enabled
+            };
+
+            if has_mcp && is_enabled {
+                cli_connected = true;
+                // Keep the first config found or merge? Let's just keep the latest for display.
+                cli_config_consolidated = config;
+            }
+        }
+    }
+
+    Ok(serde_json::json!({
+        "desktop": {
+            "connected": desktop_connected,
+            "path": desktop_path.to_string_lossy(),
+            "config": desktop_config
+        },
+        "cli": {
+            "connected": cli_connected,
+            "path": "~/.claude.json, ~/.mcp.json",
+            "config": cli_config_consolidated
+        }
+    }))
+}
+
+#[tauri::command]
+pub async fn upsert_claude_mcp_config(target: String) -> Result<(), String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
+    
+    let paths = match target.as_str() {
+        "desktop" => vec![get_claude_config_file_path()?],
+        "cli" => vec![
+            std::path::PathBuf::from(&home).join(".claude.json"),
+            std::path::PathBuf::from(&home).join(".mcp.json"),
+        ],
+        _ => return Err("Invalid target".to_string()),
+    };
+
+    let mcp_path = find_doxus_mcp()
+        .ok_or_else(|| "doxus-mcp binary not found. Please ensure the app is correctly installed.".to_string())?
+        .to_string_lossy()
+        .to_string();
+
+    for path in paths {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create config directory: {e}"))?;
+        }
+
+        let mut config: serde_json::Value = if path.exists() {
+            let content = std::fs::read_to_string(&path).map_err(|e| format!("Failed to read config: {e}"))?;
+            serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+        } else {
+            serde_json::json!({})
+        };
+
+        // Ensure mcpServers exists
+        if config.get("mcpServers").is_none() {
+            if let Some(obj) = config.as_object_mut() {
+                obj.insert("mcpServers".to_string(), serde_json::json!({}));
+            }
+        }
+
+        if let Some(mcp_servers) = config.get_mut("mcpServers").and_then(|m| m.as_object_mut()) {
+            mcp_servers.insert("doxus".to_string(), serde_json::json!({
+                "command": mcp_path.clone(),
+                "args": [],
+                "type": "stdio"
+            }));
+        }
+
+        // Special for CLI-related files: ensure "doxus" is in enabledMcpjsonServers if it exists
+        // (Claude Code uses this field in .claude.json)
+        if target == "cli" && path.to_string_lossy().contains(".claude.json") {
+            if config.get("enabledMcpjsonServers").is_none() {
+                if let Some(obj) = config.as_object_mut() {
+                    obj.insert("enabledMcpjsonServers".to_string(), serde_json::json!([]));
+                }
+            }
+            if let Some(arr) = config.get_mut("enabledMcpjsonServers").and_then(|a| a.as_array_mut()) {
+                if !arr.iter().any(|v| v.as_str() == Some("doxus")) {
+                    arr.push(serde_json::json!("doxus"));
+                }
+            }
+        }
+
+        let content = serde_json::to_string_pretty(&config).map_err(|e| format!("Failed to serialize config: {e}"))?;
+        std::fs::write(&path, content).map_err(|e| format!("Failed to write config: {e}"))?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn remove_claude_mcp_config(target: String) -> Result<(), String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
+
+    let paths = match target.as_str() {
+        "desktop" => vec![get_claude_config_file_path()?],
+        "cli" => vec![
+            std::path::PathBuf::from(&home).join(".claude.json"),
+            std::path::PathBuf::from(&home).join(".mcp.json"),
+        ],
+        _ => return Err("Invalid target".to_string()),
+    };
+
+    for path in paths {
+        if !path.exists() {
+            continue;
+        }
+
+        let content = std::fs::read_to_string(&path).map_err(|e| format!("Failed to read config: {e}"))?;
+        let mut config: serde_json::Value = serde_json::from_str(&content).map_err(|e| format!("Failed to parse config: {e}"))?;
+
+        let mut modified = false;
+
+        if let Some(mcp_servers) = config.get_mut("mcpServers").and_then(|m| m.as_object_mut()) {
+            if mcp_servers.remove("doxus").is_some() {
+                modified = true;
+            }
+        }
+
+        if target == "cli" && path.to_string_lossy().contains(".claude.json") {
+            if let Some(arr) = config.get_mut("enabledMcpjsonServers").and_then(|a| a.as_array_mut()) {
+                let initial_len = arr.len();
+                arr.retain(|v| v.as_str() != Some("doxus"));
+                if arr.len() != initial_len {
+                    modified = true;
+                }
+            }
+        }
+
+        if modified {
+            let content = serde_json::to_string_pretty(&config).map_err(|e| format!("Failed to serialize config: {e}"))?;
+            std::fs::write(&path, content).map_err(|e| format!("Failed to write config: {e}"))?;
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn generate_global_claude_md() -> Result<(), String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
+    let claude_dir = std::path::PathBuf::from(home).join(".claude");
+    
+    if !claude_dir.exists() {
+        std::fs::create_dir_all(&claude_dir).map_err(|e| e.to_string())?;
+    }
+    
+    let path = claude_dir.join("CLAUDE.md");
+    let instr_header = "## AI 에이전트 도구 (Doxus)";
+    let instr_body = r#"이 프로젝트의 지식과 문서는 Doxus에 의해 인덱싱되어 있습니다. 에이전트는 다음 MCP 도구를 사용하여 문서를 검색하고 맥락을 파악할 수 있습니다:
+- `doxus_search`: 하이브리드 검색을 통해 관련 문서 및 코드 조각을 찾습니다.
+- `doxus_get_document`: 문서의 전체 내용을 읽어옵니다.
+- `doxus_agent_summary`: 현재 인덱싱된 프로젝트의 전체 상태와 주요 태그를 파악합니다.
+- `doxus_get_backlinks`: 문서 간의 연관 관계 및 참고 자료를 추적합니다.
+
+지식 검색이 필요한 경우 가장 먼저 `doxus_search`를 호출하십시오."#;
+
+    let mut content = if path.exists() {
+        std::fs::read_to_string(&path).map_err(|e| format!("Failed to read global CLAUDE.md: {e}"))?
+    } else {
+        "# Global Instructions for AI Agents\n\n".to_string()
+    };
+
+    if content.contains(instr_header) {
+        return Ok(()); // Already configured
+    }
+
+    content.push_str("\n\n");
+    content.push_str(instr_header);
+    content.push_str("\n");
+    content.push_str(instr_body);
+
+    std::fs::write(&path, content).map_err(|e| format!("Failed to write global CLAUDE.md: {e}"))?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn generate_project_claude_md(path: String) -> Result<(), String> {
+    let project_path = std::path::PathBuf::from(path);
+    if !project_path.exists() {
+        return Err("Project path does not exist".to_string());
+    }
+
+    let claude_md_path = project_path.join("CLAUDE.md");
+    let instr_header = "## AI 에이전트 도구 (Doxus)";
+    let instr_body = r#"이 프로젝트의 지식과 문서는 Doxus에 의해 인덱싱되어 있습니다. 에이전트는 다음 MCP 도구를 사용하여 문서를 검색하고 맥락을 파악할 수 있습니다:
+- `doxus_search`: 하이브리드 검색을 통해 관련 문서 및 코드 조각을 찾습니다.
+- `doxus_get_document`: 문서의 전체 내용을 읽어옵니다.
+- `doxus_agent_summary`: 현재 인덱싱된 프로젝트의 전체 상태와 주요 태그를 파악합니다.
+- `doxus_get_backlinks`: 문서 간의 연관 관계 및 참고 자료를 추적합니다.
+
+지식 검색이 필요한 경우 가장 먼저 `doxus_search`를 호출하십시오."#;
+
+    let mut content = if claude_md_path.exists() {
+        std::fs::read_to_string(&claude_md_path).map_err(|e| format!("Failed to read CLAUDE.md: {e}"))?
+    } else {
+        "# Project Instructions\n\n".to_string()
+    };
+
+    if content.contains(instr_header) {
+        return Ok(()); // Already configured
+    }
+
+    content.push_str("\n\n");
+    content.push_str(instr_header);
+    content.push_str("\n");
+    content.push_str(instr_body);
+
+    std::fs::write(&claude_md_path, content).map_err(|e| format!("Failed to write CLAUDE.md: {e}"))?;
+
+    Ok(())
 }
 
 // ── 헬퍼 ─────────────────────────────────────────────────────────────────────
 
 fn find_doxus_mcp() -> Option<std::path::PathBuf> {
-    // 1. exe 옆 (릴리즈 번들)
+    // 0. macOS standard installation path
+    #[cfg(target_os = "macos")]
+    {
+        let installed = std::path::PathBuf::from("/Applications/doxus.app/Contents/MacOS/doxus-mcp");
+        if installed.exists() { return Some(installed); }
+    }
+
+    // 1. Next to the executable (inside release bundle)
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let candidate = dir.join("doxus-mcp");

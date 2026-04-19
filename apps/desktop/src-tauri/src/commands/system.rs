@@ -45,11 +45,11 @@ pub async fn get_resource_usage() -> Result<ResourceUsage, String> {
     // System-wide info
     let total_memory = sys.total_memory();
     
-    // Disk info: ~/.doxus
+    // Disk info: ~/.doxus/db (where the Knowledge Index grows)
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let doxus_dir = PathBuf::from(&home).join(".doxus");
-    let disk_usage = if doxus_dir.exists() {
-        get_dir_size(doxus_dir)
+    let doxus_db_dir = PathBuf::from(&home).join(".doxus/db");
+    let disk_usage = if doxus_db_dir.exists() {
+        get_dir_size(doxus_db_dir)
     } else {
         0
     };
