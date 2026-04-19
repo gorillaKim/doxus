@@ -165,6 +165,7 @@ fn main() {
             doxus_desktop_lib::commands::agent::agent_status,
             doxus_desktop_lib::commands::agent::detect_cli_path,
             doxus_desktop_lib::commands::agent::get_claude_mcp_config,
+            doxus_desktop_lib::commands::agent::get_claude_md_template,
             doxus_desktop_lib::commands::agent::upsert_claude_mcp_config,
             doxus_desktop_lib::commands::agent::remove_claude_mcp_config,
             doxus_desktop_lib::commands::agent::generate_project_claude_md,

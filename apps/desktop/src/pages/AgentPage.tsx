@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 interface McpStatus {
   connected: boolean;
@@ -16,6 +18,8 @@ export default function AgentPage() {
   const [claudeStatus, setClaudeStatus] = useState<ClaudeMcpStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [showPreview, setShowPreview] = useState(false);
+  const [previewContent, setPreviewContent] = useState('');
 
   const fetchClaudeStatus = async () => {
     try {
@@ -50,8 +54,25 @@ export default function AgentPage() {
     }
   };
 
+  const handleOpenPreview = async () => {
+    try {
+      const content = await invoke<string>('get_claude_md_template');
+      setPreviewContent(content);
+      setShowPreview(true);
+    } catch (e) {
+      alert(`미리보기 로드 실패: ${String(e)}`);
+    }
+  };
+
   return (
-    <div className="flex flex-col gap-8 max-w-5xl mx-auto">
+    <div className="flex flex-col gap-8 max-w-5xl mx-auto pb-12">
+      {showPreview && (
+        <PreviewModal 
+          content={previewContent} 
+          onClose={() => setShowPreview(false)} 
+        />
+      )}
+
       {/* Header */}
       <div className="flex flex-col gap-2">
         <h1 className="text-3xl font-bold text-white tracking-tight flex items-center gap-3">
@@ -113,16 +134,6 @@ export default function AgentPage() {
                 />
               </button>
             </div>
-            {claudeStatus?.desktop.connected && claudeStatus.desktop.config?.mcpServers?.doxus?.command && (
-              <div className="px-3 py-2 bg-indigo-500/5 rounded-lg border border-indigo-500/10 flex flex-col gap-1">
-                <div className="flex items-center gap-2">
-                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                  <span className="text-[10px] text-indigo-300 font-mono truncate">
-                    Binary: {claudeStatus.desktop.config.mcpServers.doxus.command}
-                  </span>
-                </div>
-              </div>
-            )}
           </div>
         </div>
 
@@ -175,26 +186,6 @@ export default function AgentPage() {
                 />
               </button>
             </div>
-            {claudeStatus?.cli.connected && claudeStatus.cli.config?.mcpServers?.doxus?.command && (
-               <div className="px-3 py-2 bg-indigo-500/5 rounded-lg border border-indigo-500/10 flex flex-col gap-1">
-                 <div className="flex items-center gap-2">
-                   <div className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                   <span className="text-[10px] text-indigo-300 font-mono truncate">
-                     Binary: {claudeStatus.cli.config.mcpServers.doxus.command}
-                   </span>
-                 </div>
-                 <button 
-                  onClick={() => {
-                    const cmd = `claude mcp add doxus -- "${claudeStatus.cli.config.mcpServers.doxus.command}"`;
-                    navigator.clipboard.writeText(cmd);
-                    alert('CLI 명령어가 클립보드에 복사되었습니다.');
-                  }}
-                  className="text-[10px] text-indigo-400 hover:text-indigo-300 underline text-left"
-                >
-                  수동 설정 명령어 복사
-                </button>
-               </div>
-            )}
           </div>
         </div>
 
@@ -216,45 +207,69 @@ export default function AgentPage() {
              <span className="text-xs text-gray-600 font-semibold uppercase tracking-widest">COMING SOON</span>
           </div>
         </div>
-
-        {/* Codex Placeholder */}
-        <div className="bg-gray-900/30 border border-dashed border-white/10 rounded-2xl p-6 flex flex-col gap-4 opacity-70 grayscale hover:grayscale-0 transition-all">
-          <div className="flex items-center gap-3">
-            <div className="w-12 h-12 bg-emerald-500/10 rounded-xl flex items-center justify-center text-2xl">
-              💻
-            </div>
-            <div>
-              <h2 className="text-xl font-semibold text-gray-300">OpenAI Codex</h2>
-              <p className="text-xs text-gray-500">GitHub Copilot / Cursor</p>
-            </div>
-          </div>
-          <p className="text-sm text-gray-400 italic leading-relaxed">
-             Cursor 및 VS Code 확장 프로그램을 통한 코드 베이스 지식 연동을 준비 중입니다.
-          </p>
-           <div className="mt-auto">
-             <span className="text-xs text-gray-600 font-semibold uppercase tracking-widest">COMING SOON</span>
-          </div>
-        </div>
       </div>
 
       {/* Note Section */}
-      <div className="bg-indigo-500/5 border border-indigo-500/10 rounded-2xl p-6">
-        <h3 className="text-indigo-300 font-semibold mb-2 flex items-center gap-2">
-          <span>💡</span> Why connect an agent?
-        </h3>
-        <p className="text-sm text-gray-400 leading-relaxed">
-          에이전트를 통해 Doxus의 수만 개의 문서를 대화형으로 질문하고, 복잡한 지식 간의 연결고리를 자동으로 찾아낼 수 있습니다.
-          특히 <code className="text-indigo-400">doxus_agent_summary</code> 도구는 에이전트에게 전체 지식 베이스의 지도를 제공하여 더 정확한 답변을 유도합니다.
-        </p>
+      <div className="bg-indigo-500/5 border border-indigo-500/10 rounded-2xl p-6 flex items-start gap-4">
+        <div className="text-2xl mt-1">💡</div>
+        <div className="flex flex-col gap-2">
+          <h3 className="text-indigo-300 font-semibold">동작 원리 및 활용 팁</h3>
+          <p className="text-sm text-gray-400 leading-relaxed">
+            Doxus의 에이전트 브리지는 로컬 프로젝트 폴더의 <code className="text-indigo-400 font-mono text-xs">CLAUDE.md</code> 파일을 통해 에이전트에게 지식을 습득하는 법을 가르칩니다.
+            에이전트는 사용자가 작성한 문서를 읽고, 그 안에 포함된 링크와 연결고리를 스스로 추적하며 답변의 정확도를 높입니다.
+          </p>
+          <button 
+            onClick={handleOpenPreview}
+            className="text-xs text-indigo-400 hover:text-indigo-300 font-bold flex items-center gap-1 transition-colors w-fit pt-2"
+          >
+            🔍 삽입되는 지침 내용 미리보기
+          </button>
+        </div>
       </div>
 
       {/* Project Agent Onboarding Section */}
-      <ProjectAgentSection />
+      <ProjectAgentSection onOpenPreview={handleOpenPreview} />
     </div>
   );
 }
 
-function ProjectAgentSection() {
+function PreviewModal({ content, onClose }: { content: string; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-xl z-[100] flex items-center justify-center p-8 animate-in fade-in duration-300">
+      <div className="bg-gray-900 border border-white/10 rounded-3xl w-full max-w-4xl max-h-[85vh] flex flex-col shadow-2xl animate-in zoom-in-95 duration-300">
+        <div className="flex items-center justify-between p-6 border-b border-white/5">
+          <div className="flex items-center gap-3">
+            <span className="text-2xl">📝</span>
+            <h2 className="text-xl font-bold text-white">CLAUDE.md 삽입 지침 미리보기</h2>
+          </div>
+          <button 
+            onClick={onClose}
+            className="w-10 h-10 flex items-center justify-center rounded-full hover:bg-white/5 text-gray-500 hover:text-white transition-colors"
+          >
+            ✕
+          </button>
+        </div>
+        
+        <div className="flex-1 overflow-y-auto p-8 prose prose-invert prose-indigo max-w-none">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            {content}
+          </ReactMarkdown>
+        </div>
+
+        <div className="p-6 border-t border-white/5 flex justify-end">
+          <button 
+            onClick={onClose}
+            className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-xl transition-all active:scale-95"
+          >
+            확인 및 닫기
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProjectAgentSection({ onOpenPreview }: { onOpenPreview: () => void }) {
   const [projects, setProjects] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionId, setActionId] = useState<string | null>(null);
@@ -306,18 +321,25 @@ function ProjectAgentSection() {
         <div className="flex flex-col gap-1">
           <h2 className="text-xl font-bold text-white tracking-tight">Project Agent Onboarding</h2>
           <p className="text-sm text-gray-500">
-            로컬 프로젝트 폴더에 에이전트 지침서(<code className="text-indigo-400">CLAUDE.md</code>)를 생성하여 
-            터미널 기반 에이전트가 Doxus 도구를 더 잘 활용하도록 돕습니다.
+            로컬 프로젝트 폴더에 에이전트 지침서(<code className="text-indigo-400 font-mono text-xs">CLAUDE.md</code>)를 생성합니다.
           </p>
         </div>
-        <button
-          onClick={handleGenerateGlobalGuide}
-          disabled={actionId === 'global'}
-          className="flex-shrink-0 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-sm font-bold transition-all shadow-lg shadow-indigo-500/20 disabled:opacity-50 flex items-center gap-2 group"
-        >
-          <span className="group-hover:scale-110 transition-transform">🌐</span>
-          {actionId === 'global' ? '글로벌 설정 중...' : '글로벌 가이드 적용'}
-        </button>
+        <div className="flex items-center gap-3">
+          <button 
+            onClick={onOpenPreview}
+            className="px-4 py-2 bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white rounded-xl text-xs font-bold transition-all border border-white/5"
+          >
+            가이드 미리보기
+          </button>
+          <button
+            onClick={handleGenerateGlobalGuide}
+            disabled={actionId === 'global'}
+            className="flex-shrink-0 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-sm font-bold transition-all shadow-lg shadow-indigo-500/20 disabled:opacity-50 flex items-center gap-2 group"
+          >
+            <span className="group-hover:scale-110 transition-transform">🌐</span>
+            {actionId === 'global' ? '글로벌 설정 중...' : '글로벌 가이드 적용'}
+          </button>
+        </div>
       </div>
 
       <div className="bg-gray-900/50 border border-white/5 rounded-2xl overflow-hidden">
@@ -353,7 +375,7 @@ function ProjectAgentSection() {
             {projects.length === 0 && (
               <tr>
                 <td colSpan={3} className="px-6 py-8 text-center text-gray-500 italic">
-                  연동 가이드를 생성할 로컬 프로젝트가 없습니다.
+                  연동 가이드 생성 가능 프로젝트가 없습니다.
                 </td>
               </tr>
             )}

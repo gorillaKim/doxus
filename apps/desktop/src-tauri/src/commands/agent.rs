@@ -38,6 +38,30 @@ pub struct BridgeResponse {
     pub retryable: Option<bool>,
 }
 
+// ── 가이드 템플릿 ───────────────────────────────────────────────────────────
+
+pub const CLAUDE_MD_INSTRUCTIONS: &str = r#"이 프로젝트의 지식과 문서는 Doxus 지식 그래프에 의해 관리되고 있습니다. 에이전트는 다음 도구를 사용하여 지식의 파편들을 연결하고 깊이 있는 리서치를 수행할 수 있습니다.
+
+### 🛠️ 핵심 탐색 도구 (Core Tools)
+- `doxus_search`: 하이브리드 검색(키워드+의미론)을 통해 관련 문맥을 찾습니다. 
+- `doxus_get_document`: 찾은 문서의 전체 내용을 읽습니다.
+- `doxus_agent_summary`: 지식 베이스의 전체적인 지도와 주요 태그를 파악하여 탐색의 시작점을 정합니다.
+
+### 🔗 지식 관계 탐색 (Graph & Links)
+단순 검색만으로는 놓치기 쉬운 맥락을 다음 도구로 추적하십시오:
+- `doxus_get_links`: 현재 문서가 인용하거나 참조하고 있는 '앞으로의 연결고리'를 찾습니다.
+- `doxus_get_backlinks`: 현재 문서를 참조하고 있는 '뒤로의 연결고리'를 찾아 영향도 분석을 수행합니다.
+- `doxus_find_related`: 그래프 위상과 태그 유사도를 기반으로 연관된 문서를 추천받습니다.
+
+### 💡 탐색 시나리오 (Scenarios)
+- **리서치 심화 (Deep Dive)**: 문서 A를 읽은 후 그 핵심 근거가 되는 다른 문서를 찾으려면 `doxus_get_links`를 호출하십시오.
+- **영향도 평가 (Impact Analysis)**: 코드 수정 시, 해당 사양이 정의된 문서를 읽고 `doxus_get_backlinks`를 조회하여 이 변경이 영향을 줄 수 있는 다른 설계나 기획을 점검하십시오.
+- **프로젝트 횡단 탐색 (Cross-Project)**: 문서 내에서 `doxus://ProjectName/DocID` 형태의 링크를 발견하면, 해당 프로젝트명을 인자로 `doxus_get_document`를 호출하여 프로젝트를 넘나드는 탐색을 수행하십시오.
+
+### ⚡ 효율적인 탐색 팁
+- 문서가 너무 길다면 `doxus_get_toc`로 목차를 먼저 보고, `doxus_get_section`으로 필요한 부분만 집중적으로 읽어 토큰을 절약하십시오.
+- 지식 탐색의 시작은 `doxus_search`로 하되, 발견된 문서들 사이의 **연결(Links)**을 무시하지 마십시오."#;
+
 // ── 배경 리더 ────────────────────────────────────────────────────────────────
 
 pub fn spawn_background_reader(
@@ -438,13 +462,7 @@ pub async fn generate_global_claude_md() -> Result<(), String> {
     
     let path = claude_dir.join("CLAUDE.md");
     let instr_header = "## AI 에이전트 도구 (Doxus)";
-    let instr_body = r#"이 프로젝트의 지식과 문서는 Doxus에 의해 인덱싱되어 있습니다. 에이전트는 다음 MCP 도구를 사용하여 문서를 검색하고 맥락을 파악할 수 있습니다:
-- `doxus_search`: 하이브리드 검색을 통해 관련 문서 및 코드 조각을 찾습니다.
-- `doxus_get_document`: 문서의 전체 내용을 읽어옵니다.
-- `doxus_agent_summary`: 현재 인덱싱된 프로젝트의 전체 상태와 주요 태그를 파악합니다.
-- `doxus_get_backlinks`: 문서 간의 연관 관계 및 참고 자료를 추적합니다.
-
-지식 검색이 필요한 경우 가장 먼저 `doxus_search`를 호출하십시오."#;
+    let instr_body = CLAUDE_MD_INSTRUCTIONS;
 
     let mut content = if path.exists() {
         std::fs::read_to_string(&path).map_err(|e| format!("Failed to read global CLAUDE.md: {e}"))?
@@ -467,6 +485,11 @@ pub async fn generate_global_claude_md() -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn get_claude_md_template() -> Result<String, String> {
+    Ok(CLAUDE_MD_INSTRUCTIONS.to_string())
+}
+
+#[tauri::command]
 pub async fn generate_project_claude_md(path: String) -> Result<(), String> {
     let project_path = std::path::PathBuf::from(path);
     if !project_path.exists() {
@@ -475,13 +498,7 @@ pub async fn generate_project_claude_md(path: String) -> Result<(), String> {
 
     let claude_md_path = project_path.join("CLAUDE.md");
     let instr_header = "## AI 에이전트 도구 (Doxus)";
-    let instr_body = r#"이 프로젝트의 지식과 문서는 Doxus에 의해 인덱싱되어 있습니다. 에이전트는 다음 MCP 도구를 사용하여 문서를 검색하고 맥락을 파악할 수 있습니다:
-- `doxus_search`: 하이브리드 검색을 통해 관련 문서 및 코드 조각을 찾습니다.
-- `doxus_get_document`: 문서의 전체 내용을 읽어옵니다.
-- `doxus_agent_summary`: 현재 인덱싱된 프로젝트의 전체 상태와 주요 태그를 파악합니다.
-- `doxus_get_backlinks`: 문서 간의 연관 관계 및 참고 자료를 추적합니다.
-
-지식 검색이 필요한 경우 가장 먼저 `doxus_search`를 호출하십시오."#;
+    let instr_body = CLAUDE_MD_INSTRUCTIONS;
 
     let mut content = if claude_md_path.exists() {
         std::fs::read_to_string(&claude_md_path).map_err(|e| format!("Failed to read CLAUDE.md: {e}"))?
