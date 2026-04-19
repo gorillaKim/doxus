@@ -169,9 +169,9 @@ fn main() {
             doxus_desktop_lib::commands::agent::remove_claude_mcp_config,
             doxus_desktop_lib::commands::agent::generate_project_claude_md,
             doxus_desktop_lib::commands::agent::generate_global_claude_md,
-            doxus_desktop_lib::commands::settings::save_settings,
             doxus_desktop_lib::commands::settings::load_settings,
             doxus_desktop_lib::commands::system::get_resource_usage,
+            doxus_desktop_lib::commands::graph::get_graph_data,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
