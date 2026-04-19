@@ -130,6 +130,7 @@ static MIGRATIONS: &[(&str, &str)] = &[
     ("V26__force_resync", include_str!("migrations/V26__force_resync.sql")),
     ("V27__hybrid_storage_schema", include_str!("migrations/V27__hybrid_storage_schema.sql")),
     ("V28__hybrid_storage_repair", include_str!("migrations/V28__hybrid_storage_repair.sql")),
+    ("V29__add_source_project_id", include_str!("migrations/V29__add_source_project_id.sql")),
 ];
 
 // ── Test helper ──────────────────────────────────────────────────────────────

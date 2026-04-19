@@ -202,7 +202,17 @@ fn split_paragraphs_with_offsets(text: &str) -> Vec<(&str, usize)> {
     result
 }
 
-/// Return the last `n` chars of `s` (aligned to char boundary, starting at whitespace when possible).
+#[allow(dead_code)]
+/// Return the last `n` chars of `s` (aligned to char boundary).
+fn tail_chars(s: &str, n: usize) -> &str {
+    let char_count = s.chars().count();
+    if char_count <= n {
+        return s;
+    }
+    let skip = char_count - n;
+    let byte_offset = s.char_indices().nth(skip).map(|(i, _)| i).unwrap_or(0);
+    &s[byte_offset..]
+}
 
 
 #[cfg(test)]

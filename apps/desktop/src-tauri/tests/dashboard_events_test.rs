@@ -88,7 +88,7 @@ async fn sync_loop_emits_progress_event() {
     // interval_secs = 0 → always due
     let handle = spawn_sync_loop_with_sink(
         Arc::clone(&conn),
-        None,
+        Arc::new(Mutex::new(None)),
         Arc::clone(&plugin_manager),
         0,
         sink.clone(),
@@ -131,7 +131,7 @@ async fn sync_loop_emits_complete_event() {
 
     let handle = spawn_sync_loop_with_sink(
         Arc::clone(&conn),
-        None,
+        Arc::new(Mutex::new(None)),
         Arc::clone(&plugin_manager),
         0,
         sink.clone(),
@@ -157,7 +157,7 @@ async fn sync_loop_noop_sink_does_not_panic() {
     let (conn, _dir) = open_test_db();
     let handle = spawn_sync_loop_with_sink(
         Arc::clone(&conn),
-        None,
+        Arc::new(Mutex::new(None)),
         make_plugin_manager(),
         1,
         NoopEventSink,
@@ -177,8 +177,8 @@ fn insert_obsidian_instance(conn: &Connection, vault_path: &str) {
     )
     .unwrap();
     conn.execute(
-        "INSERT OR IGNORE INTO projects(name, display_name, path, created_at, updated_at)
-         VALUES ('obsidian-proj', 'Obsidian', ?1, unixepoch(), unixepoch())",
+        "INSERT OR IGNORE INTO projects(name, display_name, path, source_project_id, created_at, updated_at)
+         VALUES ('obsidian-proj', 'Obsidian', ?1, 'obsidian-proj', unixepoch(), unixepoch())",
         rusqlite::params![vault_path],
     )
     .unwrap();

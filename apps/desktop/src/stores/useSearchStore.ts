@@ -18,6 +18,7 @@ export interface SearchHit {
   cache_ttl?: number;
   metadata: Record<string, any>;
   url: string | null;
+  source_project_id: string;
 }
 
 export interface AllDocument {
@@ -32,6 +33,7 @@ export interface AllDocument {
   updated_at?: number;
   last_indexed?: number;
   cache_ttl?: number;
+  source_project_id?: string;
 }
 
 export interface SearchFilters {

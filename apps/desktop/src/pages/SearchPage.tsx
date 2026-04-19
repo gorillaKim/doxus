@@ -35,6 +35,20 @@ interface DocEntry {
   cache_ttl?: number;
   metadata?: Record<string, any>;
   url?: string | null;
+  source_project_id: string;
+}
+
+interface PreviewMeta {
+  tags: string[];
+  aliases: string[];
+  created_at: number | null;
+  updated_at: number | null;
+  last_indexed: number | null;
+  cache_ttl: number | null;
+  metadata: Record<string, unknown>;
+  url: string | null;
+  source_project_id: string;
+  source_doc_id: string;
 }
 
 function hitToEntry(hit: SearchHit): DocEntry {
@@ -56,6 +70,7 @@ function hitToEntry(hit: SearchHit): DocEntry {
     cache_ttl: hit.cache_ttl,
     metadata: hit.metadata,
     url: hit.url,
+    source_project_id: hit.source_project_id,
   };
 }
 
@@ -74,6 +89,7 @@ function allDocToEntry(doc: AllDocument): DocEntry {
     last_indexed: doc.last_indexed,
     cache_ttl: doc.cache_ttl,
     url: doc.url,
+    source_project_id: doc.source_project_id || '',
   };
 }
 
@@ -429,15 +445,18 @@ function formatDuration(seconds: number): string {
   if (mins > 0) return `${mins}분 남음`;
   return `${seconds}초 남음`;
 }
-
 function DocMetaPanel({
-  tags, aliases, created_at, updated_at, last_indexed, cache_ttl, metadata,
-}: {
-  tags: string[]; aliases: string[];
-  created_at: number | null; updated_at: number | null;
-  last_indexed: number | null; cache_ttl: number | null;
-  metadata: Record<string, unknown>;
-}) {
+  tags,
+  aliases,
+  created_at,
+  updated_at,
+  last_indexed,
+  cache_ttl,
+  metadata,
+  url,
+  source_project_id,
+  source_doc_id,
+}: PreviewMeta) {
   const displayMeta = Object.entries(metadata).filter(([k]) => k !== 'links');
   
   const now = Math.floor(Date.now() / 1000);
@@ -447,6 +466,26 @@ function DocMetaPanel({
 
   return (
     <div className="flex flex-col gap-5">
+      {/* doxus:// 가상 링크 복사 영역 */}
+      <div className="bg-indigo-500/10 border border-indigo-500/20 rounded-xl p-3 flex flex-col gap-2">
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] text-indigo-400 font-bold uppercase tracking-wider">Doxus Link</span>
+          <button
+            onClick={() => {
+              const link = `doxus://${source_project_id}/${source_doc_id}`;
+              navigator.clipboard.writeText(link);
+              alert('Doxus 링크가 복사되었습니다!');
+            }}
+            className="text-[10px] bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 px-2 py-1 rounded-lg border border-indigo-500/30 transition-colors"
+          >
+            Copy URI
+          </button>
+        </div>
+        <div className="text-[11px] text-gray-400 font-mono break-all bg-black/30 p-2 rounded-lg border border-white/5">
+          doxus://{source_project_id}/{source_doc_id}
+        </div>
+      </div>
+
       {/* 기본 정보 */}
       <div className="grid grid-cols-2 gap-4">
         <div className="bg-white/[0.03] rounded-xl p-3 border border-white/5">
@@ -644,13 +683,7 @@ export function SearchPage() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [selectedDoc, setSelectedDoc] = useState<DocEntry | null>(null);
   const [previewContent, setPreviewContent] = useState<string | null>(null);
-  const [previewMeta, setPreviewMeta] = useState<{
-    tags: string[]; aliases: string[];
-    created_at: number | null; updated_at: number | null;
-    last_indexed: number | null; cache_ttl: number | null;
-    metadata: Record<string, unknown>;
-    url: string | null;
-  } | null>(null);
+  const [previewMeta, setPreviewMeta] = useState<PreviewMeta | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [refreshToast, setRefreshToast] = useState<string | null>(null);
@@ -713,6 +746,8 @@ export function SearchPage() {
         last_indexed?: number | null; cache_ttl?: number | null;
         metadata?: Record<string, unknown>;
         url?: string | null;
+        source_project_id?: string;
+        source_doc_id?: string;
       }>('get_document_content', {
         filePath: identifier,
         projectName: doc.project_name || undefined,
@@ -728,6 +763,8 @@ export function SearchPage() {
         cache_ttl: result.cache_ttl ?? doc.cache_ttl ?? null,
         metadata: result.metadata ?? {},
         url: result.url ?? doc.url ?? null,
+        source_project_id: result.source_project_id ?? doc.source_project_id ?? '',
+        source_doc_id: result.source_doc_id ?? doc.source_doc_id ?? '',
       });
       if (forceRefresh) {
         if (refreshToastTimer.current) clearTimeout(refreshToastTimer.current);
@@ -962,6 +999,9 @@ export function SearchPage() {
                         last_indexed={previewMeta.last_indexed}
                         cache_ttl={previewMeta.cache_ttl}
                         metadata={previewMeta.metadata}
+                        url={previewMeta.url}
+                        source_project_id={previewMeta.source_project_id}
+                        source_doc_id={previewMeta.source_doc_id}
                       />
                     )}
                     

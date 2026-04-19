@@ -33,21 +33,23 @@ mod tests {
     use super::*;
     use rusqlite::{params, Connection};
     use serde_json::json;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     fn test_server() -> McpServer {
         let conn = Connection::open_in_memory().expect("in-memory db");
         doxus_core::db::apply_pragmas(&conn).expect("pragmas");
         doxus_core::db::migrate(&conn).expect("migrate");
         let pm = Arc::new(doxus_core::plugin::PluginManager::new(std::path::PathBuf::from("/tmp/doxus-pm")));
-        McpServer::new(conn, None, pm, std::path::PathBuf::from("/tmp/doxus-test-plugins"))
+        McpServer::new(Arc::new(Mutex::new(conn)), None, pm, std::path::PathBuf::from("/tmp/doxus-test-plugins"))
     }
 
     fn insert_project(server: &McpServer, name: &str, path: &str) {
         server
             .conn
+            .lock()
+            .unwrap()
             .execute(
-                "INSERT INTO projects (name, display_name, path, created_at, updated_at) VALUES (?1, ?1, ?2, 0, 0)",
+                "INSERT INTO projects (name, display_name, path, source_project_id, created_at, updated_at) VALUES (?1, ?1, ?2, ?1, 0, 0)",
                 params![name, path],
             )
             .unwrap();
@@ -108,6 +110,8 @@ mod tests {
         assert!(resp.error.is_none());
         let count: i64 = server
             .conn
+            .lock()
+            .unwrap()
             .query_row("SELECT COUNT(*) FROM projects WHERE name='todel'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0);

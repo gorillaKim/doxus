@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use crate::plugin::PluginManager;
 use crate::search::{SearchEngine, DocMeta};
 use crate::auth::inject_keychain_auth;
+use crate::links::{LinkExtractor, LinkResolver};
 use doxus_plugin_sdk::{FetchAllOpts, PluginConfig, PluginSecrets};
 
 pub struct IndexingService {
@@ -64,6 +65,12 @@ impl IndexingService {
             for doc in &docs {
                 let title = doc.title.as_deref().unwrap_or("Untitled");
                 crate::log_d!("indexer", "[Core-Indexer] Processing document: {} (ID: {})", title, doc.id.0);
+                // 내용에서 링크 추출 및 플러그인 제공 링크와 병합
+                let mut all_links = LinkExtractor::extract_links(&doc.content);
+                all_links.extend(doc.links.clone());
+                all_links.sort();
+                all_links.dedup();
+
                 let meta = DocMeta {
                     url: doc.url.clone(),
                     tags: doc.tags.clone(),
@@ -71,6 +78,7 @@ impl IndexingService {
                     created_at: doc.created_at,
                     updated_at: doc.updated_at,
                     relative_path: doc.relative_path.clone(),
+                    links: all_links,
                     ..Default::default()
                 };
 
@@ -91,6 +99,14 @@ impl IndexingService {
 
             cursor = stream.next_cursor;
             if cursor.is_none() { break; }
+        }
+
+        // 3. 링크 해결 수행 (target_raw -> target_id)
+        {
+            let conn = self.conn.lock().map_err(|_| "db lock poisoned".to_string())?;
+            if let Err(e) = LinkResolver::resolve_all_unresolved_links(&conn) {
+                crate::log_d!("indexer", "[Core-Indexer] Link resolution error: {}", e);
+            }
         }
 
         crate::log_d!("indexer", "[Core-Indexer] Cycle finished. Total indexed this run: {}", total);

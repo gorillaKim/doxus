@@ -56,7 +56,6 @@ BEGIN
     VALUES (new.id, new.content, new.heading_path);
 END;
 
--- Finally, try to add the column to projects. 
--- Since we know it's missing (the error), this should succeed.
-ALTER TABLE projects ADD COLUMN storage_strategy TEXT NOT NULL DEFAULT 'full';
-UPDATE projects SET storage_strategy = 'reference' WHERE source_type = 'obsidian';
+-- Finally, update existing projects if needed.
+UPDATE projects SET storage_strategy = 'reference' WHERE source_type = 'obsidian' AND storage_strategy IS NULL;
+UPDATE projects SET storage_strategy = 'full' WHERE storage_strategy IS NULL;

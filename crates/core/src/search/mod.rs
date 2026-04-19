@@ -517,6 +517,15 @@ fn index_document_sync(
     conn.execute("DELETE FROM document_metadata WHERE document_id = ?1", [doc_id])?;
     for (k, v) in &meta.metadata { conn.execute("INSERT OR REPLACE INTO document_metadata (document_id, key, value) VALUES (?1, ?2, ?3)", params![doc_id, k, v.to_string()])?; }
 
+    // 5. Populate document_links
+    conn.execute("DELETE FROM document_links WHERE source_id = ?1", [doc_id])?;
+    for raw_link in &meta.links {
+        conn.execute(
+            "INSERT INTO document_links (source_id, target_raw, link_type) VALUES (?1, ?2, 'wikilink')",
+            params![doc_id, raw_link],
+        )?;
+    }
+
     conn.execute("DELETE FROM chunks WHERE document_id = ?1", [doc_id])?;
     for (i, chunk) in chunks.iter().enumerate() {
         conn.execute(

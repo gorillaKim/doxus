@@ -1,5 +1,5 @@
 use doxus_plugin_confluence::ConfluencePlugin;
-use doxus_plugin_sdk::{DocSource, FetchAllOpts, FetchChangesOpts, PluginError, SourceDocId, DocumentStream, ChangeSet, HealthStatus};
+use doxus_plugin_sdk::{DocSource, FetchAllOpts, FetchChangesOpts};
 #[allow(unused_imports)]
 use doxus_plugin_sdk::wasm_types::*;
 use wiremock::matchers::{method, path, query_param};

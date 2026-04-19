@@ -10,6 +10,7 @@ pub struct Project {
     pub path: String,
     pub status: ProjectStatus,
     pub storage_strategy: String,
+    pub source_project_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -107,6 +108,7 @@ pub struct DocMeta {
     pub aliases: Vec<String>,
     pub url: Option<String>,
     pub relative_path: Option<String>,
+    pub links: Vec<String>,
     pub metadata: std::collections::HashMap<String, serde_json::Value>,
 }
 

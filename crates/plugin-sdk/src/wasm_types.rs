@@ -29,6 +29,8 @@ pub struct RawDocumentWasm {
     pub updated_at: Option<i64>,
     #[serde(rename = "relative_path")]
     pub relative_path: Option<String>,
+    #[serde(rename = "links", default)]
+    pub links: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

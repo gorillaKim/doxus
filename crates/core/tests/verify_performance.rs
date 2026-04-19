@@ -1,6 +1,5 @@
 use doxus_core::chunker::{split_chunks, ChunkConfig};
-use doxus_core::search::{SearchQuery, Hit};
-use std::collections::HashMap;
+use doxus_core::search::Hit;
 
 #[test]
 fn test_chunker_sentence_quality() {

@@ -2,7 +2,6 @@ use crate::server::McpServer;
 use crate::types::McpResponse;
 use rusqlite::params;
 use serde_json::{json, Value};
-use std::sync::{Arc, Mutex};
 
 pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     use doxus_core::search::{SearchEngine, SearchMode, SearchQuery};

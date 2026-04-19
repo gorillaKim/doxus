@@ -316,7 +316,7 @@ impl ObsidianPlugin {
             metadata.insert(
                 "links".into(),
                 serde_json::Value::Array(
-                    links.into_iter().map(serde_json::Value::String).collect(),
+                    links.iter().cloned().map(serde_json::Value::String).collect(),
                 ),
             );
         }
@@ -330,6 +330,7 @@ impl ObsidianPlugin {
             metadata,
             tags,
             aliases,
+            links,
             created_at,
             updated_at,
             relative_path: Some(rel_path),
@@ -444,6 +445,7 @@ impl DocSource for ObsidianPlugin {
         } else {
             (vec![], None, Default::default())
         };
+        let links = parse_links_for_doc(&content, &id.0);
 
         Ok(RawDocument {
             id: id.clone(),
@@ -454,6 +456,7 @@ impl DocSource for ObsidianPlugin {
             metadata,
             tags,
             aliases,
+            links,
             created_at: fm_created_at,
             updated_at: None,
             relative_path: Some(id.0.clone()),

@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 use serde_json::json;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use doxus_mcp::McpServer;
 use async_trait::async_trait;
 use doxus_plugin_sdk::{DocSource, PluginConfig, PluginSecrets, SourceDocId, RawDocument, ContentType, PluginMetadata, PluginKind, Capabilities, FetchAllOpts, DocumentStream, HealthStatus, PluginError};
@@ -28,6 +28,7 @@ impl DocSource for MockWriteSource {
             metadata: Default::default(),
             tags: vec![],
             aliases: vec![],
+            links: vec![],
             created_at: None,
             updated_at: None,
             relative_path: None,
@@ -57,7 +58,7 @@ fn setup_server() -> McpServer {
     
     // Seed project with 'mock-source'
     conn.execute(
-        "INSERT INTO projects (name, display_name, path, source_type, status, config_json, is_default, created_at, updated_at) VALUES ('test-proj', 'Test Project', '/tmp', 'external', 'active', '{\"fields\":{}}', 1, 0, 0)",
+        "INSERT INTO projects (name, display_name, path, source_type, source_project_id, status, config_json, is_default, created_at, updated_at) VALUES ('test-proj', 'Test Project', '/tmp', 'external', 'test-proj', 'active', '{\"fields\":{}}', 1, 0, 0)",
         []
     ).unwrap();
     let project_id: i64 = conn.last_insert_rowid();
@@ -85,7 +86,7 @@ fn setup_server() -> McpServer {
         })
     });
     
-    McpServer::new(conn, None, Arc::new(pm), std::path::PathBuf::from("/tmp/plugins"))
+    McpServer::new(Arc::new(Mutex::new(conn)), None, Arc::new(pm), std::path::PathBuf::from("/tmp/plugins"))
 }
 
 #[tokio::test]
@@ -105,10 +106,10 @@ async fn test_create_document_with_immediate_sync() {
     assert!(resp.error.is_none(), "Tool call failed: {:?}", resp.error);
     
     // Check if document exists in DB (Immediate Sync verification)
-    let doc_count: i64 = server.conn().query_row(
+    let doc_count: i64 = server.conn().lock().unwrap().query_row(
         "SELECT COUNT(*) FROM documents WHERE source_doc_id = 'mock-id.md'",
         [],
-        |r| r.get::<_, Option<i64>>(0),
+        |r| r.get::<_ , Option<i64>>(0),
     ).unwrap().unwrap_or(0);
     
     assert_eq!(doc_count, 1, "Document should be synced to DB immediately after creation");

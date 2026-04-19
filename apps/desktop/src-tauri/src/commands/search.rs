@@ -422,14 +422,15 @@ pub async fn search_documents(
     let doc_ids: Vec<i64> = hits.iter().map(|h| h.document_id).collect();
     
     // 3. Document metadata batch fetching (scoped lock)
-    let mut doc_info: std::collections::HashMap<i64, (String, String, String, Vec<String>, i64, i64, serde_json::Value, String, Option<String>)> = std::collections::HashMap::new();
+    let mut doc_info: std::collections::HashMap<i64, (String, String, String, Vec<String>, i64, i64, serde_json::Value, String, Option<String>, String)> = std::collections::HashMap::new();
     {
         let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
         for chunk in doc_ids.chunks(50) {
             let placeholders = chunk.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
             let sql = format!(
                 "SELECT d.id, p.name, COALESCE(p.source_type, 'obsidian'), d.source_doc_id, \
-                        d.updated_at, d.last_indexed, COALESCE(d.metadata_json, '{{}}'), p.path, d.url \
+                        d.updated_at, d.last_indexed, COALESCE(d.metadata_json, '{{}}'), p.path, d.url, \
+                        COALESCE(p.source_project_id, p.name) \
                  FROM documents d JOIN projects p ON d.project_id = p.id \
                  WHERE d.id IN ({})",
                 placeholders
@@ -447,6 +448,7 @@ pub async fn search_documents(
                     r.get::<_, String>(6).unwrap_or_else(|_| "{}".to_string()),
                     r.get::<_, String>(7).unwrap_or_default(),
                     r.get::<_, Option<String>>(8)?,
+                    r.get::<_, String>(9)?,
                 ))
             }).map_err(|e| e.to_string())?;
 
@@ -461,13 +463,14 @@ pub async fn search_documents(
                     let metadata: serde_json::Value = serde_json::from_str(&row.6).unwrap_or(serde_json::json!({}));
                     let project_path = row.7;
                     let url = row.8;
+                    let source_project_id = row.9;
                     
                     // Tags look up
                     let mut tag_stmt = conn.prepare("SELECT tag FROM document_tags WHERE document_id = ?1").map_err(|e| e.to_string())?;
                     let tags: Vec<String> = tag_stmt.query_map([doc_id], |tr| tr.get(0)).map_err(|e| e.to_string())?
                         .filter_map(|tr| tr.ok()).collect();
 
-                    doc_info.insert(doc_id, (project_name, source_type, source_doc_id, tags, updated_at, last_indexed, metadata, project_path, url));
+                    doc_info.insert(doc_id, (project_name, source_type, source_doc_id, tags, updated_at, last_indexed, metadata, project_path, url, source_project_id));
                 }
             }
         }
@@ -497,6 +500,7 @@ pub async fn search_documents(
             let metadata = info.map(|i| i.6.clone()).unwrap_or(serde_json::json!({}));
             let project_path = info.map(|i| i.7.as_str()).unwrap_or("");
             let url = info.and_then(|i| i.8.clone()).or_else(|| h.url.clone());
+            let source_project_id = info.map(|i| i.9.clone()).unwrap_or_default();
             
             let plugin_id = format!("com.doxus.{}", source_type);
             let cache_ttl = plugin_ttls.get(&plugin_id).cloned().unwrap_or(0);
@@ -549,6 +553,7 @@ pub async fn search_documents(
                 "cache_ttl": cache_ttl,
                 "metadata": metadata,
                 "url": url,
+                "source_project_id": source_project_id,
             })
         })
         .collect();
@@ -634,10 +639,12 @@ pub async fn trigger_reindex(
 
 pub(crate) fn get_document_content_impl(conn: &rusqlite::Connection, file_path: &str) -> Result<serde_json::Value, String> {
     let mut stmt = conn.prepare(
-        "SELECT id, title, content, created_at, updated_at, last_indexed, metadata_json, url \
-         FROM documents WHERE source_doc_id = ?1 OR file_path = ?1 ORDER BY id ASC"
+        "SELECT d.id, d.title, d.content, d.created_at, d.updated_at, d.last_indexed, d.metadata_json, d.url, \
+                COALESCE(p.source_project_id, p.name), d.source_doc_id \
+         FROM documents d JOIN projects p ON d.project_id = p.id \
+         WHERE d.source_doc_id = ?1 OR d.file_path = ?1 ORDER BY d.id ASC"
     ).map_err(|e| e.to_string())?;
-    let rows: Vec<(i64, Option<String>, String, Option<i64>, Option<i64>, Option<i64>, Option<String>, Option<String>)> = stmt
+    let rows: Vec<(i64, Option<String>, String, Option<i64>, Option<i64>, Option<i64>, Option<String>, Option<String>, String, String)> = stmt
         .query_map(rusqlite::params![file_path], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
@@ -648,6 +655,8 @@ pub(crate) fn get_document_content_impl(conn: &rusqlite::Connection, file_path: 
                 r.get::<_, Option<i64>>(5)?,
                 r.get::<_, Option<String>>(6)?,
                 r.get::<_, Option<String>>(7)?,
+                r.get::<_, String>(8)?,
+                r.get::<_, String>(9)?,
             ))
         })
         .map_err(|e| e.to_string())?
@@ -665,7 +674,9 @@ pub(crate) fn get_document_content_impl(conn: &rusqlite::Connection, file_path: 
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or(serde_json::json!({}));
     let url = rows[0].7.clone();
-    let content = rows.into_iter().map(|(_, _, c, _, _, _, _, _)| c).collect::<Vec<_>>().join("\n\n");
+    let source_project_id = rows[0].8.clone();
+    let source_doc_id = rows[0].9.clone();
+    let content = rows.into_iter().map(|(_, _, c, _, _, _, _, _, _, _)| c).collect::<Vec<_>>().join("\n\n");
 
     // Plugin TTL lookup
     let cache_ttl: i64 = {
@@ -713,6 +724,8 @@ pub(crate) fn get_document_content_impl(conn: &rusqlite::Connection, file_path: 
         "aliases": aliases,
         "metadata": metadata_json,
         "url": url,
+        "source_project_id": source_project_id,
+        "source_doc_id": source_doc_id,
     }))
 }
 
@@ -862,6 +875,9 @@ pub async fn get_document_content(
                                     "created_at": final_meta.get("created_at"),
                                     "updated_at": final_meta.get("updated_at"),
                                     "metadata": final_meta.get("metadata"),
+                                    "url": final_meta.get("url"),
+                                    "source_project_id": pname.clone(),
+                                    "source_doc_id": file_path.clone(),
                                 }));
                             }
                         } else {
@@ -911,6 +927,7 @@ pub async fn get_document_content(
                         let meta = doxus_core::search::DocMeta {
                             tags: raw.tags.clone(),
                             aliases: vec![],
+                            links: raw.links.clone(),
                             created_at: raw.created_at,
                             updated_at: raw.updated_at,
                             url: raw.url.clone(),
@@ -950,6 +967,9 @@ pub async fn get_document_content(
                             "created_at": raw.created_at,
                             "updated_at": raw.updated_at,
                             "metadata": raw.metadata,
+                            "url": raw.url,
+                            "source_project_id": pname.clone(),
+                            "source_doc_id": raw.id.0.clone(),
                         }))
                     })
                 }
@@ -988,6 +1008,7 @@ pub async fn get_document_content(
                         let meta = doxus_core::search::DocMeta {
                             tags: raw.tags.clone(),
                             aliases: vec![],
+                            links: raw.links.clone(),
                             created_at: None,
                             updated_at: raw.updated_at,
                             url: raw.url.clone(),
@@ -1013,6 +1034,9 @@ pub async fn get_document_content(
                             "title": raw.title,
                             "content": raw.content,
                             "file_path": file_path,
+                            "url": raw.url,
+                            "source_project_id": pname.clone(),
+                            "source_doc_id": raw.id.0.clone(),
                             "reindex_triggered": true,
                         }))
                     })
@@ -1043,6 +1067,7 @@ pub async fn get_document_content(
                         let meta = doxus_core::search::DocMeta {
                             tags: raw.tags.clone(),
                             aliases: raw.aliases.clone(),
+                            links: raw.links.clone(),
                             created_at: raw.created_at,
                             updated_at: raw.updated_at,
                             url: raw.url.clone(),
@@ -1074,6 +1099,8 @@ pub async fn get_document_content(
                             "updated_at": raw.updated_at,
                             "metadata": raw.metadata,
                             "url": raw.url,
+                            "source_project_id": pname.clone(),
+                            "source_doc_id": raw.id.0.clone(),
                             "reindex_triggered": true,
                         }))
                     })

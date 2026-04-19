@@ -13,3 +13,4 @@ pub mod search;
 pub mod sync;
 pub mod indexing;
 pub mod sync_manager;
+pub mod links;

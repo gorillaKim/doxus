@@ -253,6 +253,7 @@ mod tests {
             metadata: HashMap::new(),
             tags: vec![],
             aliases: vec![],
+            links: vec![],
             created_at: None,
             updated_at: None,
             relative_path: None,

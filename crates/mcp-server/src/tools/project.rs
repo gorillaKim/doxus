@@ -2,9 +2,7 @@ use crate::server::McpServer;
 use crate::types::McpResponse;
 use rusqlite::params;
 use serde_json::Value;
-use std::sync::Arc;
 use doxus_core::indexing::IndexingService;
-use doxus_core::search::SearchEngine;
 
 pub fn list_projects(server: &McpServer, id: Value) -> McpResponse {
     let conn = server.conn();
@@ -109,9 +107,8 @@ pub fn remove_project(server: &McpServer, id: Value, args: &Value) -> McpRespons
 }
 
 pub fn index_project(server: &McpServer, id: Value, args: &Value) -> McpResponse {
-    use doxus_core::search::{SearchEngine, DocMeta};
-    use doxus_plugin_sdk::{DocSource, FetchAllOpts, PluginConfig, PluginSecrets};
-    use std::collections::HashMap;
+    use doxus_core::search::SearchEngine;
+    use doxus_plugin_sdk::{PluginConfig, PluginSecrets};
     use std::sync::Arc;
 
     let name = match args["project"].as_str().or_else(|| args["name"].as_str()) {
@@ -151,7 +148,7 @@ pub fn index_project(server: &McpServer, id: Value, args: &Value) -> McpResponse
 
 pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     use doxus_core::search::{SyncSearchEngine, DocMeta};
-    use doxus_plugin_sdk::{DocSource, FetchChangesOpts, PluginConfig, PluginSecrets, SourceDocId};
+    use doxus_plugin_sdk::{FetchChangesOpts, PluginConfig, PluginSecrets, SourceDocId};
     use std::collections::HashMap;
 
     let name = match args["project"].as_str() {

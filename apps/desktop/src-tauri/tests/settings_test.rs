@@ -12,6 +12,8 @@ fn save_and_load_settings_roundtrip() {
         embedding_model: "ollama".to_string(),
         language: "en".to_string(),
         theme: "dark".to_string(),
+        debug_tags: vec![],
+        keychain_migrated: false,
     };
 
     save_settings_to_path(&original, &path).unwrap();
@@ -56,6 +58,8 @@ fn save_rejects_invalid_embedding_model() {
         embedding_model: "openai-gpt4".to_string(),
         language: "ko".to_string(),
         theme: "system".to_string(),
+        debug_tags: vec![],
+        keychain_migrated: false,
     };
 
     let result = save_settings_to_path(&bad, &path);

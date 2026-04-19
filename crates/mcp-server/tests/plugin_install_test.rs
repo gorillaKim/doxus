@@ -2,7 +2,7 @@ use doxus_mcp::McpServer;
 use rusqlite::Connection;
 use serde_json::json;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 
 fn setup_db() -> (Connection, TempDir) {
@@ -30,12 +30,12 @@ fn setup_db() -> (Connection, TempDir) {
 
 fn make_server(conn: Connection, plugins_dir: PathBuf) -> McpServer {
     let pm = Arc::new(doxus_core::plugin::PluginManager::new(plugins_dir.clone()));
-    McpServer::new(conn, None, pm, plugins_dir)
+    McpServer::new(Arc::new(Mutex::new(conn)), None, pm, plugins_dir)
 }
 
 fn make_server_with_file_scheme(conn: Connection, plugins_dir: PathBuf) -> McpServer {
     let pm = Arc::new(doxus_core::plugin::PluginManager::new(plugins_dir.clone()));
-    McpServer::new_with_file_scheme(conn, None, pm, plugins_dir)
+    McpServer::new_with_file_scheme(Arc::new(Mutex::new(conn)), None, pm, plugins_dir)
 }
 
 // --- test 1: url 파라미터 없으면 DB-only 등록 성공 ---
