@@ -879,23 +879,28 @@ fn page_to_doc_v2(
 
     let (mut ancestor_titles, root_name) = resolve_ancestors(state, base_url, &p.id, hierarchy, stop_id);
     
+    // [Doxus Fix] 최상위 계층 중복 제거
+    // 1. ancestor_titles의 첫 번째 요소가 스페이스 이름/키와 일치하면 제거
+    if !ancestor_titles.is_empty() {
+        let first = &ancestor_titles[0];
+        if first == space_name || first == space_key || first == "Project" {
+            ancestor_titles.remove(0);
+        }
+    }
+    // 2. 만약 여전히 리스트가 있고, 첫 번째 요소가 root_name(stop_id 페이지 제목)과 일치하면 제거
+    if !ancestor_titles.is_empty() && !root_name.is_empty() && ancestor_titles[0] == root_name {
+        ancestor_titles.remove(0);
+    }
+    
     let final_root_name = if !root_name.is_empty() {
-        // stop_id 매칭 성공 시: 사용자는 해당 페이지를 루트로 원함.
-        // Doxus 표준에 따라 루트 디렉토리명 자체는 생략하기 위해 빈 문자열 사용 가능하지만,
-        // 현재는 하위 트리를 위해 ancestors만 사용하도록 build_relative_path를 조정하거나
-        // 여기서 root_name을 비워줍니다.
-        "".to_string() // 루트 페이지 제목을 경로에서 제외
+        "".to_string() 
     } else if let Some(_) = stop_id {
-        // stop_id가 있었는데 매칭되지 않은 경우 (Fallback)
-        // 스페이스 이름을 붙이지 않고 최상위 제목을 루트로 사용
         if !ancestor_titles.is_empty() {
-            ancestor_titles.remove(0)
+             ancestor_titles.remove(0)
         } else {
-            "".to_string() // 경로 간소화
+            "".to_string()
         }
     } else {
-        // stop_id가 없는 전체 스페이스 인덱싱의 경우에도 스페이스 이름을 제외하고
-        // 최상위 페이지부터 시작하도록 유도 (선택 사항)
         "".to_string()
     };
 

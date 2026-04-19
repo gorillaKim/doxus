@@ -505,8 +505,6 @@ pub async fn search_documents(
             let plugin_id = format!("com.doxus.{}", source_type);
             let cache_ttl = plugin_ttls.get(&plugin_id).cloned().unwrap_or(0);
             
-            // Normalize file_path for UI tree: strip project_path if it's an absolute path
-            // Also strip "virtual root" if it matches name part (e.g. '컨플/테크스펙' -> strip '테크스펙/')
             let display_file_path = if let Some(ref path) = h.file_path {
                 let mut p = path.as_str();
                 
@@ -518,16 +516,25 @@ pub async fn search_documents(
                 p = p.trim_start_matches('/');
 
                 // 2. Virtual root stripping (Web/Confluence projects)
-                // Project '컨플/테크스펙' should strip '테크스펙/' from the start of its virtual paths
-                if project_name.contains('/') {
-                    if let Some(virtual_root) = project_name.split('/').last() {
-                        if !virtual_root.is_empty() && p.starts_with(virtual_root) {
-                            let next = p.strip_prefix(virtual_root).unwrap_or(p);
-                            if next.starts_with('/') {
-                                p = next.trim_start_matches('/');
-                            }
-                        }
-                    }
+                // Project 'AI 리포트 V3' should strip 'Project/' or 'AI 리포트 V3/' from its virtual paths
+                let first_seg = p.split('/').next().unwrap_or("");
+                let proj_lower = project_name.to_lowercase();
+                let first_lower = first_seg.to_lowercase();
+
+                let should_strip = if !first_seg.is_empty() {
+                    // 완전히 일치하거나
+                    first_lower == proj_lower || 
+                    // 프로젝트명에 슬래시가 있는 경우 마지막 파트와 일치하거나 (e.g. '컨플/테크' -> '테크')
+                    (project_name.contains('/') && Some(first_lower.as_str()) == proj_lower.split('/').last()) ||
+                    // 일반적인 중복 폴더명인 경우
+                    first_lower == "project" || first_lower == "space"
+                } else {
+                    false
+                };
+
+                if should_strip {
+                    let next = p.strip_prefix(first_seg).unwrap_or(p);
+                    p = next.trim_start_matches('/');
                 }
 
                 p.to_string()
