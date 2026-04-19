@@ -56,7 +56,8 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
                     .iter()
                     .map(|h| {
                         json!({
-                            "document_id": h.document_id,
+                            "document_id": h.source_doc_id,
+                            "db_id": h.document_id,
                             "title": h.title,
                             "heading": h.heading_path,
                             "snippet": h.snippet,
@@ -103,7 +104,8 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
                     .iter()
                     .map(|h| {
                         json!({
-                            "document_id": h.document_id,
+                            "document_id": h.source_doc_id,
+                            "db_id": h.document_id,
                             "title": h.title,
                             "snippet": h.snippet,
                             "score": h.score,

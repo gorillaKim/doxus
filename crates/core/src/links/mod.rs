@@ -28,25 +28,33 @@ impl LinkResolver {
             }
         }
 
+        // 2. Handle Wiki-link aliases: [[target|label]] -> only use target
+        let mut target = if raw_link.contains('|') {
+            raw_link.split('|').next().unwrap_or(raw_link).trim()
+        } else {
+            raw_link.trim()
+        };
+
         // Base normalization: remove extensions and common path prefixes
-        let mut normalized = raw_link.trim().trim_start_matches("./");
+        let mut normalized = target.trim_start_matches("./");
         normalized = normalized.trim_start_matches("../");
         if let Some(stripped) = normalized.strip_suffix(".md") {
             normalized = stripped;
         }
 
         // a. Match by source_doc_id, title, or file_path (with suffix matching for paths)
+        // Using LOWER() for case-insensitive matching
         let sql = "SELECT id FROM documents 
                    WHERE project_id = ?1 
-                   AND (source_doc_id = ?2 OR title = ?2 OR file_path = ?2 
-                        OR source_doc_id = ?3 OR title = ?3 OR file_path = ?3
+                   AND (LOWER(source_doc_id) = LOWER(?2) OR LOWER(title) = LOWER(?2) OR LOWER(file_path) = LOWER(?2) 
+                        OR LOWER(source_doc_id) = LOWER(?3) OR LOWER(title) = LOWER(?3) OR LOWER(file_path) = LOWER(?3)
                         OR file_path LIKE '%' || ?2
                         OR file_path LIKE '%' || ?3
                         OR file_path LIKE '%' || ?3 || '.md')";
         
         let res: Option<i64> = conn.query_row(
             sql,
-            rusqlite::params![current_project_id, raw_link, normalized],
+            rusqlite::params![current_project_id, target, normalized],
             |r| r.get(0)
         ).ok();
 
@@ -56,8 +64,8 @@ impl LinkResolver {
 
         // 3. Global search (Fallthrough)
         let sql_global = "SELECT id FROM documents 
-                          WHERE source_doc_id = ?1 OR title = ?1 OR file_path = ?1
-                             OR source_doc_id = ?2 OR title = ?2 OR file_path = ?2
+                          WHERE LOWER(source_doc_id) = LOWER(?1) OR LOWER(title) = LOWER(?1) OR LOWER(file_path) = LOWER(?1)
+                             OR LOWER(source_doc_id) = LOWER(?2) OR LOWER(title) = LOWER(?2) OR LOWER(file_path) = LOWER(?2)
                              OR file_path LIKE '%' || ?1
                              OR file_path LIKE '%' || ?2
                              OR file_path LIKE '%' || ?2 || '.md'
@@ -65,7 +73,7 @@ impl LinkResolver {
         
         let res: Option<i64> = conn.query_row(
             sql_global,
-            rusqlite::params![raw_link, normalized],
+            rusqlite::params![target, normalized],
             |r| r.get(0)
         ).ok();
 
@@ -73,7 +81,17 @@ impl LinkResolver {
             return res;
         }
 
-        // 4. TODO: Alias search
+        // 4. Alias search
+        let sql_alias = "SELECT document_id FROM document_aliases WHERE LOWER(alias) = LOWER(?1) OR LOWER(alias) = LOWER(?2) LIMIT 1";
+        let res: Option<i64> = conn.query_row(
+            sql_alias,
+            rusqlite::params![target, normalized],
+            |r| r.get(0)
+        ).ok();
+
+        if res.is_some() {
+            return res;
+        }
         
         None
     }

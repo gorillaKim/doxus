@@ -502,6 +502,7 @@ pub(crate) fn fetch_document_impl(opts: FetchDocumentOptsWasm) -> FnResult<RawDo
 
     let base_url = get_base_url(&state)?;
     let url = format!("{base_url}/api/v2/pages/{}?body-format=storage", opts.id);
+    log_d!("confluence", "[Confluence-Debug] Fetching document by ID: {} -> URL: {}", opts.id, url);
     
     let resp = request_with_auth(&state, "GET", &url, None)?;
     let p: ConfluencePageV2 = serde_json::from_slice(&resp.body())?;
@@ -785,7 +786,11 @@ fn request_with_auth(state: &PluginState, method: &str, url: &str, body: Option<
         req.headers.insert("Content-Type".to_string(), "application/json".to_string());
     }
     
-    let resp = http::request(&req, body)?;
+    log_d!("confluence", "[Confluence-Debug] Sending {} request to: {}", method, url);
+    let resp = http::request(&req, body).map_err(|e| {
+        log_d!("confluence", "[Confluence-Debug] HTTP REQUEST FAILED: {} -> {}", url, e);
+        e
+    })?;
     if resp.status_code() >= 400 {
         let msg = format!("HTTP {}: {}", resp.status_code(), String::from_utf8_lossy(&resp.body()));
         return Err(Error::msg(msg).into());

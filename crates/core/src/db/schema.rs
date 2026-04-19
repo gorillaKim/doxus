@@ -68,6 +68,7 @@ pub struct Chunk {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
 pub struct SearchHit {
     pub document_id: i64,
+    pub source_doc_id: String,
     pub chunk_id: i64,
     pub title: Option<String>,
     pub file_path: Option<String>,

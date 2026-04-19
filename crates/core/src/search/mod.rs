@@ -197,7 +197,7 @@ impl From<SearchHit> for Hit {
             document_id: sh.document_id,
             chunk_id: sh.chunk_id,
             project_id: 0,
-            source_doc_id: String::new(),
+            source_doc_id: sh.source_doc_id,
             title: sh.title,
             file_path: sh.file_path,
             url: sh.url,
@@ -553,7 +553,7 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
     };
 
     let sql = format!(
-        "SELECT d.id, c.id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path,
+        "SELECT d.id, d.source_doc_id, c.id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path,
                 '' AS snippet, bm25(chunks_fts, 1.0, 3.0) AS score,
                 d.url, d.metadata_json, d.last_indexed,
                 c.start_byte, c.end_byte, c.content
@@ -582,18 +582,19 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
     let hits = stmt.query_map(param_refs.as_slice(), |row| {
         let mut hit = SearchHit {
             document_id: row.get(0)?,
-            chunk_id: row.get(1)?,
-            title: row.get(2)?,
-            file_path: row.get(3)?,
-            heading_path: row.get(4)?,
-            snippet: row.get(5)?,
-            score: row.get::<_, f64>(6).unwrap_or(0.0).abs(),
-            url: row.get(7)?,
-            metadata_json: row.get(8)?,
-            last_indexed: row.get(9)?,
-            start_byte: row.get(10)?,
-            end_byte: row.get(11)?,
-            raw_content: row.get(12)?,
+            source_doc_id: row.get(1)?,
+            chunk_id: row.get(2)?,
+            title: row.get(3)?,
+            file_path: row.get(4)?,
+            heading_path: row.get(5)?,
+            snippet: row.get(6)?,
+            score: row.get::<_, f64>(7).unwrap_or(0.0).abs(),
+            url: row.get(8)?,
+            metadata_json: row.get(9)?,
+            last_indexed: row.get(10)?,
+            start_byte: row.get(11)?,
+            end_byte: row.get(12)?,
+            raw_content: row.get(13)?,
             context_content: None,
         };
 
@@ -633,7 +634,7 @@ fn vector_search_sync(
     };
 
     let sql = format!(
-        "SELECT c.id, c.document_id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path, c.content, knn.distance, d.url, d.metadata_json, d.last_indexed, c.start_byte, c.end_byte
+        "SELECT c.id, c.document_id, d.source_doc_id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path, c.content, knn.distance, d.url, d.metadata_json, d.last_indexed, c.start_byte, c.end_byte
          FROM (
              SELECT chunk_id, distance FROM chunk_embeddings
              WHERE vector MATCH vec_int8(?1) AND k = ?2
@@ -654,21 +655,22 @@ fn vector_search_sync(
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
     
     let hits = stmt.query_map(param_refs.as_slice(), |row| {
-        let distance: f64 = row.get(6)?;
+        let distance: f64 = row.get(7)?;
         let mut hit = SearchHit {
             chunk_id: row.get(0)?,
             document_id: row.get(1)?,
-            title: row.get(2)?,
-            file_path: row.get(3)?,
-            heading_path: row.get(4)?,
-            url: row.get(7)?,
+            source_doc_id: row.get(2)?,
+            title: row.get(3)?,
+            file_path: row.get(4)?,
+            heading_path: row.get(5)?,
+            url: row.get(8)?,
             snippet: String::new(),
             score: 1.0 / (RRF_K as f64 + distance),
-            metadata_json: row.get(8)?,
-            last_indexed: row.get(9)?,
-            start_byte: row.get(10)?,
-            end_byte: row.get(11)?,
-            raw_content: row.get(5)?,
+            metadata_json: row.get(9)?,
+            last_indexed: row.get(10)?,
+            start_byte: row.get(11)?,
+            end_byte: row.get(12)?,
+            raw_content: row.get(6)?,
             context_content: None,
         };
 
