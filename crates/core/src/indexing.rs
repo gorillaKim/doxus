@@ -25,7 +25,7 @@ impl IndexingService {
 
     /// 프로젝트의 소스 타입 및 설정을 조회하여 인덱싱을 수행합니다.
     pub async fn index_project(&self, name: &str) -> Result<usize, String> {
-        let (project_id, plugin_id, config_json, project_path) = self.get_project_config(name).await?;
+        let (project_id, plugin_id, config_json, project_path, strategy) = self.get_project_config(name).await?;
         
         // 1. 플러그인 초기화
         let mut plugin = self.plugin_manager.get_source(&plugin_id)
@@ -79,7 +79,8 @@ impl IndexingService {
                     &doc.id.0,
                     title,
                     &doc.content,
-                    meta
+                    meta,
+                    &strategy
                 ).await {
                     crate::log_d!("indexer", "[Core-Indexer] Error indexing {}: {}", doc.id.0, e);
                     tracing::error!("Indexing error for {}: {}", doc.id.0, e);
@@ -96,17 +97,23 @@ impl IndexingService {
         Ok(total)
     }
 
-    async fn get_project_config(&self, name: &str) -> Result<(i64, String, String, String), String> {
+    async fn get_project_config(&self, name: &str) -> Result<(i64, String, String, String, String), String> {
         let conn = self.conn.lock().map_err(|_| "db lock poisoned".to_string())?;
         // source_instances 테이블에서 우선 조회 (신규 구조)
         let row = conn.query_row(
-            "SELECT p.id, si.plugin_id, si.config_json, p.path
+            "SELECT p.id, si.plugin_id, si.config_json, p.path, p.storage_strategy
              FROM projects p
              JOIN source_instances si ON p.id = si.project_id
              WHERE p.name = ?1
              LIMIT 1",
             params![name],
-            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
+            |r| Ok((
+                r.get::<_, i64>(0)?, 
+                r.get::<_, String>(1)?, 
+                r.get::<_, String>(2)?, 
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?
+            ))
         );
 
         if let Ok(r) = row {
@@ -115,7 +122,7 @@ impl IndexingService {
 
         // 실패 시 projects 테이블에서 조회 (구조 호환성)
         conn.query_row(
-            "SELECT id, COALESCE(source_type, 'obsidian'), COALESCE(config_json, '{}'), path
+            "SELECT id, COALESCE(source_type, 'obsidian'), COALESCE(config_json, '{}'), path, storage_strategy
              FROM projects WHERE name = ?1",
             params![name],
             |r| {
@@ -123,12 +130,13 @@ impl IndexingService {
                 let stype: String = r.get(1)?;
                 let cjson: String = r.get(2)?;
                 let ppath: String = r.get(3)?;
+                let strategy: String = r.get(4)?;
                 let plugin_id = if stype == "obsidian" || stype == "confluence" || stype == "github" {
                     format!("com.doxus.{stype}")
                 } else {
                     stype
                 };
-                Ok((pid, plugin_id, cjson, ppath))
+                Ok((pid, plugin_id, cjson, ppath, strategy))
             }
         ).map_err(|e| format!("프로젝트 설정을 찾을 수 없습니다: {e}"))
     }
@@ -142,5 +150,19 @@ impl IndexingService {
         }
         
         fields
+    }
+
+    /// 인덱싱 가능한 모든 활성 프로젝트 목록을 반환합니다.
+    pub fn list_active_projects(&self) -> Result<Vec<String>, String> {
+        let conn = self.conn.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let mut stmt = conn.prepare("SELECT name FROM projects WHERE status = 'active'")
+            .map_err(|e| e.to_string())?;
+        
+        let projects = stmt.query_map([], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        
+        Ok(projects)
     }
 }

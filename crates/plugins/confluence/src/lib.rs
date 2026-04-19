@@ -872,10 +872,10 @@ fn page_to_doc_v2(
         .map(|s| s.value.as_str())
         .unwrap_or_default();
     
-    println!("[Confluence-Doc-Debug] Page ID: {}, Storage Content Length: {}", p.id, storage_content.len());
+    log_d!("confluence:doc", "[Confluence-Doc-Debug] Page ID: {}, Storage Content Length: {}", p.id, storage_content.len());
     
-    let markdown = html_convert::confluence_html_to_markdown(storage_content);
-    println!("[Confluence-Doc-Debug] Generated Markdown Length: {}", markdown.len());
+    let markdown = html_convert::confluence_html_to_markdown(&storage_content);
+    log_d!("confluence:doc", "[Confluence-Doc-Debug] Generated Markdown Length: {}", markdown.len());
 
     let (mut ancestor_titles, root_name) = resolve_ancestors(state, base_url, &p.id, hierarchy, stop_id);
     
@@ -900,7 +900,7 @@ fn page_to_doc_v2(
     };
 
     let relative_path = path_utils::build_relative_path(&final_root_name, &ancestor_titles, &p.title);
-    println!("[Confluence-Doc-Debug] Final Result - Title: {}, Path: {}", p.title, relative_path);
+    log_d!("confluence:doc", "[Confluence-Doc-Debug] Final Result - Title: {}, Path: {}", p.title, relative_path);
 
     let updated_at = p.version.as_ref().and_then(|v| {
         v.created_at.as_ref()
@@ -1024,7 +1024,7 @@ fn resolve_ancestors(
     let mut cursor = current_id.to_string();
     let mut root_title = String::new();
 
-    println!("[Confluence-Ancestors-Debug] Resolving ancestors for: {}, stop_id: {:?}", current_id, stop_id);
+    log_d!("confluence:ancestors", "[Confluence-Ancestors-Debug] Resolving ancestors for: {}, stop_id: {:?}", current_id, stop_id);
 
     loop {
         let (title, parent_id) = if let Some(info) = hierarchy.get(&cursor) {
@@ -1034,20 +1034,20 @@ fn resolve_ancestors(
                 hierarchy.insert(cursor.clone(), info.clone());
                 info
             } else {
-                println!("[Confluence-Ancestors-Debug] - Could not fetch info for cursor: {}. Breaking loop.", cursor);
+                log_d!("confluence:ancestors", "[Confluence-Ancestors-Debug] - Could not fetch info for cursor: {}. Breaking loop.", cursor);
                 break;
             }
         };
 
         if let Some(sid) = stop_id {
             if cursor.trim() == sid.trim() {
-                println!("[Confluence-Ancestors-Debug] - Found stop_id match: {} ({})", title, cursor);
+                log_d!("confluence:ancestors", "[Confluence-Ancestors-Debug] - Found stop_id match: {} ({})", title, cursor);
                 root_title = title.clone();
                 break;
             }
         }
 
-        println!("[Confluence-Ancestors-Debug] - Adding to chain: {} ({})", title, cursor);
+        log_d!("confluence:ancestors", "[Confluence-Ancestors-Debug] - Adding to chain: {} ({})", title, cursor);
         ancestors.push(title.clone());
 
         if let Some(pid) = parent_id {
@@ -1073,7 +1073,7 @@ fn resolve_ancestors(
     }
     ancestors.reverse();
     
-    println!("[Confluence-Ancestors-Debug] - Final ancestors list: {:?}", ancestors);
+    log_d!("confluence:ancestors", "[Confluence-Ancestors-Debug] - Final ancestors list: {:?}", ancestors);
     (ancestors, root_title)
 }
 

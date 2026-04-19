@@ -18,6 +18,10 @@ pub struct Section {
     pub start_line: usize,
     /// 끝 라인 인덱스 (exclusive, 0-based)
     pub end_line: usize,
+    /// 시작 바이트 위치
+    pub start_byte: usize,
+    /// 끝 바이트 위치 (exclusive)
+    pub end_byte: usize,
 }
 
 /// 문서에서 섹션 목록을 파싱한다.
@@ -67,15 +71,32 @@ pub fn parse_sections(content: &str) -> Vec<Section> {
 
     // 섹션 범위 계산
     let mut sections = Vec::new();
+    let original_ptr = content.as_ptr() as usize;
+
     for (j, &(start, level, ref title)) in headings.iter().enumerate() {
         let end = headings.get(j + 1).map(|&(s, _, _)| s).unwrap_or(total);
-        let section_lines = &lines[start..end];
+        
+        // Calculate byte offsets by finding the pointer distance
+        let start_byte = if start < total {
+            lines[start].as_ptr() as usize - original_ptr
+        } else {
+            content.len()
+        };
+        
+        let end_byte = if end < total {
+            lines[end].as_ptr() as usize - original_ptr
+        } else {
+            content.len()
+        };
+
         sections.push(Section {
             heading: format!("{} {}", "#".repeat(level as usize), title),
             level,
-            content: section_lines.join("\n"),
+            content: content[start_byte..end_byte].to_string(),
             start_line: start,
             end_line: end,
+            start_byte,
+            end_byte,
         });
     }
 
