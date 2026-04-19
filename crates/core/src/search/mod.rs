@@ -1,0 +1,799 @@
+pub use crate::db::schema::{BatchIndexingRequest, DocMeta, Hit, SearchHit};
+use crate::embedding::{EmbeddingError, EmbeddingProvider};
+use crate::observability::{persist_audit, AuditEvent};
+use crate::search::highlighter::Highlighter;
+use rusqlite::{params, Connection};
+use sha2::{Sha256, Digest};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use thiserror::Error;
+
+pub mod highlighter;
+
+#[derive(Debug, Error)]
+pub enum SearchError {
+    #[error("database error: {0}")]
+    Db(#[from] rusqlite::Error),
+    #[error("embedding failed: {0}")]
+    Embedding(String),
+    #[error("connection lock poisoned")]
+    LockPoisoned,
+    #[error("task join error: {0}")]
+    Join(String),
+}
+
+impl From<EmbeddingError> for SearchError {
+    fn from(e: EmbeddingError) -> Self {
+        SearchError::Embedding(e.to_string())
+    }
+}
+
+impl From<tokio::task::JoinError> for SearchError {
+    fn from(e: tokio::task::JoinError) -> Self {
+        SearchError::Join(e.to_string())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SearchQuery {
+    pub text: String,
+    pub project_ids: Vec<i64>,
+    pub limit: usize,
+    pub offset: usize,
+    pub mode: SearchMode,
+}
+
+#[derive(Debug, Clone, Default)]
+pub enum SearchMode {
+    #[default]
+    Hybrid,
+    Fts,
+    Vector,
+}
+
+impl SearchQuery {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            project_ids: vec![],
+            limit: 20,
+            offset: 0,
+            mode: SearchMode::Hybrid,
+        }
+    }
+
+    pub fn with_projects(mut self, ids: Vec<i64>) -> Self {
+        self.project_ids = ids;
+        self
+    }
+
+    pub fn with_limit(mut self, limit: usize) -> Self {
+        self.limit = limit;
+        self
+    }
+
+    pub fn with_offset(mut self, offset: usize) -> Self {
+        self.offset = offset;
+        self
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct SearchOpts {
+    pub project_ids: Option<Vec<i64>>,
+    pub limit: Option<usize>,
+}
+
+const RRF_K: usize = 60;
+const VECTOR_MAX_L2_DISTANCE: f64 = 1.0;
+
+fn sanitize_fts_token(token: &str) -> String {
+    token
+        .replace('"', "")
+        .replace(['(', ')', '^', '~'], "")
+        .replace('-', " ")
+}
+
+#[allow(dead_code)]
+fn build_prefix_fallback_query(query: &str) -> String {
+    let tokens: Vec<String> = query
+        .split_whitespace()
+        .filter(|w| w.chars().count() >= 2)
+        .map(|w| format!("\"{}\"*", sanitize_fts_token(w)))
+        .collect();
+    if tokens.is_empty() {
+        format!("\"{}\"", sanitize_fts_token(query.trim()))
+    } else {
+        tokens.join(" OR ")
+    }
+}
+
+fn build_fts_query(query: &str) -> String {
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let escaped = sanitize_fts_token(trimmed);
+    let mut parts: Vec<String> = vec![format!("\"{}\"", escaped)];
+
+    let words: Vec<&str> = trimmed.split_whitespace().collect();
+    if words.len() > 1 {
+        for word in &words {
+            let w = word.trim();
+            if !w.is_empty() {
+                parts.push(format!("\"{}\"", sanitize_fts_token(w)));
+            }
+        }
+    }
+
+    if trimmed.contains('_') {
+        for part in trimmed.split('_') {
+            let p = part.trim();
+            if !p.is_empty() {
+                parts.push(format!("\"{}\"", sanitize_fts_token(p)));
+            }
+        }
+    }
+
+    if trimmed.chars().count() <= 3 {
+        parts.push(format!("\"{}\"*", escaped));
+    }
+
+    parts.join(" OR ")
+}
+
+fn rrf_score(rank: usize) -> f64 {
+    1.0 / (RRF_K + rank) as f64
+}
+
+fn rrf_merge(fts_hits: Vec<SearchHit>, vec_hits: Vec<SearchHit>) -> Vec<SearchHit> {
+    let mut scores: HashMap<i64, (f64, SearchHit)> = HashMap::new();
+
+    for (rank, hit) in fts_hits.into_iter().enumerate() {
+        use std::collections::hash_map::Entry;
+        match scores.entry(hit.chunk_id) {
+            Entry::Vacant(v) => {
+                v.insert((rrf_score(rank + 1), hit));
+            }
+            Entry::Occupied(mut o) => {
+                let e = o.get_mut();
+                e.0 += rrf_score(rank + 1);
+                if e.1.snippet.is_empty() && !hit.snippet.is_empty() {
+                    e.1.snippet = hit.snippet;
+                }
+            }
+        }
+    }
+    for (rank, hit) in vec_hits.into_iter().enumerate() {
+        use std::collections::hash_map::Entry;
+        match scores.entry(hit.chunk_id) {
+            Entry::Vacant(v) => {
+                v.insert((rrf_score(rank + 1), hit));
+            }
+            Entry::Occupied(mut o) => {
+                let e = o.get_mut();
+                e.0 += rrf_score(rank + 1);
+                if e.1.snippet.is_empty() && !hit.snippet.is_empty() {
+                    e.1.snippet = hit.snippet;
+                }
+            }
+        }
+    }
+
+    let mut merged: Vec<SearchHit> = scores
+        .into_values()
+        .map(|(score, mut hit)| {
+            hit.score = score;
+            hit
+        })
+        .collect();
+    merged.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    merged
+}
+
+impl From<SearchHit> for Hit {
+    fn from(sh: SearchHit) -> Self {
+        Hit {
+            document_id: sh.document_id,
+            chunk_id: sh.chunk_id,
+            project_id: 0,
+            source_doc_id: String::new(),
+            title: sh.title,
+            file_path: sh.file_path,
+            url: sh.url,
+            heading_path: sh.heading_path,
+            snippet: Some(sh.snippet),
+            context_content: sh.context_content,
+            metadata_json: sh.metadata_json,
+            last_indexed: sh.last_indexed,
+            score: sh.score,
+        }
+    }
+}
+
+struct NoOpEmbedder;
+
+#[async_trait::async_trait]
+impl EmbeddingProvider for NoOpEmbedder {
+    async fn embed(&self, _texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        Err(EmbeddingError::Inference("no embedder configured".into()))
+    }
+    fn dimension(&self) -> usize { 384 }
+    fn model_info(&self) -> &crate::embedding::ModelInfo {
+        static INFO: std::sync::OnceLock<crate::embedding::ModelInfo> = std::sync::OnceLock::new();
+        INFO.get_or_init(|| crate::embedding::ModelInfo {
+            name: "noop".to_string(),
+            dimension: 384,
+            max_tokens: 0,
+        })
+    }
+}
+
+pub struct SearchEngine {
+    conn: Arc<Mutex<Connection>>,
+    embedder: Arc<dyn EmbeddingProvider + Send + Sync>,
+}
+
+impl SearchEngine {
+    pub fn with_embedder(conn: Arc<Mutex<Connection>>, embedder: Arc<dyn EmbeddingProvider + Send + Sync>) -> Self {
+        Self { conn, embedder }
+    }
+
+    pub fn new(conn: &Connection) -> SyncSearchEngine<'_> {
+        SyncSearchEngine::from_conn(conn)
+    }
+
+    pub fn new_fts_only(conn: Connection) -> Self {
+        Self {
+            conn: Arc::new(Mutex::new(conn)),
+            embedder: Arc::new(NoOpEmbedder) as Arc<dyn EmbeddingProvider + Send + Sync>,
+        }
+    }
+
+    pub async fn index_document_async(
+        &self,
+        project_id: i64,
+        source_doc_id: &str,
+        title: &str,
+        content: &str,
+        strategy: &str,
+    ) -> Result<(), SearchError> {
+        self.index_document_async_with_meta(project_id, source_doc_id, title, content, DocMeta::default(), strategy).await
+    }
+
+    pub async fn index_documents_batch_async(
+        &self,
+        requests: Vec<BatchIndexingRequest>,
+    ) -> Result<(), SearchError> {
+        if requests.is_empty() {
+            return Ok(());
+        }
+
+        let num_requests = requests.len();
+        let project_id = requests[0].project_id;
+        tracing::info!(project_id, doc_count = num_requests, "index_documents_batch: starting batch indexing");
+
+        let mut all_chunks = Vec::new();
+        let mut flat_texts = Vec::new();
+        let mut chunk_counts = Vec::with_capacity(num_requests);
+
+        for (doc_idx, req) in requests.iter().enumerate() {
+            let chunks = crate::chunker::split_chunks(
+                &req.content,
+                crate::chunker::ChunkConfig {
+                    title: Some(req.title.clone()),
+                    ..Default::default()
+                },
+            );
+            chunk_counts.push(chunks.len());
+            for chunk in chunks {
+                flat_texts.push(chunk.embedding_text.clone());
+                all_chunks.push((doc_idx, chunk));
+            }
+        }
+
+        if flat_texts.is_empty() {
+            return Ok(());
+        }
+
+        let embedding_vecs = self.embedder.embed(&flat_texts.iter().map(|s| s.as_str()).collect::<Vec<_>>()).await?;
+        let mut flat_embeddings: Vec<Vec<u8>> = Vec::with_capacity(embedding_vecs.len());
+        for emb in embedding_vecs {
+            let quantized = crate::embedding::quantize_to_i8(&emb);
+            let bytes: Vec<u8> = quantized.into_iter().map(|i| i as u8).collect();
+            flat_embeddings.push(bytes);
+        }
+
+        let conn = Arc::clone(&self.conn);
+        tokio::task::spawn_blocking(move || -> Result<(), SearchError> {
+            let mut conn_guard = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
+            let tx = conn_guard.transaction()?;
+            
+            let strategy: String = tx.query_row(
+                "SELECT storage_strategy FROM projects WHERE id = ?1",
+                params![project_id],
+                |r| r.get(0)
+            ).unwrap_or_else(|_| "full".to_string());
+
+            persist_audit(&tx, &AuditEvent::IndexStart { project_id });
+
+            let mut current_chunk_offset = 0;
+            for (doc_idx, req) in requests.into_iter().enumerate() {
+                let num_chunks = chunk_counts[doc_idx];
+                let doc_chunks: Vec<_> = all_chunks[current_chunk_offset..current_chunk_offset + num_chunks]
+                    .iter().map(|(_, c)| c.clone()).collect();
+                let doc_embeddings: Vec<_> = flat_embeddings[current_chunk_offset..current_chunk_offset + num_chunks]
+                    .iter().cloned().collect();
+
+                index_document_sync(&tx, req.project_id, &req.source_doc_id, &req.title, &req.content, &doc_chunks, &doc_embeddings, &req.meta, &strategy)?;
+                current_chunk_offset += num_chunks;
+            }
+
+            persist_audit(&tx, &AuditEvent::IndexComplete { project_id, docs_indexed: num_requests });
+            tx.commit()?;
+            Ok(())
+        }).await??;
+
+        Ok(())
+    }
+
+    pub async fn index_document_async_with_meta(
+        &self,
+        project_id: i64,
+        source_doc_id: &str,
+        title: &str,
+        content: &str,
+        meta: DocMeta,
+        strategy: &str,
+    ) -> Result<(), SearchError> {
+        let strategy = strategy.to_string();
+        let chunks = crate::chunker::split_chunks(
+            content,
+            crate::chunker::ChunkConfig {
+                title: Some(title.to_string()),
+                ..Default::default()
+            },
+        );
+
+        if chunks.is_empty() { return Ok(()); }
+
+        let texts: Vec<&str> = chunks.iter().map(|c| c.embedding_text.as_str()).collect();
+        let embedding_vecs = self.embedder.embed(&texts).await.unwrap_or_default();
+        
+        let mut chunk_embeddings = Vec::new();
+        for emb in embedding_vecs {
+            let quantized = crate::embedding::quantize_to_i8(&emb);
+            let bytes: Vec<u8> = quantized.into_iter().map(|i| i as u8).collect();
+            chunk_embeddings.push(bytes);
+        }
+
+        let conn = Arc::clone(&self.conn);
+        let source_doc_id = source_doc_id.to_string();
+        let title = title.to_string();
+        let content = content.to_string();
+
+        tokio::task::spawn_blocking(move || -> Result<(), SearchError> {
+            let conn = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
+            persist_audit(&conn, &AuditEvent::IndexStart { project_id });
+            index_document_sync(&conn, project_id, &source_doc_id, &title, &content, &chunks, &chunk_embeddings, &meta, &strategy)?;
+            persist_audit(&conn, &AuditEvent::IndexComplete { project_id, docs_indexed: 1 });
+            Ok(())
+        }).await??;
+
+        Ok(())
+    }
+
+    pub async fn search_async(&self, query: &SearchQuery) -> Result<Vec<Hit>, SearchError> {
+        let hits: Vec<SearchHit> = match query.mode {
+            SearchMode::Fts => self.fts_search_async(query).await?,
+            SearchMode::Vector => self.vector_search_async(query).await?,
+            SearchMode::Hybrid => {
+                let fts_hits = self.fts_search_async(query).await?;
+                let vec_hits = self.vector_search_async(query).await.unwrap_or_default();
+                rrf_merge(fts_hits, vec_hits)
+            }
+        };
+
+        let conn = Arc::clone(&self.conn);
+        let query = query.clone();
+        
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
+            let mut paged_hits: Vec<Hit> = hits.into_iter()
+                .skip(query.offset)
+                .take(query.limit)
+                .map(Hit::from)
+                .collect();
+            
+            if paged_hits.is_empty() { return Ok(paged_hits); }
+
+            let scores: Vec<f64> = paged_hits.iter().map(|h| h.score).collect();
+            let n = scores.len() as f64;
+            let mean = scores.iter().sum::<f64>() / n;
+            let variance = scores.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / n;
+            let sigma = variance.sqrt();
+            let max_score = scores[0];
+
+            let mut loaded_sections = HashMap::new();
+            let mut total_chars = 0;
+            const GLOBAL_CEILING: usize = 15000;
+
+            for hit in paged_hits.iter_mut() {
+                if total_chars >= GLOBAL_CEILING { break; }
+                let is_high_confidence = hit.score >= (max_score - sigma);
+                if is_high_confidence {
+                    assemble_context_sync(&conn, hit, &mut loaded_sections, &mut total_chars, GLOBAL_CEILING)?;
+                } else {
+                    hit.context_content = hit.snippet.clone();
+                    // Using direct length access if possible or ensuring closure is clear
+                    if let Some(ref s) = hit.context_content {
+                        total_chars += s.len();
+                    }
+                }
+            }
+            Ok(paged_hits)
+        }).await?
+    }
+
+    async fn fts_search_async(&self, query: &SearchQuery) -> Result<Vec<SearchHit>, SearchError> {
+        let conn = Arc::clone(&self.conn);
+        let query_clone = query.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
+            fts_search_sync(&conn, &query_clone)
+        }).await?
+    }
+
+    async fn vector_search_async(&self, query: &SearchQuery) -> Result<Vec<SearchHit>, SearchError> {
+        let embedding = self.embedder.embed(&[query.text.as_str()]).await?;
+        let emb = embedding.into_iter().next().ok_or_else(|| SearchError::Embedding("empty".into()))?;
+        let quantized = crate::embedding::quantize_to_i8(&emb);
+        let emb_bytes: Vec<u8> = quantized.into_iter().map(|i| i as u8).collect();
+
+        let conn = Arc::clone(&self.conn);
+        let project_ids = query.project_ids.clone();
+        let limit = query.limit as i64;
+        let offset = query.offset as i64;
+        let query_text = query.text.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
+            vector_search_sync(&conn, &emb_bytes, limit, offset, &project_ids, &query_text)
+        }).await?
+    }
+}
+
+// BatchIndexingRequest and DocMeta removed - now in schema.rs
+
+fn index_document_sync(
+    conn: &Connection,
+    project_id: i64,
+    source_doc_id: &str,
+    title: &str,
+    content: &str,
+    chunks: &[crate::chunker::Chunk],
+    chunk_embeddings: &[Vec<u8>],
+    meta: &DocMeta,
+    strategy: &str,
+) -> Result<(), SearchError> {
+    let is_reference = strategy == "reference";
+    if content.trim().is_empty() { return Ok(()); }
+
+    let content_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
+    let metadata_json = serde_json::to_string(&meta.metadata).unwrap_or_else(|_| "{}".to_string());
+    
+    let now = chrono::Utc::now().timestamp();
+    let created_at = meta.created_at.unwrap_or(now);
+    let updated_at = meta.updated_at.unwrap_or(now);
+
+    let project_path: Option<String> = conn.query_row("SELECT path FROM projects WHERE id = ?1", [project_id], |r| r.get(0)).ok();
+
+    let full_file_path = if let (Some(base), Some(rel)) = (project_path, &meta.relative_path) {
+        if base.starts_with("http") { Some(rel.clone()) }
+        else {
+            let path = std::path::PathBuf::from(base).join(rel);
+            if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
+            let _ = std::fs::write(&path, content);
+            Some(path.to_string_lossy().to_string())
+        }
+    } else { None };
+
+    conn.execute(
+        "INSERT INTO documents (project_id, source_doc_id, title, url, content_hash, last_indexed, created_at, updated_at, metadata_json, file_path)
+         VALUES (?1, ?2, ?3, ?4, ?5, unixepoch(), ?6, ?7, ?8, ?9)
+         ON CONFLICT(project_id, source_doc_id) DO UPDATE SET
+            title = excluded.title, url = excluded.url, content_hash = excluded.content_hash,
+            last_indexed = excluded.last_indexed, updated_at = excluded.updated_at,
+            metadata_json = excluded.metadata_json, file_path = COALESCE(excluded.file_path, documents.file_path)",
+        params![project_id, source_doc_id, title, meta.url, content_hash, created_at, updated_at, metadata_json, full_file_path],
+    )?;
+
+    let doc_id: i64 = conn.query_row("SELECT id FROM documents WHERE project_id = ?1 AND source_doc_id = ?2", params![project_id, source_doc_id], |row| row.get(0))?;
+
+    conn.execute("DELETE FROM document_tags WHERE document_id = ?1", [doc_id])?;
+    for tag in &meta.tags { conn.execute("INSERT OR IGNORE INTO document_tags (document_id, tag) VALUES (?1, ?2)", params![doc_id, tag])?; }
+    conn.execute("DELETE FROM document_aliases WHERE document_id = ?1", [doc_id])?;
+    for alias in &meta.aliases { conn.execute("INSERT OR IGNORE INTO document_aliases (document_id, alias) VALUES (?1, ?2)", params![doc_id, alias])?; }
+    conn.execute("DELETE FROM document_metadata WHERE document_id = ?1", [doc_id])?;
+    for (k, v) in &meta.metadata { conn.execute("INSERT OR REPLACE INTO document_metadata (document_id, key, value) VALUES (?1, ?2, ?3)", params![doc_id, k, v.to_string()])?; }
+
+    conn.execute("DELETE FROM chunks WHERE document_id = ?1", [doc_id])?;
+    for (i, chunk) in chunks.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO chunks (document_id, content, chunk_index, heading_path, start_byte, end_byte) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![doc_id, chunk.content, chunk.index as i64, chunk.heading_path, chunk.start_byte as i64, chunk.end_byte as i64],
+        )?;
+        let chunk_id: i64 = conn.last_insert_rowid();
+        if is_reference { conn.execute("UPDATE chunks SET content = NULL WHERE id = ?1", [chunk_id])?; }
+        if let Some(bytes) = chunk_embeddings.get(i) {
+            conn.execute("INSERT OR REPLACE INTO chunk_embeddings(chunk_id, vector) VALUES (?1, vec_int8(?2))", params![chunk_id, bytes])?;
+        }
+    }
+    Ok(())
+}
+
+fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchHit>, SearchError> {
+    let fts_query = build_fts_query(&query.text);
+    if fts_query.is_empty() { return Ok(vec![]); }
+
+    let (project_filter, _) = if query.project_ids.is_empty() {
+        ("AND p.status = 'active'".to_string(), 3usize)
+    } else {
+        let placeholders: Vec<String> = (0..query.project_ids.len()).map(|i| format!("?{}", i + 4)).collect();
+        (format!("AND d.project_id IN ({})", placeholders.join(", ")), 3 + query.project_ids.len())
+    };
+
+    let sql = format!(
+        "SELECT d.id, c.id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path,
+                '' AS snippet, bm25(chunks_fts, 1.0, 3.0) AS score,
+                d.url, d.metadata_json, d.last_indexed,
+                c.start_byte, c.end_byte, c.content
+         FROM chunks_fts
+         JOIN chunks c ON c.id = chunks_fts.rowid
+         JOIN documents d ON d.id = c.document_id
+         JOIN projects p ON p.id = d.project_id
+         WHERE chunks_fts MATCH ?1
+         {project_filter}
+         ORDER BY score
+         LIMIT ?2 OFFSET ?3"
+    );
+
+    let keywords: Vec<String> = query.text.split_whitespace().map(|s| s.to_string()).collect();
+    let highlighter = Highlighter::new(&keywords).unwrap_or_else(|_| Highlighter::new(&[]).unwrap());
+
+    let mut stmt = conn.prepare(&sql)?;
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
+        Box::new(fts_query),
+        Box::new((query.limit + query.offset) as i64),
+        Box::new(0i64),
+    ];
+    for id in &query.project_ids { params.push(Box::new(*id)); }
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    
+    let hits = stmt.query_map(param_refs.as_slice(), |row| {
+        let mut hit = SearchHit {
+            document_id: row.get(0)?,
+            chunk_id: row.get(1)?,
+            title: row.get(2)?,
+            file_path: row.get(3)?,
+            heading_path: row.get(4)?,
+            snippet: row.get(5)?,
+            score: row.get::<_, f64>(6).unwrap_or(0.0).abs(),
+            url: row.get(7)?,
+            metadata_json: row.get(8)?,
+            last_indexed: row.get(9)?,
+            start_byte: row.get(10)?,
+            end_byte: row.get(11)?,
+            raw_content: row.get(12)?,
+            context_content: None,
+        };
+
+        if let Some(ref path_str) = hit.file_path {
+            let path = std::path::Path::new(path_str);
+            if path.exists() && hit.start_byte.is_some() && hit.end_byte.is_some() {
+                if let Ok(res) = highlighter.highlight_file(path, hit.start_byte.unwrap() as usize, hit.end_byte.unwrap() as usize, 50) {
+                    hit.snippet = res.snippet;
+                }
+            } else if let Some(ref raw) = hit.raw_content {
+                hit.snippet = highlighter.highlight_text(raw).snippet;
+            }
+        } else if let Some(ref raw) = hit.raw_content {
+            hit.snippet = highlighter.highlight_text(raw).snippet;
+        }
+
+        Ok(hit)
+    })?.collect::<Result<Vec<_>, rusqlite::Error>>()?;
+
+    Ok(hits)
+}
+
+fn vector_search_sync(
+    conn: &Connection,
+    emb_bytes: &[u8],
+    limit: i64,
+    offset: i64,
+    project_ids: &[i64],
+    query_text: &str,
+) -> Result<Vec<SearchHit>, SearchError> {
+    let k = limit + offset;
+    let project_filter = if project_ids.is_empty() {
+        "AND p.status = 'active'".to_string()
+    } else {
+        let placeholders: Vec<String> = (0..project_ids.len()).map(|i| format!("?{}", i + 3)).collect();
+        format!("AND d.project_id IN ({})", placeholders.join(", "))
+    };
+
+    let sql = format!(
+        "SELECT c.id, c.document_id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path, c.content, knn.distance, d.url, d.metadata_json, d.last_indexed, c.start_byte, c.end_byte
+         FROM (
+             SELECT chunk_id, distance FROM chunk_embeddings
+             WHERE vector MATCH vec_int8(?1) AND k = ?2
+         ) knn
+         JOIN chunks c ON knn.chunk_id = c.id
+         JOIN documents d ON d.id = c.document_id
+         JOIN projects p ON p.id = d.project_id
+         WHERE 1=1 {project_filter}
+         ORDER BY knn.distance"
+    );
+
+    let keywords: Vec<String> = query_text.split_whitespace().map(|s| s.to_string()).collect();
+    let highlighter = Highlighter::new(&keywords).unwrap_or_else(|_| Highlighter::new(&[]).unwrap());
+
+    let mut stmt = conn.prepare(&sql)?;
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(emb_bytes.to_vec()), Box::new(k)];
+    for id in project_ids { params.push(Box::new(*id)); }
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    
+    let hits = stmt.query_map(param_refs.as_slice(), |row| {
+        let distance: f64 = row.get(6)?;
+        let mut hit = SearchHit {
+            chunk_id: row.get(0)?,
+            document_id: row.get(1)?,
+            title: row.get(2)?,
+            file_path: row.get(3)?,
+            heading_path: row.get(4)?,
+            url: row.get(7)?,
+            snippet: String::new(),
+            score: 1.0 / (RRF_K as f64 + distance),
+            metadata_json: row.get(8)?,
+            last_indexed: row.get(9)?,
+            start_byte: row.get(10)?,
+            end_byte: row.get(11)?,
+            raw_content: row.get(5)?,
+            context_content: None,
+        };
+
+        if let Some(ref path_str) = hit.file_path {
+            let path = std::path::Path::new(path_str);
+            if path.exists() && hit.start_byte.is_some() && hit.end_byte.is_some() {
+                if let Ok(res) = highlighter.highlight_file(path, hit.start_byte.unwrap() as usize, hit.end_byte.unwrap() as usize, 50) {
+                    hit.snippet = res.snippet;
+                }
+            } else if let Some(ref raw) = hit.raw_content {
+                hit.snippet = highlighter.highlight_text(raw).snippet;
+            }
+        } else if let Some(ref raw) = hit.raw_content {
+            hit.snippet = highlighter.highlight_text(raw).snippet;
+        }
+
+        Ok(hit)
+    })?.collect::<Result<Vec<_>, rusqlite::Error>>()?;
+
+    let mut hits = hits;
+    hits.retain(|h| {
+        if h.score <= 0.0 { return false; }
+        let distance = (1.0 / h.score) - RRF_K as f64;
+        distance <= VECTOR_MAX_L2_DISTANCE
+    });
+
+    Ok(hits)
+}
+
+fn assemble_context_sync(
+    conn: &Connection,
+    hit: &mut Hit,
+    loaded_sections: &mut HashMap<(i64, Option<String>), String>,
+    total_chars: &mut usize,
+    _global_ceiling: usize,
+) -> Result<(), SearchError> {
+    let key = (hit.document_id, hit.heading_path.clone());
+    if let Some(cached) = loaded_sections.get(&key) {
+        hit.context_content = Some(cached.clone());
+        return Ok(());
+    }
+
+    let (_target_idx, target_content, start_byte, end_byte): (i32, Option<String>, Option<i64>, Option<i64>) = conn.query_row(
+        "SELECT chunk_index, content, start_byte, end_byte FROM chunks WHERE id = ?1",
+        [hit.chunk_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )?;
+
+    let actual_content = if let Some(c) = target_content { c }
+    else if let (Some(path_str), Some(start), Some(end)) = (hit.file_path.as_ref(), start_byte, end_byte) {
+        let path = std::path::Path::new(path_str);
+        if path.exists() {
+            let mut file = std::fs::File::open(path).map_err(|e| SearchError::Join(e.to_string()))?;
+            use std::io::{Seek, SeekFrom, Read};
+            file.seek(SeekFrom::Start(start as u64)).map_err(|e| SearchError::Join(e.to_string()))?;
+            let mut buf = vec![0u8; (end - start) as usize];
+            file.read_exact(&mut buf).map_err(|e| SearchError::Join(e.to_string()))?;
+            String::from_utf8_lossy(&buf).to_string()
+        } else { "[File not found]".to_string() }
+    } else { "[Content unavailable]".to_string() };
+
+    hit.context_content = Some(actual_content.clone());
+    *total_chars += actual_content.len();
+    loaded_sections.insert(key, actual_content);
+
+    Ok(())
+}
+
+pub struct SyncSearchEngine<'a> { conn: &'a Connection }
+impl<'a> SyncSearchEngine<'a> {
+    pub fn from_conn(conn: &'a Connection) -> Self { Self { conn } }
+    pub fn index_document(&self, project_id: i64, sid: &str, title: &str, content: &str, strategy: &str) -> Result<(), SearchError> {
+        self.index_document_with_meta(project_id, sid, title, content, &DocMeta::default(), strategy)
+    }
+    pub fn index_document_with_meta(&self, project_id: i64, sid: &str, title: &str, content: &str, meta: &DocMeta, strategy: &str) -> Result<(), SearchError> {
+        let chunks = crate::chunker::split_chunks(content, crate::chunker::ChunkConfig { title: Some(title.to_string()), ..Default::default() });
+        index_document_sync(self.conn, project_id, sid, title, content, &chunks, &[], meta, strategy)
+    }
+    pub fn search(&self, query: &SearchQuery) -> Result<Vec<SearchHit>, SearchError> {
+        fts_search_sync(self.conn, query)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::TestDb;
+
+    fn insert_project(db: &TestDb, name: &str, path: &str) -> i64 {
+        db.conn.execute("INSERT INTO projects(name, display_name, path, status, created_at, updated_at) VALUES (?1, ?1, ?2, 'active', unixepoch(), unixepoch())", [name, path]).unwrap();
+        db.conn.query_row("SELECT id FROM projects WHERE name=?1", [name], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn fts_search_returns_results() {
+        let db = TestDb::new();
+        let pid = insert_project(&db, "vault", "/vault");
+        let engine = SearchEngine::new(&db.conn);
+        engine.index_document(pid, "doc1", "Rust Programming", "Rust is a systems language", "full").unwrap();
+
+        let query = SearchQuery::new("Rust programming");
+        let hits = engine.search(&query).unwrap();
+        assert!(!hits.is_empty(), "should find Rust document");
+        assert_eq!(hits[0].title.as_deref(), Some("Rust Programming"));
+    }
+
+    #[test]
+    fn highlighter_reads_from_filesystem_for_local_files() {
+        let db = TestDb::new();
+        let temp_dir = std::env::temp_dir().join("doxus_test");
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let file_path = temp_dir.join("test.md");
+        let content = "The quick brown fox jumps over the lazy dog. Rust is amazing.";
+        std::fs::write(&file_path, content).unwrap();
+
+        // 1. Insert as local (obsidian) project
+        db.conn.execute("INSERT INTO projects(name, display_name, path, source_type, status, created_at, updated_at) VALUES ('obsidian', 'Obsidian', ?1, 'obsidian', 'active', 0, 0)", [temp_dir.to_string_lossy().to_string()]).unwrap();
+        let pid: i64 = db.conn.query_row("SELECT id FROM projects WHERE source_type='obsidian'", [], |r| r.get(0)).unwrap();
+
+        let engine = SearchEngine::new(&db.conn);
+        let meta = DocMeta {
+            relative_path: Some("test.md".to_string()),
+            ..Default::default()
+        };
+        engine.index_document_with_meta(pid, "test1", "Test File", content, &meta, "reference").unwrap();
+
+        // 2. Verify content is NULL in DB
+        let db_content: Option<String> = db.conn.query_row("SELECT content FROM chunks WHERE document_id = (SELECT id FROM documents WHERE source_doc_id='test1')", [], |r| r.get(0)).unwrap();
+        assert!(db_content.is_none(), "DB content should be offloaded (NULL) for local files");
+
+        // 3. Search and check snippet
+        let query = SearchQuery::new("brown fox");
+        let hits = engine.search(&query).unwrap();
+        assert!(!hits.is_empty());
+        assert!(hits[0].snippet.contains("<b>brown</b> <b>fox</b>"), "Snippet should contain highlighted keywords from file");
+    }
+}

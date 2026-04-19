@@ -17,6 +17,8 @@ pub struct Chunk {
     pub index: usize,
     /// Heading path from markdown (e.g. "Intro > Background")
     pub heading_path: Option<String>,
+    pub start_byte: usize,
+    pub end_byte: usize,
 }
 
 pub struct ChunkConfig {
@@ -45,16 +47,16 @@ pub fn split_chunks(text: &str, config: ChunkConfig) -> Vec<Chunk> {
     let sections = parse_sections(text);
 
     let mut chunks = Vec::new();
-
     if sections.is_empty() {
         // Fallback to paragraph splitting if no headers found
-        return split_into_recursive_chunks(text, None, &config, 0);
+        return split_into_recursive_chunks(text, 0, None, &config, 0);
     }
 
     let mut current_index = 0;
     for section in sections {
         let section_chunks = split_into_recursive_chunks(
             &section.content,
+            section.start_byte,
             Some(section.heading.clone()),
             &config,
             current_index,
@@ -68,70 +70,85 @@ pub fn split_chunks(text: &str, config: ChunkConfig) -> Vec<Chunk> {
 
 fn split_into_recursive_chunks(
     text: &str,
+    base_offset: usize,
     heading: Option<String>,
     config: &ChunkConfig,
     start_index: usize,
 ) -> Vec<Chunk> {
-    let paragraphs = split_paragraphs(text);
+    let paragraphs = split_paragraphs_with_offsets(text);
     let mut chunks = Vec::new();
-    let mut current_content = String::new();
-    let mut overlap_tail = String::new();
+    let mut current_paras = Vec::new();
+    let mut current_char_count = 0;
 
-    for para in paragraphs {
-        let para_char_count = para.chars().count();
-        let current_char_count = current_content.chars().count();
-        if !current_content.is_empty() && current_char_count + para_char_count + 2 > config.max_chars {
+    for (para_text, para_offset) in paragraphs {
+        let para_char_count = para_text.chars().count();
+        
+        if !current_paras.is_empty() && current_char_count + para_char_count + 2 > config.max_chars {
             // Flush current
-            let chunk = create_chunk(&current_content, &heading, config, start_index + chunks.len());
-            // SAFETY: Use char count for overlap check
-            let safe_overlap = config.overlap_chars.min(config.max_chars / 2);
-            overlap_tail = tail_chars(&chunk.content, safe_overlap).to_string();
+            let chunk = create_chunk_from_paras(text, &current_paras, base_offset, &heading, config, start_index + chunks.len());
             chunks.push(chunk);
 
-            current_content = if overlap_tail.is_empty() {
-                para.to_string()
-            } else {
-                format!("{}\n\n{}", overlap_tail, para)
-            };
-        } else if current_content.is_empty() {
-            current_content = if overlap_tail.is_empty() {
-                para.to_string()
-            } else {
-                format!("{}\n\n{}", overlap_tail, para)
-            };
-        } else {
-            current_content.push_str("\n\n");
-            current_content.push_str(para);
-        }
-
-        // Force split if still too large
-        while current_content.chars().count() > config.max_chars + (config.max_chars / 2) {
-            let split_pos = find_split_point(&current_content, config.max_chars);
-            let head = &current_content[..split_pos];
-            let rest = &current_content[split_pos..];
-
-            let chunk = create_chunk(head, &heading, config, start_index + chunks.len());
-            chunks.push(chunk);
-
-            // SAFETY: Ensure overlap_chars is never larger than half of max_chars
+            // For overlap, we keep the last few paragraphs that fit within overlap_chars
             let safe_overlap = config.overlap_chars.min(config.max_chars / 2);
-            overlap_tail = tail_chars(head, safe_overlap).to_string();
-            current_content = if overlap_tail.is_empty() {
-                rest.trim().to_string()
-            } else {
-                format!("{}\n{}", overlap_tail, rest.trim())
-            };
+            let mut overlap_paras = Vec::new();
+            let mut overlap_count = 0;
+            for (p_text, p_off) in current_paras.iter().rev() {
+                let p_len = p_text.chars().count();
+                if overlap_count + p_len > safe_overlap && !overlap_paras.is_empty() {
+                    break;
+                }
+                overlap_paras.push((*p_text, *p_off));
+                overlap_count += p_len;
+            }
+            overlap_paras.reverse();
+            current_paras = overlap_paras;
+            current_char_count = overlap_count;
         }
+
+        current_paras.push((para_text, para_offset));
+        current_char_count += para_char_count + 2; // +2 for \n\n
     }
 
-    if !current_content.trim().is_empty() {
-        chunks.push(create_chunk(&current_content, &heading, config, start_index + chunks.len()));
+    if !current_paras.is_empty() {
+        chunks.push(create_chunk_from_paras(text, &current_paras, base_offset, &heading, config, start_index + chunks.len()));
     }
 
     chunks
 }
 
-fn create_chunk(content: &str, heading: &Option<String>, config: &ChunkConfig, index: usize) -> Chunk {
+fn create_chunk_from_paras(
+    full_text: &str,
+    paras: &[(&str, usize)],
+    base_offset: usize,
+    heading: &Option<String>,
+    config: &ChunkConfig,
+    index: usize
+) -> Chunk {
+    let first_para = paras.first().unwrap();
+    let last_para = paras.last().unwrap();
+    
+    let chunk_start_relative = first_para.1;
+    let chunk_end_relative = last_para.1 + last_para.0.len();
+    let content = &full_text[chunk_start_relative..chunk_end_relative];
+
+    create_chunk_with_offsets(
+        content, 
+        base_offset + chunk_start_relative, 
+        base_offset + chunk_end_relative, 
+        heading, 
+        config, 
+        index
+    )
+}
+
+fn create_chunk_with_offsets(
+    content: &str,
+    start_byte: usize,
+    end_byte: usize,
+    heading: &Option<String>,
+    config: &ChunkConfig,
+    index: usize
+) -> Chunk {
     let trimmed = content.trim().to_string();
     
     // Title Augmentation with 15% limit (approx 150 chars for 1000 limit)
@@ -166,68 +183,27 @@ fn create_chunk(content: &str, heading: &Option<String>, config: &ChunkConfig, i
         embedding_text,
         index,
         heading_path: heading.clone(),
+        start_byte,
+        end_byte,
     }
 }
 
-fn find_split_point(text: &str, char_limit: usize) -> usize {
-    let char_indices: Vec<(usize, char)> = text.char_indices().collect();
-    if char_indices.len() <= char_limit {
-        return text.len();
-    }
-    
-    // safe_limit is the BYTE index of the char at char_limit
-    let safe_limit = char_indices[char_limit].0;
-
-    if safe_limit == 0 {
-        // If we can't find a boundary <= limit, just find the first one
-        return text.char_indices()
-            .map(|(i, _)| i)
-            .find(|&i| i > 0)
-            .unwrap_or(text.len());
-    }
-
-    // Try to find last sentence end or whitespace before limit
-    // Define a "good split" window: last 30% of the limit
-    let min_split = (safe_limit as f32 * 0.7) as usize;
-    let candidate = &text[..safe_limit];
-    
-    if let Some(pos) = candidate.rfind(['.', '!', '?', '\n']) {
-        if pos >= min_split {
-            return pos + 1;
+/// Split text on blank lines, filtering empty results, returning slices and their offsets in text.
+fn split_paragraphs_with_offsets(text: &str) -> Vec<(&str, usize)> {
+    let mut result = Vec::new();
+    let base_ptr = text.as_ptr() as usize;
+    for part in text.split("\n\n") {
+        let trimmed = part.trim();
+        if !trimmed.is_empty() {
+            let offset = trimmed.as_ptr() as usize - base_ptr;
+            result.push((trimmed, offset));
         }
     }
-    
-    if let Some(pos) = candidate.rfind(' ') {
-        if pos >= min_split {
-            return pos + 1;
-        }
-    }
-
-    safe_limit
-}
-
-/// Split text on blank lines, filtering empty results.
-fn split_paragraphs(text: &str) -> Vec<&str> {
-    text.split("\n\n")
-        .map(|p| p.trim())
-        .filter(|p| !p.is_empty())
-        .collect()
+    result
 }
 
 /// Return the last `n` chars of `s` (aligned to char boundary, starting at whitespace when possible).
-fn tail_chars(s: &str, n: usize) -> &str {
-    if s.len() <= n {
-        return s;
-    }
-    let start = s.len() - n;
-    // Align to char boundary
-    let aligned = s
-        .char_indices()
-        .map(|(i, _)| i)
-        .find(|&i| i >= start)
-        .unwrap_or(start);
-    &s[aligned..]
-}
+
 
 #[cfg(test)]
 mod tests {

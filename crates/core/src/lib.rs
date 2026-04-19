@@ -12,3 +12,4 @@ pub mod plugin;
 pub mod search;
 pub mod sync;
 pub mod indexing;
+pub mod sync_manager;
