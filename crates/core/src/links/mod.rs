@@ -29,7 +29,7 @@ impl LinkResolver {
         }
 
         // 2. Handle Wiki-link aliases: [[target|label]] -> only use target
-        let mut target = if raw_link.contains('|') {
+        let target = if raw_link.contains('|') {
             raw_link.split('|').next().unwrap_or(raw_link).trim()
         } else {
             raw_link.trim()

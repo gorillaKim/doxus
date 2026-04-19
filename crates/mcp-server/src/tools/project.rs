@@ -108,7 +108,6 @@ pub fn remove_project(server: &McpServer, id: Value, args: &Value) -> McpRespons
 
 pub fn index_project(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     use doxus_core::search::SearchEngine;
-    use doxus_plugin_sdk::{PluginConfig, PluginSecrets};
     use std::sync::Arc;
 
     let name = match args["project"].as_str().or_else(|| args["name"].as_str()) {
@@ -210,7 +209,7 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
     let since = last_synced.unwrap_or(0);
     let cursor = sync_cursor;
 
-    let mut plugin = server.plugin_manager().get_source(&plugin_id)
+    let plugin = server.plugin_manager().get_source(&plugin_id)
         .ok_or_else(|| McpResponse::err(id.clone(), -32603, format!("plugin not found: {plugin_id}")));
     
     let mut plugin = match plugin {

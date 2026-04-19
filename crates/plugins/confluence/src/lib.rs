@@ -91,6 +91,7 @@ use native_compat::*;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+#[cfg_attr(target_arch = "wasm32", allow(unused_imports))]
 use doxus_plugin_sdk::{PluginError, wasm_types::*};
 
 #[cfg(not(target_arch = "wasm32"))]

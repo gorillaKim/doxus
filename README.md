@@ -4,83 +4,90 @@
 
 # doxus (도커스)
 
-> **WASM 플러그인 기반의 다중 소스 통합 문서 검색 허브**
+> **흩어져 있는 나의 모든 지식을 한 곳에서, 똑똑하게 검색하세요.**
 
-doxus는 Obsidian, Confluence, GitHub 등 흩어져 있는 지식 소스를 하나로 통합하여 강력한 검색과 AI 에이전트 인터렉션을 제공하는 **로컬 퍼스트(Local-First)** 검색 엔진입니다.
-
----
-
-## 🏛 프로젝트 철학 (Philosophy)
-
-doxus는 단순한 검색 도구를 넘어, AI 시대에 걸맞은 개인 및 팀 지식 관리의 새로운 표준을 지향합니다.
-
-*   **Local First**: 모든 지식 인덱스는 사용자의 로컬 장치(`~/.doxus/db`)에 저장됩니다. 데이터 주권과 프라이버시를 최우선으로 하며, 오프라인에서도 빠른 검색을 보장합니다.
-*   **WASM-Based Extensibility**: 플러그인 시스템은 WebAssembly(WASM) 샌드박스에서 실행됩니다. 이를 통해 안전하고 언어에 구애받지 않는 확장성을 제공하며, 누구나 자신만의 소스 어댑터를 개발할 수 있습니다.
-*   **Agent Friendly**: 단순한 UI 제공을 넘어, AI 에이전트(Claude Code, Gemini 등)가 직접 doxus의 도구를 사용할 수 있도록 **MCP(Model Context Protocol)**를 완벽히 지원합니다.
-*   **Hybrid Search Excellence**: 전통적인 키워드 검색(FTS5)과 현대적인 벡터 검색(Semantic Search)을 **RRF(Reciprocal Rank Fusion)** 알고리즘으로 결합하여 최상의 검색 품질을 제공합니다.
+doxus는 Obsidian, Confluence, GitHub 등 여러 곳에 저장된 나의 문서들을 하나로 통합하여, 필요할 때 즉시 찾아주는 **개인용 지식 검색 허브**입니다. 모든 데이터는 당신의 컴퓨터에만 저장되어 안전합니다.
 
 ---
 
-## ✨ 핵심 기능 (Key Features)
+## 🚀 빠른 시작 가이드 (Quick Start)
 
-*   **통합 검색 (Hybrid Search)**: Obsidian 메모, Confluence 페이지, GitHub 이슈/위키를 한 번에 검색합니다.
-*   **보안 샌드박스**: 모든 플러그인은 Extism WASM 런타임 내에서 엄격하게 통제된 권한(Host Functions)으로만 실행됩니다.
-*   **지식 그래프 탐색**: 문서 간의 링크 관계를 분석하여 백링크, 최단 경로, 관련 문서 추천 기능을 제공합니다.
-*   **사서 에이전트 (Sidecar)**: 데스크톱 앱 내부에 내장된 에이전트와 대화하며 복잡한 지식 베이스에서 답을 찾을 수 있습니다.
-*   **플러그인 마켓플레이스**: 검증된 플러그인을 즉시 설치하고 관리할 수 있는 레지스트리 시스템을 갖추고 있습니다.
+일반 사용자분들은 아래 단계에 따라 간편하게 시작하실 수 있습니다.
+
+### 1단계: 앱 설치하기
+*   **macOS 사용자**: [최신 버전 .dmg 다운로드](https://github.com/gorillaKim/doxus/releases) 후, 앱을 `Applications` 폴더로 드래그하세요.
+*   **기타 플랫폼**: 현재 macOS를 우선 지원하며, 윈도우 및 리눅스 버전은 준비 중입니다.
+
+### 2단계: '인공지능 두뇌' 설정하기 (최초 1회)
+doxus의 핵심인 **'의미 기반 검색'**을 사용하기 위해서는 검색 엔진의 두뇌 역할을 하는 모델 파일이 필요합니다. 아래 명령어를 터미널에 복사해서 붙여넣기만 하면 자동으로 설정됩니다.
+
+```bash
+# 터미널을 열고 아래 한 줄을 복사해서 붙여넣으세요.
+curl -fsSL https://raw.githubusercontent.com/gorillaKim/doxus/main/scripts/download-model.sh | bash
+```
+> [!TIP]
+> **왜 수동으로 하나요?** 
+> 개인정보 보호를 최우선으로 하는 doxus는 외부 서버를 거치지 않고 사용자 컴퓨터에서 직접 인공지능을 돌립니다. 이 과정에 필요한 수십 MB의 모델 파일을 리포지토리에 포함하지 않고 안전하게 직접 내려받도록 설계했습니다.
+
+### 3단계: 지식 연결하고 검색하기
+1.  앱을 실행하고 **'Add Project'** 버튼을 누르세요.
+2.  나의 Obsidian 폴더 경로나 Confluence API 정보를 입력합니다.
+3.  **'Index'** 버튼을 눌러 doxus가 지식을 학습하게 한 뒤, 검색창에서 원하는 내용을 찾아보세요!
 
 ---
 
-## 🚀 성능 및 아키텍처 (Performance)
+## ✨ doxus가 특별한 이유
 
-doxus의 검색 파이프라인은 속도와 정확도를 위해 최적화되어 있습니다.
-
-*   **Indexing**: 문서 청킹(1500자) 및 ONNX 기반 로컬 임베딩(`all-MiniLM-L6-v2`)을 통해 고속 인덱싱을 수행합니다.
-*   **Hybrid Ranking**: 
-    - **FTS5 (BM25)**: 키워드 매칭의 정확성 보장.
-    - **Vector (KNN)**: 의미적 유사성 포착.
-    - **RRF (k=60)**: 두 검색 결과를 통계적으로 병합하여 신뢰도 높은 순위 산출.
-*   **Latency**: 로컬 SQLite 기반으로 수만 개의 청크에서도 밀리초 단위의 검색 속도를 유지합니다.
+*   **진짜 로컬 퍼스트**: 당신의 메모가 클라우드에 올라갈까 봐 걱정하지 마세요. 모든 검색과 데이터 저장은 오직 당신의 기기 내에서만 이루어집니다.
+*   **하이브리드 검색**: 단순히 단어만 찾는 것이 아니라, "그때 그 프로젝트에 대해서 쓴 거 어디 있지?"와 같은 질문의 **의미**를 이해하고 결과를 찾아줍니다.
+*   **지식의 연결 고리 탐색**: 문서 간의 링크나 백링크를 분석하여 지식 사이의 관계를 시각적으로 보여줍니다.
+*   **AI 에이전트 친구**: Claude나 Gemini 같은 AI 에이전트가 doxus의 도구를 사용하여 당신의 지식 베이스를 바탕으로 답변할 수 있습니다.
 
 ---
 
-## 🛠 설치 방법 (Installation)
+## 🛠 개발자 및 고급 사용자 가이드
+
+직접 빌드하거나 명령줄(CLI)에서 사용하고 싶은 분들을 위한 매뉴얼입니다.
 
 ### 요구 사양
-*   **Rust**: 1.75 버전 이상
-*   **Node.js**: 20.x 버전 이상 (Desktop 앱 빌드용)
+*   **Rust**: 1.75+
+*   **Node.js**: 20.x+
 
 ### 빌드 및 실행
-1.  **저장소 클론**
-    ```bash
-    git clone https://github.com/gorillaKim/doxus.git
-    cd doxus
-    ```
-2.  **의존성 설치**
-    ```bash
-    npm install
-    ```
-3.  **임베딩 모델 다운로드**
-    ```bash
-    ./scripts/download-model.sh
-    ```
-4.  **개발 모드 실행**
-    ```bash
-    cargo tauri dev
-    ```
+```bash
+git clone https://github.com/gorillaKim/doxus.git
+cd doxus
+npm install
+
+# 모델 다운로드
+./scripts/download-model.sh
+
+# 데스크톱 앱 실행
+npm run tauri dev
+
+# CLI 빌드 및 실행
+cargo build --release --bin doxus
+./target/release/doxus --help
+```
 
 ---
 
-## 📖 사용 방법 (Usage)
+## ⚙️ 작동 원리 (Deep Dive)
 
-1.  **플러그인 설치**: 마켓 페이지에서 필요한 소스(Confluence, GitHub 등)의 플러그인을 설치합니다.
-2.  **프로젝트 추가**: 'Add Project' 메뉴를 통해 로컬 Obsidian 폴더 경로나 외부 서비스의 API 토큰을 설정합니다.
-3.  **인덱싱**: 프로젝트 추가 후 인덱싱 버튼을 누르면 doxus가 문서를 분석하여 하이브리드 인덱스를 생성합니다.
-4.  **검색 및 탐색**: 검색창에서 질문을 입력하거나, 특정 문서의 관계 그래프를 탐색합니다.
-5.  **에이전트 활용**: 우측의 Chat Drawer를 열어 내 지식 베이스를 잘 알고 있는 전용 에이전트에게 질문하세요.
+doxus는 최상의 검색 품질을 위해 다음 기술을 조합하여 사용합니다.
+
+1.  **SQLite FTS5**: 키워드 기반의 빠른 정확도 보장.
+2.  **ONNX Local Embedding**: 로컬 CPU를 활용한 고효율 벡터 생성.
+3.  **RRF (Reciprocal Rank Fusion)**: 키워드 검색과 벡터 검색 순위를 통계적으로 병합하여 최적의 결과를 도출합니다.
+4.  **WASM Plugin System**: Extism 기반의 샌드박스에서 안전하게 외부 소스(Confluence, GitHub 등)의 데이터를 가져옵니다.
+
+---
+
+## 🧩 에이전트 연동 (MCP)
+doxus는 **MCP (Model Context Protocol)** 서버를 내장하고 있습니다. 
+Claude Desktop 설정에 `doxus-mcp` 바이너리를 추가하면 에이전트가 `doxus_search`, `doxus_get_document` 등의 도구를 사용하여 당신의 지식을 활용할 수 있게 됩니다.
 
 ---
 
 ## 📄 라이선스 (License)
-
-본 프로젝트는 **MIT License**에 따라 배포됩니다.
+본 프로젝트는 **MIT License**를 따릅니다.
