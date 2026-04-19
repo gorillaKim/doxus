@@ -31,6 +31,8 @@ interface DocEntry {
   heading_path?: string | null; // 섹션 경로 필드 추가
   tags?: string[];
   updated_at?: number;
+  last_indexed?: number;
+  cache_ttl?: number;
   metadata?: Record<string, any>;
   url?: string | null;
 }
@@ -50,6 +52,8 @@ function hitToEntry(hit: SearchHit): DocEntry {
     heading_path: hit.heading_path,
     tags: hit.tags,
     updated_at: hit.updated_at,
+    last_indexed: hit.last_indexed,
+    cache_ttl: hit.cache_ttl,
     metadata: hit.metadata,
     url: hit.url,
   };
@@ -67,6 +71,8 @@ function allDocToEntry(doc: AllDocument): DocEntry {
     heading_path: null, // 전체 목록에서는 섹션 정보 없음
     tags: doc.tags,
     updated_at: doc.updated_at,
+    last_indexed: doc.last_indexed,
+    cache_ttl: doc.cache_ttl,
     url: doc.url,
   };
 }
@@ -127,6 +133,22 @@ function DocTooltip({ doc, x, y }: TooltipProps) {
           <div className="flex items-center gap-2">
             <span className="w-12 text-gray-600">Updated</span>
             <span className="text-gray-400">{dateStr}</span>
+          </div>
+        )}
+
+        {doc.last_indexed && (
+          <div className="flex items-center gap-2">
+            <span className="w-12 text-gray-600">Indexed</span>
+            <span className="text-indigo-400/80">{formatUnixDate(doc.last_indexed, true)}</span>
+          </div>
+        )}
+
+        {doc.last_indexed && doc.cache_ttl && doc.cache_ttl > 0 && (
+          <div className="flex items-center gap-2">
+            <span className="w-12 text-gray-600">Cache</span>
+            <span className="text-amber-400/80">
+              {formatDuration((doc.last_indexed + doc.cache_ttl * 60) - Math.floor(Date.now() / 1000))}
+            </span>
           </div>
         )}
 
@@ -383,20 +405,45 @@ function ProjectGroup({
 
 // ── 문서 메타데이터 패널 ──────────────────────────────────────────────────
 
-function formatUnixDate(ts: number): string {
-  return new Date(ts * 1000).toLocaleDateString('ko-KR', {
+function formatUnixDate(ts: number, includeTime = false): string {
+  const date = new Date(ts * 1000);
+  if (includeTime) {
+    return date.toLocaleString('ko-KR', {
+      year: 'numeric', month: 'short', day: 'numeric',
+      hour: '2-digit', minute: '2-digit', second: '2-digit'
+    });
+  }
+  return date.toLocaleDateString('ko-KR', {
     year: 'numeric', month: 'short', day: 'numeric',
   });
 }
 
+function formatDuration(seconds: number): string {
+  if (seconds <= 0) return '만료됨';
+  const mins = Math.floor(seconds / 60);
+  const hours = Math.floor(mins / 60);
+  const days = Math.floor(hours / 24);
+
+  if (days > 0) return `${days}일 남음`;
+  if (hours > 0) return `${hours}시간 ${mins % 60}분 남음`;
+  if (mins > 0) return `${mins}분 남음`;
+  return `${seconds}초 남음`;
+}
+
 function DocMetaPanel({
-  tags, aliases, created_at, updated_at, metadata,
+  tags, aliases, created_at, updated_at, last_indexed, cache_ttl, metadata,
 }: {
   tags: string[]; aliases: string[];
   created_at: number | null; updated_at: number | null;
+  last_indexed: number | null; cache_ttl: number | null;
   metadata: Record<string, unknown>;
 }) {
   const displayMeta = Object.entries(metadata).filter(([k]) => k !== 'links');
+  
+  const now = Math.floor(Date.now() / 1000);
+  const remainingSeconds = (last_indexed && cache_ttl && cache_ttl > 0) 
+    ? (last_indexed + cache_ttl * 60) - now 
+    : null;
 
   return (
     <div className="flex flex-col gap-5">
@@ -409,6 +456,19 @@ function DocMetaPanel({
         <div className="bg-white/[0.03] rounded-xl p-3 border border-white/5">
           <span className="text-[10px] text-gray-500 font-bold uppercase tracking-wider block mb-1">Updated At</span>
           <span className="text-sm text-gray-300">{updated_at ? formatUnixDate(updated_at) : 'N/A'}</span>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        <div className="bg-indigo-500/[0.05] rounded-xl p-3 border border-indigo-500/10">
+          <span className="text-[10px] text-indigo-400/60 font-bold uppercase tracking-wider block mb-1">Last Indexed</span>
+          <span className="text-sm text-indigo-300">{last_indexed ? formatUnixDate(last_indexed, true) : 'N/A'}</span>
+        </div>
+        <div className="bg-amber-500/[0.05] rounded-xl p-3 border border-amber-500/10">
+          <span className="text-[10px] text-amber-400/60 font-bold uppercase tracking-wider block mb-1">Cache Status</span>
+          <span className={`text-sm font-medium ${remainingSeconds != null && remainingSeconds <= 0 ? 'text-rose-400' : 'text-amber-300'}`}>
+            {remainingSeconds != null ? formatDuration(remainingSeconds) : (cache_ttl === 0 ? '영구적' : 'N/A')}
+          </span>
         </div>
       </div>
 
@@ -587,6 +647,7 @@ export function SearchPage() {
   const [previewMeta, setPreviewMeta] = useState<{
     tags: string[]; aliases: string[];
     created_at: number | null; updated_at: number | null;
+    last_indexed: number | null; cache_ttl: number | null;
     metadata: Record<string, unknown>;
     url: string | null;
   } | null>(null);
@@ -646,6 +707,7 @@ export function SearchPage() {
         content: string; from_cache?: boolean;
         tags?: string[]; aliases?: string[];
         created_at?: number | null; updated_at?: number | null;
+        last_indexed?: number | null; cache_ttl?: number | null;
         metadata?: Record<string, unknown>;
         url?: string | null;
       }>('get_document_content', {
@@ -659,6 +721,8 @@ export function SearchPage() {
         aliases: result.aliases ?? [],
         created_at: result.created_at ?? null,
         updated_at: result.updated_at ?? null,
+        last_indexed: result.last_indexed ?? doc.last_indexed ?? null,
+        cache_ttl: result.cache_ttl ?? doc.cache_ttl ?? null,
         metadata: result.metadata ?? {},
         url: result.url ?? doc.url ?? null,
       });
@@ -889,6 +953,8 @@ export function SearchPage() {
                         aliases={previewMeta.aliases}
                         created_at={previewMeta.created_at}
                         updated_at={previewMeta.updated_at}
+                        last_indexed={previewMeta.last_indexed}
+                        cache_ttl={previewMeta.cache_ttl}
                         metadata={previewMeta.metadata}
                       />
                     )}

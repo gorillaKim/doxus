@@ -327,12 +327,12 @@ pub async fn market_uninstall_plugin(
 
 #[tauri::command]
 pub async fn plugin_save_auth(
+    state: tauri::State<'_, crate::AppState>,
     plugin_id: String,
     auth_fields: std::collections::HashMap<String, String>,
 ) -> Result<serde_json::Value, String> {
+    let store = state.secret_store.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let store = doxus_core::secrets::UnifiedKeychainStore::new("doxus", "com.doxus.secrets.v1");
-        let _ = store.load_from_keychain();
         store.set_bulk(&plugin_id, &auth_fields)
             .map_err(|e| format!("Failed to save auth fields: {}", e))?;
         println!("[Market] saved {} auth fields for {} to unified store", auth_fields.len(), plugin_id);
@@ -342,17 +342,16 @@ pub async fn plugin_save_auth(
 
 #[tauri::command]
 pub async fn plugin_get_auth_status(
+    state: tauri::State<'_, crate::AppState>,
     plugin_id: String,
 ) -> Result<serde_json::Value, String> {
+    let store = state.secret_store.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let keys_to_check: &[&str] = match plugin_id.as_str() {
             "com.doxus.confluence" => &["api_token", "email"],
             "com.doxus.github" => &["access_token", "token"],
             _ => &[],
         };
-
-        let store = doxus_core::secrets::UnifiedKeychainStore::new("doxus", "com.doxus.secrets.v1");
-        let _ = store.load_from_keychain();
 
         let configured = keys_to_check.iter().any(|key| {
             store.get(&plugin_id, key)
@@ -511,8 +510,7 @@ pub async fn plugin_oauth_exchange(
         .unwrap_or("")
         .to_string();
 
-    let store = doxus_core::secrets::UnifiedKeychainStore::new("doxus", "com.doxus.secrets.v1");
-    let _ = store.load_from_keychain();
+    let store = state.secret_store.clone();
 
     let mut fields = std::collections::HashMap::new();
     fields.insert("access_token".to_string(), access_token.clone());

@@ -12,6 +12,8 @@ pub struct AppSettings {
     pub language: String,
     pub theme: String,
     pub debug_tags: Vec<String>,
+    #[serde(default)]
+    pub keychain_migrated: bool,
 }
 
 impl Default for AppSettings {
@@ -21,6 +23,7 @@ impl Default for AppSettings {
             language: "ko".to_string(),
             theme: "system".to_string(),
             debug_tags: vec![],
+            keychain_migrated: false,
         }
     }
 }

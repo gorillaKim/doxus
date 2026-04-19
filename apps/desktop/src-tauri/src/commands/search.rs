@@ -422,14 +422,14 @@ pub async fn search_documents(
     let doc_ids: Vec<i64> = hits.iter().map(|h| h.document_id).collect();
     
     // 3. Document metadata batch fetching (scoped lock)
-    let mut doc_info: std::collections::HashMap<i64, (String, String, String, Vec<String>, i64, serde_json::Value, String, Option<String>)> = std::collections::HashMap::new();
+    let mut doc_info: std::collections::HashMap<i64, (String, String, String, Vec<String>, i64, i64, serde_json::Value, String, Option<String>)> = std::collections::HashMap::new();
     {
         let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
         for chunk in doc_ids.chunks(50) {
             let placeholders = chunk.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
             let sql = format!(
                 "SELECT d.id, p.name, COALESCE(p.source_type, 'obsidian'), d.source_doc_id, \
-                        COALESCE(d.updated_at, d.last_indexed), COALESCE(d.metadata_json, '{{}}'), p.path, d.url \
+                        d.updated_at, d.last_indexed, COALESCE(d.metadata_json, '{{}}'), p.path, d.url \
                  FROM documents d JOIN projects p ON d.project_id = p.id \
                  WHERE d.id IN ({})",
                 placeholders
@@ -442,10 +442,11 @@ pub async fn search_documents(
                     r.get::<_, String>(1)?,
                     r.get::<_, String>(2)?,
                     r.get::<_, String>(3)?,
-                    r.get::<_, i64>(4).unwrap_or(0),
-                    r.get::<_, String>(5).unwrap_or_else(|_| "{}".to_string()),
-                    r.get::<_, String>(6).unwrap_or_default(),
-                    r.get::<_, Option<String>>(7)?,
+                    r.get::<_, Option<i64>>(4).ok().flatten().unwrap_or(0),
+                    r.get::<_, Option<i64>>(5).ok().flatten().unwrap_or(0),
+                    r.get::<_, String>(6).unwrap_or_else(|_| "{}".to_string()),
+                    r.get::<_, String>(7).unwrap_or_default(),
+                    r.get::<_, Option<String>>(8)?,
                 ))
             }).map_err(|e| e.to_string())?;
 
@@ -456,19 +457,30 @@ pub async fn search_documents(
                     let source_type = row.2;
                     let source_doc_id = row.3;
                     let updated_at = row.4;
-                    let metadata: serde_json::Value = serde_json::from_str(&row.5).unwrap_or(serde_json::json!({}));
-                    let project_path = row.6;
-                    
-                    let url = row.7;
+                    let last_indexed = row.5;
+                    let metadata: serde_json::Value = serde_json::from_str(&row.6).unwrap_or(serde_json::json!({}));
+                    let project_path = row.7;
+                    let url = row.8;
                     
                     // Tags look up
                     let mut tag_stmt = conn.prepare("SELECT tag FROM document_tags WHERE document_id = ?1").map_err(|e| e.to_string())?;
                     let tags: Vec<String> = tag_stmt.query_map([doc_id], |tr| tr.get(0)).map_err(|e| e.to_string())?
                         .filter_map(|tr| tr.ok()).collect();
 
-                    doc_info.insert(doc_id, (project_name, source_type, source_doc_id, tags, updated_at, metadata, project_path, url));
+                    doc_info.insert(doc_id, (project_name, source_type, source_doc_id, tags, updated_at, last_indexed, metadata, project_path, url));
                 }
             }
+        }
+    }
+
+    // Cache TTL lookup for active plugins
+    let mut plugin_ttls: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    {
+        let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn.prepare("SELECT plugin_id, CAST(value AS INTEGER) FROM plugin_kv WHERE namespace = 'settings' AND key = 'cache_ttl_minutes'").map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))).map_err(|e| e.to_string())?;
+        for row in rows.flatten() {
+            plugin_ttls.insert(row.0, row.1);
         }
     }
 
@@ -481,9 +493,13 @@ pub async fn search_documents(
             let source_doc_id = info.map(|i| i.2.clone()).unwrap_or_default();
             let tags = info.map(|i| i.3.clone()).unwrap_or_default();
             let updated_at = info.map(|i| i.4).unwrap_or(0);
-            let metadata = info.map(|i| i.5.clone()).unwrap_or(serde_json::json!({}));
-            let project_path = info.map(|i| i.6.as_str()).unwrap_or("");
-            let url = info.and_then(|i| i.7.clone()).or_else(|| h.url.clone());
+            let last_indexed = info.map(|i| i.5).unwrap_or(0);
+            let metadata = info.map(|i| i.6.clone()).unwrap_or(serde_json::json!({}));
+            let project_path = info.map(|i| i.7.as_str()).unwrap_or("");
+            let url = info.and_then(|i| i.8.clone()).or_else(|| h.url.clone());
+            
+            let plugin_id = format!("com.doxus.{}", source_type);
+            let cache_ttl = plugin_ttls.get(&plugin_id).cloned().unwrap_or(0);
             
             // Normalize file_path for UI tree: strip project_path if it's an absolute path
             // Also strip "virtual root" if it matches name part (e.g. '컨플/테크스펙' -> strip '테크스펙/')
@@ -529,6 +545,8 @@ pub async fn search_documents(
                 "source_type": source_type,
                 "tags": tags,
                 "updated_at": updated_at,
+                "last_indexed": last_indexed,
+                "cache_ttl": cache_ttl,
                 "metadata": metadata,
                 "url": url,
             })
@@ -616,10 +634,10 @@ pub async fn trigger_reindex(
 
 pub(crate) fn get_document_content_impl(conn: &rusqlite::Connection, file_path: &str) -> Result<serde_json::Value, String> {
     let mut stmt = conn.prepare(
-        "SELECT id, title, content, created_at, updated_at, metadata_json, url \
+        "SELECT id, title, content, created_at, updated_at, last_indexed, metadata_json, url \
          FROM documents WHERE source_doc_id = ?1 OR file_path = ?1 ORDER BY id ASC"
     ).map_err(|e| e.to_string())?;
-    let rows: Vec<(i64, Option<String>, String, Option<i64>, Option<i64>, Option<String>, Option<String>)> = stmt
+    let rows: Vec<(i64, Option<String>, String, Option<i64>, Option<i64>, Option<i64>, Option<String>, Option<String>)> = stmt
         .query_map(rusqlite::params![file_path], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
@@ -627,8 +645,9 @@ pub(crate) fn get_document_content_impl(conn: &rusqlite::Connection, file_path: 
                 r.get::<_, String>(2)?,
                 r.get::<_, Option<i64>>(3)?,
                 r.get::<_, Option<i64>>(4)?,
-                r.get::<_, Option<String>>(5)?,
+                r.get::<_, Option<i64>>(5)?,
                 r.get::<_, Option<String>>(6)?,
+                r.get::<_, Option<String>>(7)?,
             ))
         })
         .map_err(|e| e.to_string())?
@@ -641,11 +660,31 @@ pub(crate) fn get_document_content_impl(conn: &rusqlite::Connection, file_path: 
     let title = rows[0].1.clone();
     let created_at = rows[0].3;
     let updated_at = rows[0].4;
-    let metadata_json: serde_json::Value = rows[0].5.as_deref()
+    let last_indexed = rows[0].5;
+    let metadata_json: serde_json::Value = rows[0].6.as_deref()
         .and_then(|s| serde_json::from_str(s).ok())
         .unwrap_or(serde_json::json!({}));
-    let url = rows[0].6.clone();
-    let content = rows.into_iter().map(|(_, _, c, _, _, _, _)| c).collect::<Vec<_>>().join("\n\n");
+    let url = rows[0].7.clone();
+    let content = rows.into_iter().map(|(_, _, c, _, _, _, _, _)| c).collect::<Vec<_>>().join("\n\n");
+
+    // Plugin TTL lookup
+    let cache_ttl: i64 = {
+        let mut ttl = 0i64;
+        // Find project and source_type
+        if let Ok(stype) = conn.query_row(
+            "SELECT source_type FROM projects p JOIN documents d ON d.project_id = p.id WHERE d.id = ?1",
+            [id],
+            |r| r.get::<_, String>(0)
+        ) {
+            let plugin_id = format!("com.doxus.{}", stype);
+            ttl = conn.query_row(
+                "SELECT CAST(value AS INTEGER) FROM plugin_kv WHERE plugin_id = ?1 AND namespace = 'settings' AND key = 'cache_ttl_minutes'",
+                [plugin_id],
+                |r| r.get(0)
+            ).unwrap_or(0);
+        }
+        ttl
+    };
 
     // Tags
     let tags: Vec<String> = conn.prepare(
@@ -668,6 +707,8 @@ pub(crate) fn get_document_content_impl(conn: &rusqlite::Connection, file_path: 
         "file_path": file_path,
         "created_at": created_at,
         "updated_at": updated_at,
+        "last_indexed": last_indexed,
+        "cache_ttl": cache_ttl,
         "tags": tags,
         "aliases": aliases,
         "metadata": metadata_json,
@@ -877,12 +918,18 @@ pub async fn get_document_content(
                             metadata: raw.metadata.clone(),
                         };
 
+                        let strategy: String = {
+                            let conn = conn_arc.lock().unwrap_or_else(|e| e.into_inner());
+                            conn.query_row("SELECT storage_strategy FROM projects WHERE id = ?1", [project_id], |r| r.get(0)).unwrap_or_else(|_| "full".to_string())
+                        };
+
                         let _ = engine.index_document_async_with_meta(
                             project_id, 
                             &raw.id.0, 
                             raw.title.as_deref().unwrap_or("Untitled"), 
                             &raw.content, 
-                            meta
+                            meta,
+                            &strategy
                         ).await;
 
                         let conn = conn_arc.lock().unwrap_or_else(|e| e.into_inner());
@@ -948,12 +995,18 @@ pub async fn get_document_content(
                             metadata: raw.metadata.clone(),
                         };
 
+                        let strategy: String = {
+                            let conn = conn_arc.lock().unwrap_or_else(|e| e.into_inner());
+                            conn.query_row("SELECT storage_strategy FROM projects WHERE id = ?1", [project_id], |r| r.get(0)).unwrap_or_else(|_| "full".to_string())
+                        };
+
                         let _ = engine.index_document_async_with_meta(
                             project_id, 
                             &raw.id.0, 
                             raw.title.as_deref().unwrap_or("Untitled"), 
                             &raw.content, 
-                            meta
+                            meta,
+                            &strategy
                         ).await;
 
                         Ok(serde_json::json!({
@@ -997,12 +1050,18 @@ pub async fn get_document_content(
                             metadata: raw.metadata.clone(),
                         };
 
+                        let strategy: String = {
+                            let conn = conn_arc.lock().unwrap_or_else(|e| e.into_inner());
+                            conn.query_row("SELECT storage_strategy FROM projects WHERE id = ?1", [project_id], |r| r.get(0)).unwrap_or_else(|_| "full".to_string())
+                        };
+
                         let _ = engine.index_document_async_with_meta(
                             project_id,
                             &raw.id.0,
                             raw.title.as_deref().unwrap_or("Untitled"),
                             &raw.content,
-                            meta
+                            meta,
+                            &strategy
                         ).await;
 
                         Ok(serde_json::json!({
@@ -1065,10 +1124,11 @@ pub fn reindex_if_stale(
     }
 
     // 해시 달라짐 → reindex
+    let strategy: String = conn.query_row("SELECT storage_strategy FROM projects WHERE id = ?1", [project_id], |r| r.get(0)).unwrap_or_else(|_| "full".to_string());
     let engine = doxus_core::search::SearchEngine::new(conn);
     engine
-        .index_document(project_id, source_doc_id, title, content)
-        .map_err(|e| e.to_string())?;
+        .index_document(project_id, source_doc_id, title, content, &strategy)
+        .map_err(|e: doxus_core::search::SearchError| e.to_string())?;
 
     Ok(true)
 }
@@ -1076,7 +1136,7 @@ pub fn reindex_if_stale(
 pub fn list_all_documents_impl(conn: &rusqlite::Connection) -> Result<serde_json::Value, String> {
     let mut stmt = conn.prepare(
         "SELECT MIN(d.id), MIN(d.title), MIN(d.source_doc_id), p.name, COALESCE(p.source_type, 'obsidian'), \
-                MIN(d.file_path), p.path, MIN(d.url), MIN(COALESCE(d.updated_at, d.last_indexed)), \
+                MIN(d.file_path), p.path, MIN(d.url), MIN(d.updated_at), MIN(d.last_indexed), \
                 (SELECT GROUP_CONCAT(tag) FROM document_tags WHERE document_id = MIN(d.id))
          FROM documents d
          JOIN projects p ON d.project_id = p.id
@@ -1094,8 +1154,9 @@ pub fn list_all_documents_impl(conn: &rusqlite::Connection) -> Result<serde_json
             let file_path = r.get::<_, Option<String>>(5)?;
             let project_path = r.get::<_, String>(6).unwrap_or_default();
             let url = r.get::<_, Option<String>>(7)?;
-            let updated_at = r.get::<_, i64>(8).unwrap_or(0);
-            let tags_str: Option<String> = r.get(9)?;
+            let updated_at = r.get::<_, Option<i64>>(8).unwrap_or_default().unwrap_or(0);
+            let last_indexed = r.get::<_, Option<i64>>(9).unwrap_or_default().unwrap_or(0);
+            let tags_str: Option<String> = r.get(10)?;
             let tags: Vec<String> = tags_str
                 .map(|s| s.split(',').map(|t| t.to_string()).collect())
                 .unwrap_or_default();
@@ -1138,6 +1199,7 @@ pub fn list_all_documents_impl(conn: &rusqlite::Connection) -> Result<serde_json
                 "file_path": display_file_path,
                 "url": url,
                 "updated_at": updated_at,
+                "last_indexed": last_indexed,
                 "tags": tags,
             }))
         })

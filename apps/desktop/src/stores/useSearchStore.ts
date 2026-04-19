@@ -14,7 +14,8 @@ export interface SearchHit {
   project_name: string;
   source_type: string;
   tags: string[];
-  updated_at: number;
+  last_indexed?: number;
+  cache_ttl?: number;
   metadata: Record<string, any>;
   url: string | null;
 }
@@ -29,6 +30,8 @@ export interface AllDocument {
   url: string | null;
   tags?: string[];
   updated_at?: number;
+  last_indexed?: number;
+  cache_ttl?: number;
 }
 
 export interface SearchFilters {

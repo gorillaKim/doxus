@@ -101,6 +101,7 @@ pub struct UnifiedKeychainStore {
     service: String,
     account: String,
     cache: RwLock<HashMap<String, String>>,
+    load_once: once_cell::sync::OnceCell<Result<(), String>>,
 }
 
 impl UnifiedKeychainStore {
@@ -109,6 +110,7 @@ impl UnifiedKeychainStore {
             service: service.to_string(),
             account: account.to_string(),
             cache: RwLock::new(HashMap::new()),
+            load_once: once_cell::sync::OnceCell::new(),
         }
     }
 
@@ -133,8 +135,16 @@ impl UnifiedKeychainStore {
         }
     }
 
+    pub fn ensure_loaded(&self) -> Result<(), SecretsError> {
+        self.load_once.get_or_init(|| {
+            self.load_from_keychain().map_err(|e| e.to_string())
+        }).as_ref().map_err(|e| SecretsError::Keychain(e.clone()))?;
+        Ok(())
+    }
+
     /// Persist the current cache to the keychain as a JSON blob.
     fn save_to_keychain(&self) -> Result<(), SecretsError> {
+        self.ensure_loaded()?;
         let entry = keyring::Entry::new(&self.service, &self.account)
             .map_err(|e| SecretsError::Keychain(e.to_string()))?;
         
@@ -153,6 +163,7 @@ impl UnifiedKeychainStore {
 
     /// Update multiple keys at once and save to the keychain in a single operation.
     pub fn set_bulk(&self, service: &str, updates: &std::collections::HashMap<String, String>) -> Result<(), SecretsError> {
+        self.ensure_loaded()?;
         {
             let mut cache = self.cache.write().unwrap();
             for (key, value) in updates {
@@ -169,7 +180,7 @@ pub fn migrate_legacy_secrets(
     unified_store: &UnifiedKeychainStore,
     plugin_ids: &[&str],
 ) -> Result<(), SecretsError> {
-    unified_store.load_from_keychain()?;
+    unified_store.ensure_loaded()?;
 
     for &plugin_id in plugin_ids {
         let legacy_patterns = vec![
@@ -211,6 +222,7 @@ pub fn migrate_legacy_secrets(
 
 impl SecretStore for UnifiedKeychainStore {
     fn get(&self, service: &str, key: &str) -> Result<String, SecretsError> {
+        self.ensure_loaded()?;
         let store_key = Self::make_key(service, key);
         let cache = self.cache.read().unwrap();
         cache.get(&store_key).cloned().ok_or(SecretsError::NotFound(key.to_string()))
