@@ -166,6 +166,7 @@ fn main() {
             doxus_desktop_lib::commands::agent::detect_cli_path,
             doxus_desktop_lib::commands::settings::save_settings,
             doxus_desktop_lib::commands::settings::load_settings,
+            doxus_desktop_lib::commands::system::get_resource_usage,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
