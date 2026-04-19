@@ -159,3 +159,80 @@ pub fn explain_search(server: &McpServer, id: Value, args: &Value) -> McpRespons
         }
     }
 }
+
+pub fn agent_summary(server: &McpServer, id: Value) -> McpResponse {
+    let conn = server.conn();
+    let conn_lock = match conn.lock() {
+        Ok(l) => l,
+        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    };
+
+    // 1. Overall stats
+    let total_projects: i64 = conn_lock
+        .query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
+        .unwrap_or(0);
+    let total_docs: i64 = conn_lock
+        .query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))
+        .unwrap_or(0);
+
+    // 2. Project list with details
+    let mut stmt = conn_lock.prepare(
+        "SELECT p.name, p.source_type, p.status, 
+                (SELECT COUNT(*) FROM documents d WHERE d.project_id = p.id) as doc_count,
+                p.last_synced
+         FROM projects p
+         ORDER BY p.updated_at DESC"
+    ).unwrap();
+    
+    let projects: Vec<Value> = stmt.query_map([], |r| {
+        Ok(json!({
+            "name": r.get::<_, String>(0)?,
+            "type": r.get::<_, String>(1)?,
+            "status": r.get::<_, String>(2)?,
+            "document_count": r.get::<_, i64>(3)?,
+            "last_synced": r.get::<_, Option<i64>>(4)?,
+        }))
+    }).unwrap().filter_map(|r| r.ok()).collect();
+
+    // 3. Top tags across all documents
+    let mut stmt = conn_lock.prepare(
+        "SELECT tag, COUNT(*) as count FROM document_tags GROUP BY tag ORDER BY count DESC LIMIT 10"
+    ).unwrap();
+    let top_tags: Vec<String> = stmt.query_map([], |r| r.get::<_, String>(0))
+        .unwrap().filter_map(|r| r.ok()).collect();
+
+    // 4. Recently updated documents
+    let mut stmt = conn_lock.prepare(
+        "SELECT d.source_doc_id, d.title, p.name as project_name, d.last_indexed
+         FROM documents d
+         JOIN projects p ON d.project_id = p.id
+         ORDER BY d.last_indexed DESC
+         LIMIT 5"
+    ).unwrap();
+    let recent_docs: Vec<Value> = stmt.query_map([], |r| {
+        Ok(json!({
+            "id": r.get::<_, String>(0)?,
+            "title": r.get::<_, Option<String>>(1)?,
+            "project": r.get::<_, String>(2)?,
+            "indexed_at": r.get::<_, i64>(3)?,
+        }))
+    }).unwrap().filter_map(|r| r.ok()).collect();
+
+    let summary = json!({
+        "overview": {
+            "total_projects": total_projects,
+            "total_documents": total_docs,
+            "embedding_enabled": server.embedder().is_some()
+        },
+        "projects": projects,
+        "knowledge_profile": {
+            "top_tags": top_tags,
+            "recently_updated": recent_docs
+        },
+        "agent_orientation": "You are connected to Doxus Knowledge Base. Use 'doxus_search' for deep queries or 'doxus_get_document' for full content. If a project indicates it is out of sync, recommend 'doxus_sync_project'."
+    });
+
+    McpResponse::ok(id, json!({
+        "content": [{ "type": "text", "text": serde_json::to_string_pretty(&summary).unwrap_or_default() }]
+    }))
+}

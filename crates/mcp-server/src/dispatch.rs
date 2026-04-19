@@ -40,6 +40,7 @@ pub async fn dispatch_tool(server: &McpServer, name: &str, id: Value, args: &Val
         "doxus_status" => tools::core::status(server, id),
         "doxus_help" => McpResponse::text(id, HELP_TEXT),
         "doxus_onboard" => McpResponse::text(id, ONBOARD_TEXT),
+        "doxus_agent_summary" => tools::core::agent_summary(server, id),
 
         // ── Project management ────────────────────────────────────────────
         "doxus_list_projects" => tools::project::list_projects(server, id),
@@ -47,6 +48,7 @@ pub async fn dispatch_tool(server: &McpServer, name: &str, id: Value, args: &Val
         "doxus_remove_project" => tools::project::remove_project(server, id, args),
         "doxus_index_project" => tools::project::index_project(server, id, args),
         "doxus_sync_project" => tools::project::sync_project(server, id, args),
+        "doxus_setup_project_agent" => tools::project::setup_project_agent(server, id, args),
 
         // ── Search & documents ────────────────────────────────────────────
         "doxus_search" => tools::search::search(server, id, args).await,
@@ -143,6 +145,9 @@ pub fn tool_list() -> Value {
             tool("doxus_sync_project", "Sync incremental changes for a project", &[
                 param("project", "string", "Project name"),
             ]),
+            tool("doxus_setup_project_agent", "Setup agent instructions (CLAUDE.md) for a project directory", &[
+                param_opt("path", "string", "Project directory path (default: .)"),
+            ]),
             tool("doxus_resolve_alias", "Resolve an alias to a document ID", &[
                 param("alias", "string", "Alias or wikilink text"),
             ]),
@@ -159,6 +164,7 @@ pub fn tool_list() -> Value {
                 param("id", "string", "Document ID"),
             ]),
             tool("doxus_status", "Get server status and health", &[]),
+            tool("doxus_agent_summary", "Get a comprehensive summary of the knowledge base for orientation", &[]),
             tool("doxus_help", "Get usage documentation", &[]),
             tool("doxus_onboard", "Interactive setup guide", &[]),
             // Graph

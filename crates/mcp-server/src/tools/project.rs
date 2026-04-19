@@ -122,7 +122,6 @@ pub fn index_project(server: &McpServer, id: Value, args: &Value) -> McpResponse
     let conn = server.conn().clone();
     let plugin_manager = server.plugin_manager().clone();
     let embedder = server.embedder()
-        .cloned()
         .unwrap_or_else(|| Arc::new(doxus_core::embedding::NoOpEmbedder) as Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>);
     let engine = Arc::new(SearchEngine::with_embedder(conn.clone(), embedder));
 
@@ -260,6 +259,12 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
     let result: Result<(), String> = (|| {
         conn_lock.execute_batch("BEGIN").map_err(|e| format!("begin: {e}"))?;
 
+        let strategy: String = conn_lock.query_row(
+            "SELECT storage_strategy FROM projects WHERE id = ?1",
+            [project_id],
+            |r| r.get(0)
+        ).unwrap_or_else(|_| "full".to_string());
+
         let engine = SyncSearchEngine::from_conn(&*conn_lock);
 
         for doc in &changeset.updated {
@@ -273,7 +278,7 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
                 relative_path: doc.relative_path.clone(),
                 ..Default::default()
             };
-            if let Err(e) = engine.index_document_with_meta(project_id, &doc.id.0, title, &doc.content, &meta) {
+            if let Err(e) = engine.index_document_with_meta(project_id, &doc.id.0, title, &doc.content, &meta, &strategy) {
                 let _ = conn_lock.execute_batch("ROLLBACK");
                 return Err(format!("index error for '{}': {e}", doc.id.0));
             }
@@ -309,4 +314,48 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
         ),
         Err(e) => McpResponse::err(id, -32603, format!("sync failed (rolled back): {e}")),
     }
+}
+pub fn setup_project_agent(_server: &McpServer, id: Value, args: &Value) -> McpResponse {
+    let path_str = match args["path"].as_str() {
+        Some(p) => p,
+        None => ".", // Default to current directory
+    };
+    let project_path = std::path::PathBuf::from(path_str);
+    
+    // Attempt to resolve absolute path for clarity
+    let abs_path = std::fs::canonicalize(&project_path).unwrap_or(project_path.clone());
+    let claude_md_path = abs_path.join("CLAUDE.md");
+
+    let instr_header = "## AI 에이전트 도구 (Doxus)";
+    let instr_body = r#"이 프로젝트의 지식과 문서는 Doxus에 의해 인덱싱되어 있습니다. 에이전트는 다음 MCP 도구를 사용하여 문서를 검색하고 맥락을 파악할 수 있습니다:
+- `doxus_search`: 하이브리드 검색을 통해 관련 문서 및 코드 조각을 찾습니다.
+- `doxus_get_document`: 문서의 전체 내용을 읽어옵니다.
+- `doxus_agent_summary`: 현재 인덱싱된 프로젝트의 전체 상태와 주요 태그를 파악합니다.
+- `doxus_get_backlinks`: 문서 간의 연관 관계 및 참고 자료를 추적합니다.
+
+지식 검색이 필요한 경우 가장 먼저 `doxus_search`를 호출하십시오."#;
+
+    let mut content = if claude_md_path.exists() {
+        match std::fs::read_to_string(&claude_md_path) {
+            Ok(c) => c,
+            Err(e) => return McpResponse::err(id, -32603, format!("Failed to read CLAUDE.md: {e}")),
+        }
+    } else {
+        "# Project Instructions\n\n".to_string()
+    };
+
+    if content.contains(instr_header) {
+        return McpResponse::text(id, "Doxus agent instructions already present in CLAUDE.md.");
+    }
+
+    content.push_str("\n\n");
+    content.push_str(instr_header);
+    content.push_str("\n");
+    content.push_str(instr_body);
+
+    if let Err(e) = std::fs::write(&claude_md_path, content) {
+        return McpResponse::err(id, -32603, format!("Failed to write CLAUDE.md: {e}"));
+    }
+
+    McpResponse::text(id, format!("Doxus agent instructions successfully added to {}.", claude_md_path.display()))
 }
