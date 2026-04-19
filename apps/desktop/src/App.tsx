@@ -3,6 +3,7 @@ import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { listen } from "@tauri-apps/api/event";
 import { AppShell } from "./components/layout/AppShell";
 import { SearchPage } from "./pages/SearchPage";
+import { GraphPage } from "./pages/GraphPage";
 import { ProjectsPage } from "./pages/ProjectsPage";
 import MarketPage from "./pages/MarketPage";
 import DashboardPage from "./pages/DashboardPage";
@@ -28,6 +29,7 @@ export default function App() {
       <AppShell>
         <Routes>
           <Route path="/" element={<DashboardPage />} />
+          <Route path="/graph" element={<GraphPage />} />
           <Route path="/search" element={<SearchPage />} />
           <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/market" element={<MarketPage />} />
