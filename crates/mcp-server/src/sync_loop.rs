@@ -200,7 +200,7 @@ impl SyncLoopHandle {
 
 pub fn spawn_sync_loop(
     conn: Arc<std::sync::Mutex<rusqlite::Connection>>,
-    embedder: Option<Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>>,
+    embedder: Arc<std::sync::Mutex<Option<Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>>>>,
     plugin_manager: Arc<PluginManager>,
     interval_secs: u64,
 ) -> SyncLoopHandle {
@@ -210,7 +210,7 @@ pub fn spawn_sync_loop(
 /// Spawn the background sync loop with an [`EventSink`] for UI notifications.
 pub fn spawn_sync_loop_with_sink<S: EventSink>(
     conn: Arc<std::sync::Mutex<rusqlite::Connection>>,
-    embedder: Option<Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>>,
+    embedder: Arc<std::sync::Mutex<Option<Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>>>>,
     plugin_manager: Arc<PluginManager>,
     interval_secs: u64,
     sink: S,
@@ -315,7 +315,8 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
                                     let new_cursor = changeset.next_cursor.clone();
                                     
                                     // 실제 검색 엔진에 인덱싱 수행 (배치 처리)
-                                    if let Some(ref provider) = embedder {
+                                    let current_embedder = embedder.lock().unwrap().clone();
+                                    if let Some(ref provider) = current_embedder {
                                         let engine = doxus_core::search::SearchEngine::with_embedder(
                                             Arc::clone(&conn),
                                             Arc::clone(provider),
@@ -466,7 +467,7 @@ mod tests {
     #[tokio::test]
     async fn loop_starts_and_shuts_down_gracefully() {
         let (conn, _dir) = open_test_db();
-        let handle = spawn_sync_loop(conn, None, make_plugin_manager(), 1);
+        let handle = spawn_sync_loop(conn, Arc::new(Mutex::new(None)), make_plugin_manager(), 1);
         // Give the loop one tick to start.
         tokio::time::sleep(Duration::from_millis(50)).await;
         handle.shutdown().await;
@@ -528,7 +529,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_tx_drop_stops_loop() {
         let (conn, _dir) = open_test_db();
-        let handle = spawn_sync_loop(conn, None, make_plugin_manager(), 1);
+        let handle = spawn_sync_loop(conn, Arc::new(Mutex::new(None)), make_plugin_manager(), 1);
         // Drop the sender — loop should notice channel closed and exit.
         drop(handle.shutdown_tx);
         // join_handle should complete within reasonable time.
@@ -613,7 +614,7 @@ mod tests {
         let plugin_manager = Arc::new(pm);
 
         // interval_secs = 0 → always due
-        let handle = spawn_sync_loop(Arc::clone(&conn), None, Arc::clone(&plugin_manager), 0);
+        let handle = spawn_sync_loop(Arc::clone(&conn), Arc::new(Mutex::new(None)), Arc::clone(&plugin_manager), 0);
         // Give the loop time to run at least one iteration
         tokio::time::sleep(Duration::from_millis(200)).await;
         handle.shutdown().await;

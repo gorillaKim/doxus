@@ -67,29 +67,29 @@ async fn main() -> Result<()> {
 
 
 
-    // Attempt to initialize OnnxEmbedder via shared path resolution; fall back gracefully.
-    let embedder: Option<std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>> =
-        match doxus_core::embedding::OnnxEmbedder::from_default_path() {
-            Ok(e) => {
-                tracing::info!("OnnxEmbedder loaded; hybrid search enabled.");
-                Some(std::sync::Arc::new(e))
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "OnnxEmbedder unavailable ({}); running in FTS-only mode. \
-                     Place multilingual-e5-small.onnx + tokenizer.json in ~/.doxus/models/ \
-                     to enable vector search.",
-                    e
-                );
-                None
-            }
-        };
-
+    // Initialize with None to ensure fast handshake.
     let plugins_dir = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".doxus/plugins");
-    let server = McpServer::new(Arc::clone(&conn), embedder, Arc::clone(&plugin_manager), plugins_dir);
-    let sync_handle = spawn_sync_loop(sync_conn, server.embedder().cloned(), Arc::clone(&plugin_manager), interval_secs);
+    let server = McpServer::new(Arc::clone(&conn), None, Arc::clone(&plugin_manager), plugins_dir);
+    let embedder_handle = server.embedder_arc();
+    
+    // Background thread to load ONNX
+    std::thread::spawn(move || {
+        tracing::info!("[MCP] Starting background ONNX load...");
+        match doxus_core::embedding::OnnxEmbedder::from_default_path() {
+            Ok(e) => {
+                let mut guard = embedder_handle.lock().unwrap();
+                *guard = Some(Arc::new(e));
+                tracing::info!("[MCP] ONNX load complete. Hybrid search enabled.");
+            }
+            Err(e) => {
+                tracing::warn!("[MCP] ONNX load failed: {}. Vector search disabled.", e);
+            }
+        }
+    });
+
+    let sync_handle = spawn_sync_loop(sync_conn, server.embedder_arc(), Arc::clone(&plugin_manager), interval_secs);
 
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();

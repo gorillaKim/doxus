@@ -39,8 +39,6 @@ mod tests {
         let conn = Connection::open_in_memory().expect("in-memory db");
         doxus_core::db::apply_pragmas(&conn).expect("pragmas");
         doxus_core::db::migrate(&conn).expect("migrate");
-        // No default workspace seeding needed anymore
-        
         let pm = Arc::new(doxus_core::plugin::PluginManager::new(std::path::PathBuf::from("/tmp/doxus-pm")));
         McpServer::new(conn, None, pm, std::path::PathBuf::from("/tmp/doxus-test-plugins"))
     }
