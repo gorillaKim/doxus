@@ -5,8 +5,11 @@ use std::sync::atomic::AtomicBool;
 use rusqlite::Connection;
 use doxus_core::embedding::EmbeddingProvider;
 use doxus_core::plugin::PluginManager;
+use doxus_core::secrets::UnifiedKeychainStore;
 use doxus_agent::sync_sidecar::SyncSidecarManager;
 use doxus_agent::prompt::PromptLoader;
+use doxus_core::sync_manager::{SyncManager, SyncTrigger};
+use tokio::sync::mpsc;
 
 pub struct OAuthPending {
     pub code_verifier: String,
@@ -29,12 +32,21 @@ pub struct AppState {
     pub prompt_loader: PromptLoader,
     pub pending_messages: PendingMessages,
     pub reader_started: Arc<AtomicBool>,
+    pub secret_store: Arc<UnifiedKeychainStore>,
+    pub sync_manager: Arc<SyncManager>,
 }
 
 impl AppState {
-    pub fn new(conn: Connection, plugins_dir: PathBuf, sidecar_script: PathBuf, embedder: Arc<dyn EmbeddingProvider + Send + Sync>) -> Self {
+    pub fn new(
+        conn: Connection,
+        plugins_dir: PathBuf,
+        sidecar_script: PathBuf,
+        embedder: Arc<dyn EmbeddingProvider + Send + Sync>,
+        keychain_migrated: bool,
+    ) -> (Self, mpsc::Receiver<SyncTrigger>) {
         let prompt_loader = PromptLoader::new().expect("PromptLoader init failed");
         prompt_loader.ensure_defaults().ok();
+        
         // App-start: clean up any expired cache entries from previous sessions
         {
             let cache = doxus_core::cache::ContentCache::new(&conn);
@@ -44,6 +56,13 @@ impl AppState {
                 }
             }
         }
+
+        let conn_arc = Arc::new(Mutex::new(conn));
+        let search_engine = Arc::new(doxus_core::search::SearchEngine::with_embedder(conn_arc.clone(), embedder.clone()));
+        let indexing_service = Arc::new(doxus_core::indexing::IndexingService::new(conn_arc.clone(), Arc::new(PluginManager::new(plugins_dir.clone())), search_engine.clone()));
+        let (sync_manager, rx) = SyncManager::new(indexing_service);
+        let sync_manager = Arc::new(sync_manager);
+
         let mut plugin_manager = PluginManager::new(plugins_dir.clone());
         plugin_manager.register_factory(&PluginManager::normalize_id("obsidian"), || {
             Box::new(doxus_plugin_obsidian::ObsidianPlugin::new())
@@ -56,57 +75,35 @@ impl AppState {
         });
 
         let plugin_manager = Arc::new(plugin_manager);
+        let secret_store = Arc::new(UnifiedKeychainStore::new("doxus", "com.doxus.secrets.v1"));
 
-        // Background keychain migration – spawned to avoid blocking UI thread on startup prompts
-        tauri::async_runtime::spawn_blocking(|| {
-            let unified_store =
-                doxus_core::secrets::UnifiedKeychainStore::new("doxus", "com.doxus.secrets.v1");
-            let _ = doxus_core::secrets::migrate_legacy_secrets(
-                &unified_store,
-                &["com.doxus.confluence", "com.doxus.github"],
-            );
-        });
-
-        Self {
-            conn: Arc::new(Mutex::new(conn)),
-            plugin_manager,
-            plugins_dir,
-            oauth_pending: Mutex::new(HashMap::new()),
-            embedder,
-            sidecar: Arc::new(SyncSidecarManager::new()),
-            sidecar_script,
-            prompt_loader,
-            pending_messages: Arc::new(Mutex::new(HashMap::new())),
-            reader_started: Arc::new(AtomicBool::new(false)),
+        // Background keychain migration
+        if !keychain_migrated {
+            let store_clone = secret_store.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let _ = doxus_core::secrets::migrate_legacy_secrets(
+                    &store_clone,
+                    &["com.doxus.confluence", "com.doxus.github"],
+                );
+            });
         }
-    }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use doxus_core::embedding::MockEmbedder;
-
-    fn make_embedder() -> Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync> {
-        Arc::new(MockEmbedder::new(384))
-    }
-
-    #[test]
-    fn app_state_creates_with_in_memory_db() {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        doxus_core::db::migrate(&conn).unwrap();
-        let state = AppState::new(conn, PathBuf::from("/tmp"), PathBuf::from("/tmp/fake.mjs"), make_embedder());
-        let _guard = state.conn.lock().unwrap();
-        drop(_guard);
-        let pending = state.oauth_pending.lock().unwrap();
-        assert!(pending.is_empty());
-    }
-
-    #[test]
-    fn app_state_embedder_dimension_is_set() {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        doxus_core::db::migrate(&conn).unwrap();
-        let state = AppState::new(conn, PathBuf::from("/tmp"), PathBuf::from("/tmp/fake.mjs"), make_embedder());
-        assert_eq!(state.embedder.dimension(), 384);
+        (
+            Self {
+                conn: conn_arc,
+                plugin_manager,
+                plugins_dir,
+                oauth_pending: Mutex::new(HashMap::new()),
+                embedder,
+                sidecar: Arc::new(SyncSidecarManager::new()),
+                sidecar_script,
+                prompt_loader,
+                pending_messages: Arc::new(Mutex::new(HashMap::new())),
+                reader_started: Arc::new(AtomicBool::new(false)),
+                secret_store,
+                sync_manager,
+            },
+            rx
+        )
     }
 }

@@ -2,7 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use doxus_desktop_lib::AppState;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 
 fn find_sidecar_script() -> std::path::PathBuf {
@@ -42,9 +42,10 @@ fn main() {
     let config_path = std::path::PathBuf::from(&home).join(".doxus/config.toml");
     
     // Load settings and initialize debug tags
-    if let Ok(settings) = doxus_desktop_lib::commands::settings::load_settings_from_path(&config_path) {
-        doxus_core::observability::set_debug_tags(settings.debug_tags);
-    }
+    let mut settings = doxus_desktop_lib::commands::settings::load_settings_from_path(&config_path)
+        .unwrap_or_default();
+    doxus_core::observability::set_debug_tags(settings.debug_tags.clone());
+    let keychain_migrated_init = settings.keychain_migrated;
 
     let db_path = std::env::var("DOXUS_DB_PATH")
         .map(std::path::PathBuf::from)
@@ -63,7 +64,15 @@ fn main() {
                 eprintln!("[embedding] ONNX load failed: {e}, falling back to no-op");
                 std::sync::Arc::new(doxus_core::embedding::NoOpEmbedder)
             });
-    let state = AppState::new(conn, plugins_dir, sidecar_script, embedder);
+            
+    let (state, rx) = AppState::new(conn, plugins_dir, sidecar_script, embedder, keychain_migrated_init);
+    let manager = state.sync_manager.clone();
+    
+    // If migration was triggered (flag was false), mark as done in config for next time
+    if !keychain_migrated_init {
+        settings.keychain_migrated = true;
+        let _ = doxus_desktop_lib::commands::settings::save_settings_to_path(&settings, &config_path);
+    }
     state.sidecar.set_debug(doxus_core::observability::is_debug_enabled("agent"));
     let conn_arc = state.conn.clone();
 
@@ -100,7 +109,21 @@ fn main() {
                 }
             });
 
+            // Start SyncManager background loop
+            tauri::async_runtime::spawn(async move {
+                manager.start_loop(rx).await;
+            });
+
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Focused(true) = event {
+                let state = window.state::<AppState>();
+                let manager = state.sync_manager.clone();
+                tauri::async_runtime::spawn(async move {
+                    manager.trigger(doxus_core::sync_manager::SyncTrigger::Focus).await;
+                });
+            }
         })
         .manage(state)
         .invoke_handler(tauri::generate_handler![
