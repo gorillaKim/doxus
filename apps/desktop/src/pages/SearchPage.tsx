@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import ReactMarkdown from 'react-markdown';
 import rehypeRaw from 'rehype-raw';
@@ -677,6 +678,7 @@ function AdvancedSearchPanel({
 // ── SearchPage ────────────────────────────────────────────────────────────
 
 export function SearchPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const { query, filters, hits, isLoading, error, setQuery, setFilters, search, clear, allDocuments, allDocsLoading, listAllDocuments } = useSearchStore();
   usePluginStore((s) => s.emojiMap);
   const [inputValue, setInputValue] = useState(query);
@@ -690,6 +692,26 @@ export function SearchPage() {
   const refreshToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => { listAllDocuments(); }, [listAllDocuments]);
+
+  // URL 파라미터 기반 자동 선택 및 태그 필터링
+  useEffect(() => {
+    if (allDocsLoading || allDocuments.length === 0) return;
+
+    const docId = searchParams.get('docId');
+    const tag = searchParams.get('tag');
+
+    if (docId) {
+      const numericId = parseInt(docId, 10);
+      const doc = allDocuments.find(d => d.document_id === numericId);
+      if (doc) {
+        const entry = allDocToEntry(doc);
+        handleSelectDoc(entry);
+      }
+    } else if (tag) {
+      setFilters({ tagQuery: `#${tag}` });
+      search();
+    }
+  }, [allDocuments, allDocsLoading, searchParams]);
 
   const availablePlugins = (() => {
     const seen = new Set<string>();
@@ -784,6 +806,10 @@ export function SearchPage() {
     setPreviewContent(null);
     setPreviewMeta(null);
     setPreviewError(null);
+    
+    // URL 파라미터 업데이트 (새로고침 시 상태 유지용)
+    setSearchParams({ docId: doc.document_id.toString() }, { replace: true });
+
     if (doc.document_id) {
       invoke('increment_view_count', { documentId: doc.document_id }).catch(() => {});
     }

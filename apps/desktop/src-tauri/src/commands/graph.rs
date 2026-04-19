@@ -6,6 +6,7 @@ pub struct GraphNode {
     pub label: String,
     pub node_type: String, // "doc" or "tag"
     pub project: Option<String>,
+    pub plugin_id: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -27,7 +28,7 @@ pub(crate) fn get_graph_data_impl(conn: &rusqlite::Connection) -> Result<GraphDa
 
     // 1. 문서 노드 수집
     let mut stmt = conn.prepare(
-        "SELECT d.id, COALESCE(d.title, d.source_doc_id), p.name 
+        "SELECT d.id, COALESCE(d.title, d.source_doc_id), p.name, d.plugin_id 
          FROM documents d
          JOIN projects p ON d.project_id = p.id"
     ).map_err(|e| e.to_string())?;
@@ -39,6 +40,7 @@ pub(crate) fn get_graph_data_impl(conn: &rusqlite::Connection) -> Result<GraphDa
             label: r.get(1)?,
             node_type: "doc".to_string(),
             project: Some(r.get(2)?),
+            plugin_id: r.get(3)?,
         })
     }).map_err(|e| e.to_string())?
     .filter_map(|r| r.ok())
@@ -60,6 +62,7 @@ pub(crate) fn get_graph_data_impl(conn: &rusqlite::Connection) -> Result<GraphDa
             label: tag,
             node_type: "tag".to_string(),
             project: None,
+            plugin_id: None,
         });
     }
 
