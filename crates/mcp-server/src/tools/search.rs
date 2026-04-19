@@ -48,7 +48,7 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
 
     if let Some(embedder) = server.embedder() {
         // Use the Arc<Mutex<Connection>> directly
-        let async_engine = SearchEngine::with_embedder(server.conn(), Arc::clone(embedder));
+        let async_engine = SearchEngine::with_embedder(server.conn(), embedder);
         match async_engine.search_async(&q).await {
             Err(e) => McpResponse::err(id, -32603, e.to_string()),
             Ok(hits) if hits.is_empty() => McpResponse::text(id, "No results found."),
@@ -86,7 +86,10 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
             }
         }
     } else {
-        // Fallback to basic sync search if no embedder
+        // Fallback to basic sync search (FTS only) while embedder is loading
+        if q.mode == SearchMode::Vector || q.mode == SearchMode::Hybrid {
+            tracing::info!("[Search] Embedder still loading, falling back to FTS");
+        }
         let conn = server.conn();
         let conn_lock = match conn.lock() {
             Ok(l) => l,

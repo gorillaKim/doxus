@@ -12,7 +12,9 @@ pub struct McpRequest {
 pub struct McpResponse {
     pub jsonrpc: &'static str,
     pub id: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<McpError>,
 }
 
