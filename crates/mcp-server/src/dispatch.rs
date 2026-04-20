@@ -65,7 +65,7 @@ pub async fn dispatch_tool(server: &McpServer, name: &str, id: Value, args: &Val
         // ── Graph ─────────────────────────────────────────────────────────
         "doxus_get_backlinks" => tools::graph::get_backlinks(server, id, args),
         "doxus_get_links" => tools::graph::get_links(server, id, args),
-        "doxus_find_related" => tools::graph::find_related(server, id, args),
+        "doxus_find_related" => tools::graph::find_related(server, id, args).await,
         "doxus_find_path" => tools::graph::find_path(server, id, args),
         "doxus_get_cluster" => tools::graph::get_cluster(server, id, args),
 
