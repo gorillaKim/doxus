@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tauri::AppHandle;
 
 const ALLOWED_EMBEDDING_MODELS: &[&str] = &["onnx", "ollama"];
@@ -82,7 +83,7 @@ fn config_path(_app_handle: &AppHandle) -> PathBuf {
 pub async fn save_settings(
     settings: AppSettings,
     app_handle: AppHandle,
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
 ) -> Result<(), String> {
     let path = config_path(&app_handle);
     doxus_core::observability::set_debug_tags(settings.debug_tags.clone());

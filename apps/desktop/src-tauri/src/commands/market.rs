@@ -1,4 +1,5 @@
 use doxus_core::secrets::SecretStore;
+use std::sync::Arc;
 
 fn find_doxus_mcp_binary() -> Option<std::path::PathBuf> {
     // 1. exe 옆 (프로덕션 번들 및 dev target/debug/)
@@ -37,7 +38,7 @@ fn config_schema(fields: &[(&str, &str, &str, bool, &str)]) -> serde_json::Value
 
 #[tauri::command]
 pub async fn market_list_installed(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
 ) -> Result<serde_json::Value, String> {
     let installed_ids: Vec<String> = state
         .plugin_manager
@@ -189,7 +190,7 @@ pub async fn get_system_status() -> Result<serde_json::Value, String> {
 
 #[tauri::command]
 pub async fn get_plugin_logs(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
 ) -> Result<serde_json::Value, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
     let mut stmt = conn
@@ -216,7 +217,7 @@ pub async fn get_plugin_logs(
 
 #[tauri::command]
 pub async fn clear_audit_log(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
 ) -> Result<serde_json::Value, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
     let deleted: usize = conn
@@ -227,7 +228,7 @@ pub async fn clear_audit_log(
 
 #[tauri::command]
 pub async fn get_embedding_status(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
 ) -> Result<serde_json::Value, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
     let total_docs: i64 = conn
@@ -260,7 +261,7 @@ pub async fn get_embedding_status(
 
 #[tauri::command]
 pub async fn trigger_sync(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
 ) -> Result<serde_json::Value, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
     // source_instances 목록 조회
@@ -277,7 +278,7 @@ pub async fn trigger_sync(
 
 #[tauri::command]
 pub async fn market_install_plugin(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
     plugin_id: String,
     registry_url: Option<String>,
 ) -> Result<serde_json::Value, String> {
@@ -315,7 +316,7 @@ pub async fn market_install_plugin(
 
 #[tauri::command]
 pub async fn market_uninstall_plugin(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
     plugin_id: String,
 ) -> Result<serde_json::Value, String> {
     let wasm_path = state.plugins_dir.join(format!("{}.wasm", plugin_id));
@@ -327,7 +328,7 @@ pub async fn market_uninstall_plugin(
 
 #[tauri::command]
 pub async fn plugin_save_auth(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
     plugin_id: String,
     auth_fields: std::collections::HashMap<String, String>,
 ) -> Result<serde_json::Value, String> {
@@ -342,7 +343,7 @@ pub async fn plugin_save_auth(
 
 #[tauri::command]
 pub async fn plugin_get_auth_status(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
     plugin_id: String,
 ) -> Result<serde_json::Value, String> {
     let store = state.secret_store.clone();
@@ -398,7 +399,7 @@ fn urlencoding_encode(s: &str) -> String {
 #[tauri::command]
 pub async fn plugin_start_oauth(
     app: tauri::AppHandle,
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
     plugin_id: String,
     client_id: String,
     client_secret: String,
@@ -462,7 +463,7 @@ pub async fn plugin_start_oauth(
 
 #[tauri::command]
 pub async fn plugin_oauth_exchange(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
     plugin_id: String,
     code: String,
 ) -> Result<serde_json::Value, String> {
@@ -804,7 +805,7 @@ mod tests {
 
 #[tauri::command]
 pub async fn market_fetch_registry(
-    _state: tauri::State<'_, crate::AppState>,
+    _state: tauri::State<'_, Arc<crate::AppState>>,
     registry_url: Option<String>,
 ) -> Result<Vec<doxus_core::marketplace::registry::RegistryEntry>, String> {
     let url = registry_url
@@ -909,7 +910,7 @@ pub async fn check_gemini_status() -> Result<serde_json::Value, String> {
 /// 반환: `{ "cache_ttl_minutes": 30 }` 또는 `{ "cache_ttl_minutes": null }` (비활성화)
 #[tauri::command]
 pub async fn plugin_get_cache_ttl(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
     plugin_id: String,
 ) -> Result<serde_json::Value, String> {
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
@@ -926,7 +927,7 @@ pub async fn plugin_get_cache_ttl(
 /// `ttl_minutes`: null이면 캐시 비활성화 (행 삭제), 숫자면 활성화 (최소 10분).
 #[tauri::command]
 pub async fn plugin_set_cache_ttl(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
     plugin_id: String,
     ttl_minutes: Option<u32>,
 ) -> Result<serde_json::Value, String> {

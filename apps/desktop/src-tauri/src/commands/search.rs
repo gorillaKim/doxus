@@ -1,5 +1,6 @@
 use doxus_core::search::{SearchEngine, SearchQuery};
 use doxus_core::indexing::IndexingService;
+use std::sync::Arc;
 
 #[cfg(test)]
 /// Index all active projects using their registered plugin. Returns count of indexed documents.
@@ -55,7 +56,7 @@ pub(crate) fn get_top_documents_impl(conn: &rusqlite::Connection, limit: usize) 
 
 #[tauri::command]
 pub async fn increment_view_count(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
     document_id: i64,
 ) -> Result<serde_json::Value, String> {
     let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
@@ -65,7 +66,7 @@ pub async fn increment_view_count(
 
 #[tauri::command]
 pub async fn get_top_documents(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
     limit: Option<usize>,
 ) -> Result<serde_json::Value, String> {
     let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
@@ -299,7 +300,7 @@ mod tests {
 
 #[tauri::command]
 pub async fn add_project(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
     name: String,
     path: String,
     source_type: Option<String>,
@@ -330,7 +331,7 @@ pub async fn add_project(
 
 #[tauri::command]
 pub async fn toggle_project_status(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
     name: String,
     status: String,
 ) -> Result<serde_json::Value, String> {
@@ -349,7 +350,7 @@ pub async fn toggle_project_status(
 
 #[tauri::command]
 pub async fn remove_project(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
     name: String,
 ) -> Result<serde_json::Value, String> {
     let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
@@ -366,7 +367,7 @@ pub async fn remove_project(
 
 #[tauri::command]
 pub async fn search_documents(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
     query: String,
     limit: Option<usize>,
     source_types: Option<Vec<String>>,
@@ -569,7 +570,7 @@ pub async fn search_documents(
 
 #[tauri::command]
 pub async fn search_engine_status(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
 ) -> Result<serde_json::Value, String> {
     let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
     let total_documents: i64 = conn
@@ -587,7 +588,7 @@ pub async fn search_engine_status(
 
 #[tauri::command]
 pub async fn index_project(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
     name: String,
 ) -> Result<serde_json::Value, String> {
     let engine = std::sync::Arc::new(SearchEngine::with_embedder(
@@ -611,7 +612,7 @@ pub async fn index_project(
 
 #[tauri::command]
 pub async fn trigger_reindex(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
 ) -> Result<serde_json::Value, String> {
     let engine = std::sync::Arc::new(SearchEngine::with_embedder(
         std::sync::Arc::clone(&state.conn),
@@ -793,7 +794,7 @@ fn get_doc_meta_from_db(
 
 #[tauri::command]
 pub async fn get_document_content(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
     file_path: String,
     project_name: Option<String>,
     force_refresh: Option<bool>,
@@ -1246,7 +1247,7 @@ pub fn list_all_documents_impl(conn: &rusqlite::Connection) -> Result<serde_json
 
 #[tauri::command]
 pub async fn list_all_documents(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
 ) -> Result<serde_json::Value, String> {
     let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
     list_all_documents_impl(&conn)
@@ -1254,7 +1255,7 @@ pub async fn list_all_documents(
 
 #[tauri::command]
 pub async fn list_projects(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
 ) -> Result<serde_json::Value, String> {
     let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
     let mut stmt = conn

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use doxus_agent::cli_detector::{detect_cli, CliKind};
 
@@ -126,7 +127,7 @@ pub fn spawn_background_reader(
 #[tauri::command]
 pub async fn chat_start_session(
     app: tauri::AppHandle,
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
     session_id: String,
     cli_type: String,  // "claude" | "gemini"
     cli_path: String,
@@ -167,7 +168,7 @@ pub async fn chat_start_session(
 /// 메시지 전송: 결과가 올 때까지 블로킹.
 #[tauri::command]
 pub async fn chat_send_message(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
     session_id: String,
     message: String,
 ) -> Result<(), String> {
@@ -175,7 +176,7 @@ pub async fn chat_send_message(
 
     let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
     {
-        let mut pending = state.pending_messages.lock().map_err(|e| e.to_string())?;
+        let mut pending = state.pending_messages.lock().map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
         pending.insert(session_id.clone(), tx);
     }
 
@@ -186,7 +187,9 @@ pub async fn chat_send_message(
     });
 
     if let Err(e) = state.sidecar.send_request(&req) {
-        state.pending_messages.lock().ok().map(|mut p| p.remove(&session_id));
+        if let Ok(mut p) = state.pending_messages.lock() {
+            p.remove(&session_id);
+        }
         return Err(e);
     }
 
@@ -197,7 +200,7 @@ pub async fn chat_send_message(
 /// 진행 중인 메시지 취소.
 #[tauri::command]
 pub fn chat_cancel(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
     session_id: String,
 ) -> Result<(), String> {
     let req = serde_json::json!({ "type": "cancel", "sessionId": session_id });
@@ -237,7 +240,7 @@ pub async fn detect_cli_path(provider: String) -> Result<serde_json::Value, Stri
 
 #[tauri::command]
 pub async fn agent_status(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
     _provider: String,
 ) -> Result<serde_json::Value, String> {
     let is_running = state.sidecar.is_running();

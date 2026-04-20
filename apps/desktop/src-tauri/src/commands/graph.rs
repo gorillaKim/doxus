@@ -104,9 +104,11 @@ pub(crate) fn get_graph_data_impl(conn: &rusqlite::Connection) -> Result<GraphDa
     Ok(GraphData { nodes, links })
 }
 
+use std::sync::Arc;
+
 #[tauri::command]
 pub async fn get_graph_data(
-    state: tauri::State<'_, crate::AppState>,
+    state: tauri::State<'_, Arc<crate::AppState>>,
 ) -> Result<serde_json::Value, String> {
     let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
     let data = get_graph_data_impl(&conn)?;
