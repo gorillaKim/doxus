@@ -18,9 +18,15 @@ impl LinkExtractor {
         let mut links = Vec::new();
         let mut seen = std::collections::HashSet::new();
         
-        // 1. WikiLinks [[Target]]
+        // 1. WikiLinks [[Target]] or [[Target|Alias]]
         for cap in WIKI_LINK_RE.captures_iter(content) {
-            let link = cap[1].to_string();
+            let full_link = &cap[1];
+            let link = if let Some(pipe_pos) = full_link.find('|') {
+                &full_link[..pipe_pos]
+            } else {
+                full_link
+            };
+            let link = link.to_string();
             if seen.insert(link.clone()) {
                 links.push(link);
             }
@@ -29,8 +35,13 @@ impl LinkExtractor {
         // 2. Markdown Links [Text](Target)
         for cap in MD_LINK_RE.captures_iter(content) {
             let link = cap[1].to_string();
-            // Filter out external web links for document linking if desired, 
-            // but for now we keep everything as potential document links.
+            
+            // Filter out external web links (http, https, obsidian, etc.)
+            // We only care about root-relative paths or doxus:// URIs for graph extraction.
+            if link.contains("://") && !link.starts_with("doxus://") {
+                continue;
+            }
+
             if seen.insert(link.clone()) {
                 links.push(link);
             }
@@ -59,13 +70,14 @@ mod tests {
     #[test]
     fn test_extract_mixed_links() {
         let content = r#"
-Check [[Internal Doc]], [External](https://google.com), 
+Check [[Internal Doc]], [[Aliased Doc|Some Alias]], [External](https://google.com), 
 and a cross-project link: doxus://AI 리포트 V3/4756242498.
 Also a [nested link](doxus://Proj/ID).
 "#;
         let links = LinkExtractor::extract_links(content);
         assert!(links.contains(&"Internal Doc".to_string()));
-        assert!(links.contains(&"https://google.com".to_string()));
+        assert!(links.contains(&"Aliased Doc".to_string()));
+        assert!(!links.contains(&"https://google.com".to_string()));
         // Note: The trailing dot in the content should NOT be part of the ID
         assert!(links.contains(&"doxus://AI 리포트 V3/4756242498".to_string()));
         assert!(links.contains(&"doxus://Proj/ID".to_string()));

@@ -9,7 +9,9 @@ pub fn validate_path(path: &str) -> Result<(), PluginError> {
     }
 
     // 2. Absolute path check (should be relative to storage root)
-    if path.starts_with('/') || path.starts_with('\\') {
+    if path.starts_with('/') || path.starts_with('\\') 
+        || (path.len() >= 2 && path.chars().next().unwrap().is_ascii_alphabetic() && path.chars().nth(1).unwrap() == ':')
+    {
         return Err(PluginError::PermissionDenied(format!("Absolute paths are not allowed: {}", path)));
     }
 
