@@ -477,13 +477,26 @@ pub(crate) fn fetch_all_impl(opts: FetchAllOptsWasm) -> FnResult<DocumentStreamW
 
     let next_cursor = if has_next { Some((start + limit).to_string()) } else { None };
 
-    let documents = pages_results.into_iter()
+    let mut documents: Vec<RawDocumentWasm> = pages_results.into_iter()
         .map(|p| {
             let ancestor_id = state.get_config_string("ancestor_id");
             let tags = doc_tags.remove(&p.id).unwrap_or_default();
             page_to_doc_v2(&state, &mut hierarchy, p, root_folder_name, &space_key, &base_url, ancestor_id.as_deref(), tags)
         })
         .collect();
+
+    // [Doxus Fix] Root Ancestor 본인 추가
+    if start == 0 {
+        if let Some(aid) = &ancestor_id {
+            // 중복 방지: 이미 목록에 있는지 확인
+            if !documents.iter().any(|d| d.id == *aid) {
+                if let Ok(root_raw) = fetch_document_impl(FetchDocumentOptsWasm { id: aid.clone() }) {
+                    log_d!("confluence", "[Confluence-Debug] Prepending root ancestor document to the stream.");
+                    documents.insert(0, root_raw);
+                }
+            }
+        }
+    }
 
     Ok(DocumentStreamWasm {
         documents,
@@ -878,10 +891,16 @@ fn page_to_doc_v2(
     stop_id: Option<&str>,
     tags: Vec<String>,
 ) -> RawDocumentWasm {
-    let storage_content = p.body.as_ref()
+    let mut storage_content = p.body.as_ref()
         .and_then(|b| b.atlas_doc_format.as_ref().or(b.storage.as_ref()))
         .map(|s| s.value.as_str())
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .to_string();
+    
+    // [Doxus Fix] 본문 누락에 의한 builder error 방지 (Resilience)
+    if storage_content.trim().is_empty() {
+        storage_content = format!("<p><em>본문 내용을 읽을 수 없거나 비어있는 문서입니다. (ID: {})</em></p>", p.id);
+    }
     
     log_d!("confluence:doc", "[Confluence-Doc-Debug] Page ID: {}, Storage Content Length: {}", p.id, storage_content.len());
     
