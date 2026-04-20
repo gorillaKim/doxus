@@ -562,7 +562,7 @@ async fn inject_auth_impl(
                 token = store.get(plugin_id, "api_token").ok();
             }
 
-            if let Some(token) = token {
+            if let Some(token) = token.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
                 tracing::info!("[Auth] Loaded api_token for {} (Env/Bridge/Keychain)", plugin_id);
                 secrets
                     .fields
@@ -581,7 +581,7 @@ async fn inject_auth_impl(
                 email = store.get(plugin_id, "email").ok();
             }
 
-            if let Some(email) = email {
+            if let Some(email) = email.map(|e| e.trim().to_string()).filter(|e| !e.is_empty()) {
                 tracing::info!("[Auth] Loaded email for {} (Env/Bridge/Keychain)", plugin_id);
                 config
                     .fields
@@ -597,7 +597,7 @@ async fn inject_auth_impl(
                 token = store.get(plugin_id, "token").ok();
             }
 
-            if let Some(token) = token {
+            if let Some(token) = token.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
                 tracing::info!("[Auth] Loaded token for {} (Env/Bridge/Keychain)", plugin_id);
                 secrets
                     .fields

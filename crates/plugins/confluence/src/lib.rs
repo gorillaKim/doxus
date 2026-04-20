@@ -67,6 +67,12 @@ mod native_compat {
                 _ => reqwest::Method::GET,
             };
 
+            tracing::debug!("[Confluence-HTTP] Method: {}, URL: {}", method, req.url);
+            
+            if req.url.is_empty() || !req.url.starts_with("http") {
+                return Err(super::Error::msg(format!("Invalid or empty URL for Confluence request: '{}'", req.url)).into());
+            }
+
             let mut request_builder = CLIENT.request(method, &req.url);
             
             for (k, v) in &req.headers {
@@ -786,7 +792,7 @@ fn auth_header(state: &PluginState) -> FnResult<String> {
         .or_else(|| state.get_secret("api_token"));
 
     if let (Some(email), Some(api_token)) = (state.get_config("email"), api_token_opt) {
-        let auth = format!("{email}:{api_token}");
+        let auth = format!("{}:{}", email.trim(), api_token.trim());
         let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, auth);
         return Ok(format!("Basic {encoded}"));
     }
