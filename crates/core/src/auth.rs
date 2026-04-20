@@ -277,7 +277,10 @@ impl AuthBridge {
         let token = self.load_token();
         let url = format!("http://localhost:{}/secrets/{}/{}", self.port, plugin_id, key);
         
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_default();
         let mut rb = client.get(&url);
         
         if let Some(t) = token {

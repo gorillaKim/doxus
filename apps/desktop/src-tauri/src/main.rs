@@ -161,6 +161,7 @@ fn main() {
             // Start Auth Bridge server (localhost:14201)
             let store = state_arc.secret_store.clone();
             tauri::async_runtime::spawn(async move {
+                eprintln!("[bridge] Starting server on port 14201...");
                 doxus_desktop_lib::bridge::run_bridge_server(store, 14201, bridge_token).await;
             });
 

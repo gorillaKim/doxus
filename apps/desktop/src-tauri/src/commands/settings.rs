@@ -92,7 +92,10 @@ pub async fn save_settings(
 }
 
 #[tauri::command]
-pub async fn load_settings(app_handle: AppHandle) -> Result<AppSettings, String> {
+pub async fn load_settings(
+    _state: tauri::State<'_, Arc<crate::AppState>>,
+    app_handle: AppHandle,
+) -> Result<AppSettings, String> {
     let path = config_path(&app_handle);
     load_settings_from_path(&path)
 }
