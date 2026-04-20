@@ -336,3 +336,113 @@ pub fn get_cluster(server: &McpServer, id: Value, args: &Value) -> McpResponse {
         "content": [{ "type": "text", "text": serde_json::to_string_pretty(&items).unwrap_or_default() }]
     }))
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+    use serde_json::json;
+    use std::sync::{Arc, Mutex};
+    use crate::server::McpServer;
+
+    fn setup_test_server() -> McpServer {
+        let conn = Connection::open_in_memory().unwrap();
+        doxus_core::db::apply_pragmas(&conn).unwrap();
+        
+        // Minimal schema for graph tools
+        conn.execute_batch("
+            CREATE TABLE projects (id INTEGER PRIMARY KEY, name TEXT UNIQUE, display_name TEXT, path TEXT, source_project_id TEXT, source_type TEXT, config_json TEXT, status TEXT, created_at INTEGER, updated_at INTEGER);
+            CREATE TABLE documents (id INTEGER PRIMARY KEY, project_id INTEGER, source_doc_id TEXT, title TEXT, file_path TEXT, url TEXT, metadata_json TEXT, last_indexed INTEGER, FOREIGN KEY(project_id) REFERENCES projects(id));
+            CREATE TABLE chunks (id INTEGER PRIMARY KEY, document_id INTEGER, content TEXT, chunk_index INTEGER, heading_path TEXT, start_byte INTEGER, end_byte INTEGER, FOREIGN KEY(document_id) REFERENCES documents(id));
+            CREATE TABLE document_links (source_id INTEGER, target_id INTEGER, target_raw TEXT, link_type TEXT);
+            CREATE VIRTUAL TABLE chunks_fts USING fts5(content, tokenize='porter');
+            CREATE TABLE content_cache (plugin_id TEXT, doc_id TEXT, content TEXT, cached_at INTEGER, expires_at INTEGER, PRIMARY KEY(plugin_id, doc_id));
+        ").unwrap();
+        
+        // Add a test project
+        conn.execute(
+            "INSERT INTO projects (name, display_name, path, source_project_id, source_type, config_json, status, created_at, updated_at) 
+             VALUES ('Brain', 'Brain', '/tmp/brain', 'brain', 'obsidian', '{}', 'active', 0, 0)",
+            []
+        ).unwrap();
+        let pid: i64 = conn.last_insert_rowid();
+
+        // Add two documents
+        conn.execute(
+            "INSERT INTO documents (project_id, source_doc_id, title, last_indexed) 
+             VALUES (?1, 'doc1', 'Rust Features', 100)",
+            params![pid]
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO documents (project_id, source_doc_id, title, last_indexed) 
+             VALUES (?1, 'doc2', 'Rust Ownership', 101)",
+            params![pid]
+        ).unwrap();
+
+        let pm = Arc::new(doxus_core::plugin::PluginManager::new(std::path::PathBuf::from("/tmp/doxus-pm-test")));
+        McpServer::new(Arc::new(Mutex::new(conn)), None, pm, std::path::PathBuf::from("/tmp/doxus-plugins-test"))
+    }
+
+    #[test]
+    fn test_resolve_doc_id_numeric_and_string() {
+        let server = setup_test_server();
+        let conn = server.conn();
+        let cl = conn.lock().unwrap();
+
+        // 1. Resolve by source_doc_id (string)
+        let (id1, sid1) = resolve_doc_id(&cl, "Brain", &json!("doc1")).unwrap();
+        assert_eq!(sid1, "doc1");
+
+        // 2. Resolve by numeric db_id (integer)
+        let (id2, sid2) = resolve_doc_id(&cl, "Brain", &json!(id1)).unwrap();
+        assert_eq!(id1, id2);
+        assert_eq!(sid1, sid2);
+
+        // 3. Resolve by numeric string (id hit from search)
+        let (id3, _sid3) = resolve_doc_id(&cl, "Brain", &json!(id1.to_string())).unwrap();
+        assert_eq!(id1, id3);
+    }
+
+    #[tokio::test]
+    async fn test_find_related_works_with_numeric_id() {
+        let server = setup_test_server();
+        
+        // Populate cache for doc1
+        {
+            let conn = server.conn();
+            let cl = conn.lock().unwrap();
+            cl.execute(
+                "INSERT INTO content_cache (plugin_id, doc_id, content, cached_at, expires_at) 
+                 VALUES ('com.doxus.obsidian', 'doc1', 'Rust is a systems language focused on safety.', 0, 9999999999)",
+                []
+            ).unwrap();
+            
+            // Also add a related doc in FTS for search results
+            let doc2_id: i64 = cl.query_row("SELECT id FROM documents WHERE source_doc_id='doc2'", [], |r| r.get(0)).unwrap();
+            cl.execute("INSERT INTO chunks (id, document_id, content, chunk_index) VALUES (2, ?1, 'Rust safety features', 0)", [doc2_id]).unwrap();
+            cl.execute("INSERT INTO chunks_fts (rowid, content) VALUES (2, 'Rust safety features')", []).unwrap();
+        }
+
+        let args = json!({
+            "project": "Brain",
+            "id": 1, // numeric ID
+            "k": 5
+        });
+
+        let resp = find_related(&server, json!(1), &args).await;
+        assert!(resp.error.is_none(), "Expected success, got error: {:?}", resp.error);
+    }
+
+    #[test]
+    fn test_links_standardization() {
+        let server = setup_test_server();
+        let args = json!({
+            "project": "Brain",
+            "id": 1 // numeric
+        });
+        let resp = get_links(&server, json!(1), &args);
+        assert!(resp.error.is_none());
+    }
+}

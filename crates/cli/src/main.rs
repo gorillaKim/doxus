@@ -35,6 +35,8 @@ enum Commands {
     Plugin(PluginArgs),
     /// Manage workspaces
     Workspace(WorkspaceArgs),
+    /// Graph operations (links, related, etc)
+    Graph(GraphArgs),
 }
 
 #[derive(Parser)]
@@ -107,6 +109,7 @@ async fn main() -> Result<()> {
         Commands::Status => handle_status(&conn)?,
         Commands::Plugin(args) => handle_plugin(&conn, args.action)?,
         Commands::Workspace(args) => handle_workspace(&conn, args.action)?,
+        Commands::Graph(args) => handle_graph(&conn, &db_path, embedder, args.action).await?,
     }
 
     Ok(())
@@ -445,6 +448,62 @@ enum WorkspaceAction {
     },
 }
 
+#[derive(Parser)]
+pub struct GraphArgs {
+    #[command(subcommand)]
+    pub action: GraphAction,
+}
+
+#[derive(Subcommand)]
+pub enum GraphAction {
+    /// Show forward links from a document
+    Links {
+        /// Project name
+        project: String,
+        /// Document ID (db_id or source_doc_id)
+        id: String,
+    },
+    /// Show backlinks to a document
+    Backlinks {
+        /// Project name
+        project: String,
+        /// Document ID (db_id or source_doc_id)
+        id: String,
+    },
+    /// Find related documents
+    Related {
+        /// Project name
+        project: String,
+        /// Document ID (db_id or source_doc_id)
+        id: String,
+        /// Number of results
+        #[arg(short, long, default_value = "10")]
+        limit: usize,
+    },
+    /// Find shortest path between two documents
+    Path {
+        /// Project name
+        project: String,
+        /// Start Document ID
+        from: String,
+        /// End Document ID
+        to: String,
+        /// Max hops
+        #[arg(long, default_value = "6")]
+        max_hops: usize,
+    },
+    /// Get knowledge cluster around a document
+    Cluster {
+        /// Project name
+        project: String,
+        /// Start Document ID
+        id: String,
+        /// Traversal depth (1-5)
+        #[arg(short, long, default_value = "2")]
+        depth: usize,
+    },
+}
+
 fn handle_workspace(conn: &rusqlite::Connection, action: WorkspaceAction) -> Result<()> {
     match action {
         WorkspaceAction::List => {
@@ -750,4 +809,160 @@ mod tests {
         );
         assert!(result.is_err());
     }
+}
+
+fn resolve_id(conn: &rusqlite::Connection, project: &str, id_str: &str) -> Result<(i64, String)> {
+    // 1. Try as numeric ID
+    if let Ok(numeric_id) = id_str.parse::<i64>() {
+        let sid: Result<String, _> = conn.query_row(
+            "SELECT d.source_doc_id FROM documents d JOIN projects p ON d.project_id = p.id WHERE p.name = ?1 AND d.id = ?2",
+            rusqlite::params![project, numeric_id],
+            |r| r.get(0)
+        );
+        if let Ok(s) = sid {
+            return Ok((numeric_id, s));
+        }
+    }
+
+    // 2. Try as source_doc_id
+    let db_id: i64 = conn.query_row(
+        "SELECT d.id FROM documents d JOIN projects p ON d.project_id = p.id WHERE p.name = ?1 AND d.source_doc_id = ?2",
+        rusqlite::params![project, id_str],
+        |r| r.get(0)
+    ).context(format!("document '{}' not found in project '{}'", id_str, project))?;
+
+    Ok((db_id, id_str.to_string()))
+}
+
+async fn handle_graph(
+    conn: &rusqlite::Connection,
+    db_path: &std::path::Path,
+    embedder: Option<std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>>,
+    action: GraphAction,
+) -> Result<()> {
+    match action {
+        GraphAction::Links { project, id } => {
+            let (db_id, _) = resolve_id(conn, &project, &id)?;
+            let mut stmt = conn.prepare(
+                "SELECT d.source_doc_id, d.title, l.link_type 
+                 FROM document_links l 
+                 JOIN documents d ON l.target_id = d.id 
+                 WHERE l.source_id = ?1"
+            )?;
+            let rows = stmt.query_map([db_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?)))?;
+            println!("{:<40} {:<30} TYPE", "TARGET_ID", "TITLE");
+            println!("{}", "─".repeat(85));
+            for r in rows.flatten() {
+                println!("{:<40} {:<30} {}", r.0, r.1.unwrap_or_default(), r.2);
+            }
+        }
+        GraphAction::Backlinks { project, id } => {
+            let (db_id, _) = resolve_id(conn, &project, &id)?;
+            let mut stmt = conn.prepare(
+                "SELECT d.source_doc_id, d.title 
+                 FROM document_links l 
+                 JOIN documents d ON l.source_id = d.id 
+                 WHERE l.target_id = ?1"
+            )?;
+            let rows = stmt.query_map([db_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))?;
+            println!("{:<40} TITLE", "SOURCE_ID");
+            println!("{}", "─".repeat(70));
+            for r in rows.flatten() {
+                println!("{:<40} {}", r.0, r.1.unwrap_or_default());
+            }
+        }
+        GraphAction::Related { project, id, limit } => {
+            use doxus_core::search::{SearchEngine, SearchQuery};
+            use doxus_core::document::DocumentService;
+
+            let (_db_id, source_doc_id) = resolve_id(conn, &project, &id)?;
+            
+            // Get content for similarity search
+            let doc_service = DocumentService::new(conn, None);
+            let content = doc_service.fetch_full_content(&project, &source_doc_id).await
+                .map_err(|e| anyhow::anyhow!("failed to fetch content: {e}"))?;
+
+            let mut query = SearchQuery::new(&content).with_limit(limit);
+            if let Ok(pid) = conn.query_row("SELECT id FROM projects WHERE name=?1", [project.clone()], |r| r.get::<_, i64>(0)) {
+                query = query.with_projects(vec![pid]);
+            }
+
+            let hits: Vec<doxus_core::search::Hit> = if let Some(emb) = embedder {
+                let search_conn = doxus_core::db::open(db_path).context("failed to open search connection")?;
+                let engine = SearchEngine::with_embedder(
+                    std::sync::Arc::new(std::sync::Mutex::new(search_conn)),
+                    emb,
+                );
+                engine.search_async(&query).await.map_err(|e| anyhow::anyhow!(e))?
+            } else {
+                SearchEngine::new(conn).search(&query)
+                    .map_err(|e| anyhow::anyhow!(e))?
+                    .into_iter()
+                    .map(doxus_core::search::Hit::from)
+                    .collect()
+            };
+
+            println!("Related to '{}' in '{}':\n", source_doc_id, project);
+            for (i, hit) in hits.iter().enumerate() {
+                if hit.source_doc_id == source_doc_id { continue; } // Skip self
+                println!("{}. {} [score: {:.6}]", i + 1, hit.title.as_deref().unwrap_or("(untitled)"), hit.score);
+                println!("   📄 {}", hit.source_doc_id);
+                println!();
+            }
+        }
+        GraphAction::Path { project, from, to, max_hops } => {
+            let (from_id, _) = resolve_id(conn, &project, &from)?;
+            let (to_id, _) = resolve_id(conn, &project, &to)?;
+
+            let sql = format!(
+                "WITH RECURSIVE path(id, depth, path_str) AS (
+                    SELECT ?1, 0, CAST(?1 AS TEXT)
+                    UNION ALL
+                    SELECT l.target_id, p.depth + 1, p.path_str || ' -> ' || l.target_id
+                    FROM document_links l
+                    JOIN path p ON l.source_id = p.id
+                    WHERE p.depth < ?3 AND p.id != ?2
+                )
+                SELECT path_str FROM path WHERE id = ?2 ORDER BY depth LIMIT 1"
+            );
+
+            let result: Result<String, _> = conn.query_row(&sql, rusqlite::params![from_id, to_id, max_hops], |r| r.get(0));
+            match result {
+                Ok(path) => println!("Path found: {}", path),
+                Err(_) => println!("No path found within {} hops.", max_hops),
+            }
+        }
+        GraphAction::Cluster { project, id, depth } => {
+            let (db_id, _) = resolve_id(conn, &project, &id)?;
+            
+            let sql = format!(
+                "WITH RECURSIVE cluster(id, level) AS (
+                    SELECT ?1, 0
+                    UNION
+                    SELECT l.target_id, c.level + 1
+                    FROM document_links l
+                    JOIN cluster c ON l.source_id = c.id
+                    WHERE c.level < ?2
+                    UNION
+                    SELECT l.source_id, c.level + 1
+                    FROM document_links l
+                    JOIN cluster c ON l.target_id = c.id
+                    WHERE c.level < ?2
+                )
+                SELECT DISTINCT d.source_doc_id, d.title, c.level 
+                FROM cluster c 
+                JOIN documents d ON c.id = d.id 
+                ORDER BY c.level, d.title"
+            );
+
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(rusqlite::params![db_id, depth], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, i64>(2)?)))?;
+            
+            println!("Knowledge Cluster (depth {}):", depth);
+            for r in rows.flatten() {
+                println!("  {} {} (level {})", " ".repeat(r.2 as usize * 2), r.0, r.2);
+            }
+        }
+    }
+    Ok(())
 }
