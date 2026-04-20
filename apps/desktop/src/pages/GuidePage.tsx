@@ -25,6 +25,15 @@ function FeatureCard({ title, description, icon }: { title: string; description:
   );
 }
 
+function ToolItem({ name, description }: { name: string; description: string }) {
+  return (
+    <div className="flex flex-col gap-1.5 p-4 rounded-xl bg-white/5 border border-white/5 hover:bg-white/10 transition-colors group">
+      <code className="text-indigo-400 font-mono text-sm group-hover:text-indigo-300">{name}</code>
+      <p className="text-gray-400 text-xs leading-relaxed">{description}</p>
+    </div>
+  );
+}
+
 function CodeBlock({ code }: { code: string }) {
   return (
     <div className="relative group">
@@ -41,8 +50,8 @@ export default function GuidePage() {
 
   const tabs = [
     { id: 'app', label: '데스크톱 앱', icon: '💻' },
-    { id: 'mcp', label: 'MCP', icon: '🤖' },
-    { id: 'cli', label: 'CLI', icon: '📟' },
+    { id: 'mcp', label: 'MCP 도구', icon: '🤖' },
+    { id: 'cli', label: 'CLI 명령어', icon: '📟' },
   ] as const;
 
   return (
@@ -104,40 +113,70 @@ export default function GuidePage() {
         )}
 
         {activeTab === 'mcp' && (
-          <div className="flex flex-col gap-8 animate-in fade-in slide-in-from-right-4 duration-500">
+          <div className="flex flex-col gap-10 animate-in fade-in slide-in-from-right-4 duration-500">
             <div className="flex flex-col gap-4">
-              <SectionTitle>에이전트 컨텍스트 연동 (MCP)</SectionTitle>
-              <div className="glass-card rounded-2xl p-8 border border-white/5 flex flex-col gap-6">
-                <p className="text-gray-300 leading-relaxed">
-                  Doxus는 <strong className="text-indigo-400">Model Context Protocol (MCP)</strong>를 지원합니다. 
-                  Claude Desktop이나 다른 라이브러리 에이전트가 여러분의 로컬 지식 베이스를 직접 검색하고 읽을 수 있도록 설정하세요.
-                </p>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="flex flex-col gap-2 p-4 rounded-xl bg-white/5 border border-white/5">
-                    <span className="text-indigo-400 font-bold text-sm">STEP 1</span>
-                    <p className="text-[13px] text-gray-400">Claude Desktop 설정에서 doxus-mcp 경로를 추가합니다.</p>
-                  </div>
-                  <div className="flex flex-col gap-2 p-4 rounded-xl bg-white/5 border border-white/5">
-                    <span className="text-indigo-400 font-bold text-sm">STEP 2</span>
-                    <p className="text-[13px] text-gray-400">에이전트에게 "doxus에서 최근 작업 내역 찾아줘"라고 요청합니다.</p>
-                  </div>
-                  <div className="flex flex-col gap-2 p-4 rounded-xl bg-white/5 border border-white/5">
-                    <span className="text-indigo-400 font-bold text-sm">STEP 3</span>
-                    <p className="text-[13px] text-gray-400">에이전트가 로컬 데이터를 바탕으로 답변을 생성합니다.</p>
+              <SectionTitle>에이전트 컨텍스트 (MCP Core Tools)</SectionTitle>
+              <p className="text-gray-400 text-sm -mt-2">AI 에이전트(Claude 등)가 여러분의 로컬 지식을 탐색하기 위해 사용하는 전문 도구들입니다.</p>
+              
+              <div className="mt-4 flex flex-col gap-8">
+                <div className="flex flex-col gap-4">
+                  <h3 className="text-white font-semibold text-sm flex items-center gap-2">
+                    <span className="w-1 h-3 bg-indigo-500 rounded-full" />
+                    지식 검색 및 조회
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    <ToolItem name="doxus_search" description="하이브리드 검색을 통해 관련 문서 및 코드 조각을 찾습니다." />
+                    <ToolItem name="doxus_get_document" description="특정 문서의 전체 내용과 상세 메타데이터를 불러옵니다." />
+                    <ToolItem name="doxus_get_section" description="문서 내 특정 섹션(헤딩)만 추출하여 토큰을 절약합니다." />
+                    <ToolItem name="doxus_get_toc" description="문서의 전체 목차 구조를 트리 형태로 파악합니다." />
+                    <ToolItem name="doxus_list_documents" description="프로젝트 내 인덱싱된 모든 문서의 목록과 ID를 확인합니다." />
+                    <ToolItem name="doxus_get_ranking" description="가장 많이 조회되거나 참조된 인기 문서 순위를 확인합니다." />
+                    <ToolItem name="doxus_resolve_alias" description="별칭(Alias)이나 위키링크 이름을 통해 원본 문서를 찾습니다." />
+                    <ToolItem name="doxus_inspect_document" description="문서의 최신성, 청크 수 등 상세 상태 정보를 조회합니다." />
                   </div>
                 </div>
 
-                <div className="flex flex-col gap-3">
-                  <span className="text-xs font-bold text-gray-500 tracking-widest uppercase">설정 예시 (Claude Desktop)</span>
-                  <CodeBlock code={JSON.stringify({
-  mcpServers: {
-    doxus: {
-      command: "doxus-mcp",
-      args: []
-    }
-  }
-}, null, 2)} />
+                <div className="flex flex-col gap-4">
+                  <h3 className="text-white font-semibold text-sm flex items-center gap-2">
+                    <span className="w-1 h-3 bg-emerald-500 rounded-full" />
+                    지식 그래프 및 분석
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    <ToolItem name="doxus_get_backlinks" description="해당 문서를 인용하거나 참조하고 있는 역방향 링크 목록을 확인합니다." />
+                    <ToolItem name="doxus_get_links" description="현재 문서에서 다른 문서로 연결되는 정방향 링크 목록을 확인합니다." />
+                    <ToolItem name="doxus_find_path" description="두 문서 사이의 최단 연결 경로(최대 6홉)를 탐색합니다." />
+                    <ToolItem name="doxus_get_cluster" description="특정 문서 중심의 지식 클러스터를 통해 연관 맥락을 파악합니다." />
+                    <ToolItem name="doxus_find_related" description="RRF 알고리즘을 기반으로 현재 문서와 가장 유사한 자료를 추천받습니다." />
+                    <ToolItem name="doxus_explain_search" description="특정 검색 결과가 왜 관련성이 높게 평가되었는지 근거를 분석합니다." />
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-4">
+                  <h3 className="text-white font-semibold text-sm flex items-center gap-2">
+                    <span className="w-1 h-3 bg-amber-500 rounded-full" />
+                    프로젝트 및 시스템 관리
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    <ToolItem name="doxus_status" description="서버 운영 상태 및 전체 프로젝트/문서 인덱싱 통계를 확인합니다." />
+                    <ToolItem name="doxus_agent_summary" description="현재 지식 베이스의 특징, 주요 키워드 등에 대한 에이전트용 브리핑을 받습니다." />
+                    <ToolItem name="doxus_list_projects" description="등록된 모든 지식 소스 프로젝트와 해당 소스의 상태를 조회합니다." />
+                    <ToolItem name="doxus_index_project" description="지정된 프로젝트의 전체 데이터를 분석하여 인덱스를 갱신합니다." />
+                    <ToolItem name="doxus_sync_project" description="기존 프로젝트의 바뀐 부분만 빠르게 동기화하여 최신 상태를 유지합니다." />
+                    <ToolItem name="doxus_setup_project_agent" description="에이전트가 정보를 더 잘 찾을 수 있도록 프로젝트 지침 파일을 생성합니다." />
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-4">
+                  <h3 className="text-white font-semibold text-sm flex items-center gap-2">
+                    <span className="w-1 h-3 bg-rose-500 rounded-full" />
+                    플러그인 및 익스텐션
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    <ToolItem name="doxus_search_plugins" description="마켓플레이스에서 새로운 데이터 소스 플러그인을 검색합니다." />
+                    <ToolItem name="doxus_install_plugin" description="원격 또는 로컬의 WASM 플러그인을 시스템에 설치합니다." />
+                    <ToolItem name="doxus_status_plugin" description="특정 플러그인의 활성화 여부 및 연결된 인스턴스 정보를 확인합니다." />
+                    <ToolItem name="doxus_logs_plugin" description="플러그인 실행 중 발생한 로그를 확인하여 문제를 디버깅합니다." />
+                  </div>
                 </div>
               </div>
             </div>
@@ -145,35 +184,88 @@ export default function GuidePage() {
         )}
 
         {activeTab === 'cli' && (
-          <div className="flex flex-col gap-8 animate-in fade-in slide-in-from-right-4 duration-500">
-            <div className="flex flex-col gap-4">
-              <SectionTitle>명령줄 인터페이스 (CLI)</SectionTitle>
-              <div className="grid grid-cols-1 gap-6">
-                <div className="glass-card rounded-2xl p-6 border border-white/5 flex flex-col gap-4">
-                  <h3 className="text-white font-bold flex items-center gap-2">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                    프로젝트 관리 및 인덱싱
-                  </h3>
-                  <p className="text-sm text-gray-400">새로운 지식 소스를 추가하고 검색이 가능하도록 인덱싱을 수행합니다.</p>
-                  <CodeBlock code="# 프로젝트 추가\ndoxus project add brain /path/to/your/vault\n\n# 모든 프로젝트 인덱싱 수행\ndoxus index" />
+          <div className="flex flex-col gap-10 animate-in fade-in slide-in-from-right-4 duration-500">
+            <div className="flex flex-col gap-6">
+              <SectionTitle>명령줄 인터페이스 (Full CLI Reference)</SectionTitle>
+              <p className="text-gray-400 text-sm -mt-4">터미널에서 Doxus의 모든 기능을 활용하는 강력한 방법들입니다.</p>
+              
+              <div className="grid grid-cols-1 gap-8 mt-4">
+                <div className="glass-card rounded-2xl p-6 border border-white/5 flex flex-col gap-6">
+                  <div className="flex flex-col gap-4">
+                    <h3 className="text-white font-bold flex items-center gap-2">
+                      <span className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
+                      프로젝트 및 데이터 관리 (project, index)
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="flex flex-col gap-2">
+                        <code className="text-xs bg-gray-900 px-2 py-1 rounded text-indigo-400 w-fit">project add &lt;name&gt; &lt;path&gt;</code>
+                        <p className="text-xs text-gray-400">새로운 로컬 폴더나 저장소를 프로젝트로 등록합니다.</p>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <code className="text-xs bg-gray-900 px-2 py-1 rounded text-indigo-400 w-fit">project remove &lt;name&gt;</code>
+                        <p className="text-xs text-gray-400">프로젝트의 인덱스 데이터를 삭제합니다. (원본 파일은 유지)</p>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <code className="text-xs bg-gray-900 px-2 py-1 rounded text-indigo-400 w-fit">index</code>
+                        <p className="text-xs text-gray-400">등록된 모든 프로젝트를 스캔하고 최신 지식으로 동기화합니다.</p>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <code className="text-xs bg-gray-900 px-2 py-1 rounded text-indigo-400 w-fit">project list</code>
+                        <p className="text-xs text-gray-400">현재 관리 중인 프로젝트의 목록과 동기화 상태를 확인합니다.</p>
+                      </div>
+                    </div>
+                    <CodeBlock code={`# 새 프로젝트 추가 후 인덱싱 실행 예시
+doxus project add brain ~/Documents/Obsidian
+doxus index`} />
+                  </div>
                 </div>
 
-                <div className="glass-card rounded-2xl p-6 border border-white/5 flex flex-col gap-4">
-                  <h3 className="text-white font-bold flex items-center gap-2">
-                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
-                    터미널 검색
-                  </h3>
-                  <p className="text-sm text-gray-400">앱을 켜지 않고도 터미널에서 즉시 검색 결과를 확인할 수 있습니다.</p>
-                  <CodeBlock code="# 하이브리드 검색 실행\ndoxus search \"검색하고 싶은 내용\"\n\n# 특정 프로젝트 내에서만 검색\ndoxus search \"내용\" --project brain" />
+                <div className="glass-card rounded-2xl p-6 border border-white/5 flex flex-col gap-6">
+                  <div className="flex flex-col gap-4">
+                    <h3 className="text-white font-bold flex items-center gap-2">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                      검색 및 지식 탐색 (search, status)
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="flex flex-col gap-2">
+                        <code className="text-xs bg-gray-900 px-2 py-1 rounded text-emerald-400 w-fit">search "&lt;query&gt;"</code>
+                        <p className="text-xs text-gray-400">전체 지식 베이스에서 하이브리드 검색을 수행합니다.</p>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <code className="text-xs bg-gray-900 px-2 py-1 rounded text-emerald-400 w-fit">search "&lt;q&gt;" --project &lt;p&gt;</code>
+                        <p className="text-xs text-gray-400">특정 프로젝트 내로 검색 범위를 한정합니다.</p>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <code className="text-xs bg-gray-900 px-2 py-1 rounded text-emerald-400 w-fit">status</code>
+                        <p className="text-xs text-gray-400">인덱싱된 문서 총수와 각 타입별 청크 비율 등 통계를 확인합니다.</p>
+                      </div>
+                    </div>
+                    <CodeBlock code={`# 특정 주제 검색 후 5개만 보기
+doxus search "Rust ownership" --limit 5`} />
+                  </div>
                 </div>
 
-                <div className="glass-card rounded-2xl p-6 border border-white/5 flex flex-col gap-4">
-                  <h3 className="text-white font-bold flex items-center gap-2">
-                    <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                    상태 및 그래프 확인
-                  </h3>
-                  <p className="text-sm text-gray-400">시스템 연동 상태와 문서 간의 관계를 조회합니다.</p>
-                  <CodeBlock code="# 시스템 상태 조회\ndoxus status\n\n# 백링크 확인\ndoxus graph backlinks brain <doc_id>" />
+                <div className="glass-card rounded-2xl p-6 border border-white/5 flex flex-col gap-6">
+                  <div className="flex flex-col gap-4">
+                    <h3 className="text-white font-bold flex items-center gap-2">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                      고급 그래프 및 플러그인 (graph, plugin)
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="flex flex-col gap-2">
+                        <code className="text-xs bg-gray-900 px-2 py-1 rounded text-amber-400 w-fit">graph links &lt;proj&gt; &lt;id&gt;</code>
+                        <p className="text-xs text-gray-400">특정 문서와 연결된 모든 링크 정보를 터미널에 출력합니다.</p>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <code className="text-xs bg-gray-900 px-2 py-1 rounded text-amber-400 w-fit">graph path &lt;p&gt; &lt;from&gt; &lt;to&gt;</code>
+                        <p className="text-xs text-gray-400">두 지식 사이의 연결 고리를 최단 경로로 추적합니다.</p>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        <code className="text-xs bg-gray-900 px-2 py-1 rounded text-amber-400 w-fit">plugin install &lt;id&gt;</code>
+                        <p className="text-xs text-gray-400">ID를 통해 새로운 외부 데이터 소스 플러그인을 설치합니다.</p>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
