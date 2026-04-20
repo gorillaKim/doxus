@@ -153,22 +153,32 @@ pub async fn get_document(server: &McpServer, id: Value, args: &Value) -> McpRes
             format!("Failed to fetch document '{}' in project '{}': {}", source_doc_id, project, e),
         ),
         Ok(content) => {
-            // Fetch title and metadata for the header
-            let (title, meta_json): (Option<String>, Option<String>) = conn_lock.query_row(
-                "SELECT title, metadata_json FROM documents WHERE id = ?1",
-                params![db_id],
-                |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?))
-            ).unwrap_or((None, None));
+            let mut title = None;
+            let mut meta_json = None;
+            let mut tags = vec![];
 
-            // Fetch tags
-            let tags: Vec<String> = {
-                let mut stmt = conn_lock.prepare(
+            if db_id != 0 {
+                // Fetch title and metadata for the header from indexed data
+                if let Ok((t, m)) = conn_lock.query_row(
+                    "SELECT title, metadata_json FROM documents WHERE id = ?1",
+                    params![db_id],
+                    |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?))
+                ) {
+                    title = t;
+                    meta_json = m;
+                }
+
+                // Fetch tags from indexed data
+                if let Ok(mut stmt) = conn_lock.prepare(
                     "SELECT tag FROM document_tags WHERE document_id = ?1"
-                ).ok().unwrap();
-                stmt.query_map(params![db_id], |r| r.get::<_, String>(0)).ok().unwrap()
-                    .filter_map(|r| r.ok())
-                    .collect()
-            };
+                ) {
+                    tags = stmt.query_map(params![db_id], |r| r.get::<_, String>(0)).ok()
+                        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                        .unwrap_or_default();
+                }
+            } else {
+                title = Some(format!("Source ID: {}", source_doc_id));
+            }
 
             let mut header = title.map(|t| format!("# {t}\n")).unwrap_or_default();
             

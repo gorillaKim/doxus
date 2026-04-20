@@ -35,25 +35,21 @@ impl<'a> DocumentService<'a> {
     /// 2. Database cache (if valid)
     /// 3. Remote fetch via plugin (if available)
     pub async fn fetch_full_content(&self, project_name: &str, source_doc_id: &str) -> Result<String, ServiceError> {
-        // 1. Get document and project metadata
-        let (_project_id, source_type, config_json, file_path, _doc_title) = self.conn.query_row(
-            "SELECT p.id, p.source_type, p.config_json, d.file_path, d.title
-             FROM documents d
-             JOIN projects p ON d.project_id = p.id
-             WHERE p.name = ?1 AND d.source_doc_id = ?2",
-            params![project_name, source_doc_id],
-            |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                ))
-            },
-        ).map_err(|_| ServiceError::NotFound(source_doc_id.to_string()))?;
+        // 1. Get project metadata first (required for plugin/config setup)
+        let (project_id, source_type, config_json) = self.conn.query_row(
+            "SELECT id, source_type, config_json FROM projects WHERE name = ?1",
+            params![project_name],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)),
+        ).map_err(|_| ServiceError::NotFound(format!("Project '{}' not found", project_name)))?;
 
-        // 2. Try Local File Strategy
+        // 2. Try to get document-specific info (file_path) - Optional for indexed docs
+        let file_path: Option<String> = self.conn.query_row(
+            "SELECT file_path FROM documents WHERE project_id = ?1 AND source_doc_id = ?2",
+            params![project_id, source_doc_id],
+            |row| row.get::<_, Option<String>>(0),
+        ).ok().flatten();
+
+        // 3. Try Local File Strategy
         if let Some(path_str) = file_path {
             let path = Path::new(&path_str);
             if path.exists() && path.is_file() {
@@ -120,14 +116,11 @@ impl<'a> DocumentService<'a> {
     /// Force refresh the cache and return new content
     pub async fn refresh_content(&self, project_name: &str, source_doc_id: &str) -> Result<String, ServiceError> {
         let cache = ContentCache::new(self.conn);
-        let (_, source_type) = self.conn.query_row(
-            "SELECT d.id, p.source_type
-             FROM documents d
-             JOIN projects p ON d.project_id = p.id
-             WHERE p.name = ?1 AND d.source_doc_id = ?2",
-            params![project_name, source_doc_id],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
-        ).map_err(|_| ServiceError::NotFound(source_doc_id.to_string()))?;
+        let source_type: String = self.conn.query_row(
+            "SELECT source_type FROM projects WHERE name = ?1",
+            params![project_name],
+            |row| row.get(0),
+        ).map_err(|_| ServiceError::NotFound(format!("Project '{}' not found", project_name)))?;
 
         let plugin_id = PluginManager::normalize_id(&source_type);
         cache.invalidate(&plugin_id, source_doc_id)?;

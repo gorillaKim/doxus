@@ -31,10 +31,11 @@ pub fn resolve_doc_id(
             |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
         ) {
             Ok(res) => Ok(res),
-            Err(_) => Err(format!(
-                "document '{}' not found in project '{}' (Source ID check)",
-                s, project
-            )),
+            Err(_) => {
+                // [JIT Optimization] If not found in DB, return as a "virtual" document (db_id = 0)
+                // This allows DocumentService to try fetching it from the source plugin.
+                Ok((0, s.to_string()))
+            },
         }
     } else if let Some(n) = id_val.as_i64() {
         match conn.query_row(

@@ -934,7 +934,8 @@ fn page_to_doc_v2(
         "".to_string()
     };
 
-    let relative_path = path_utils::build_relative_path(&final_root_name, &ancestor_titles, &p.title);
+    let is_parent = hierarchy.values().any(|(_, parent_id)| parent_id.as_deref() == Some(&p.id));
+    let relative_path = path_utils::build_relative_path(&final_root_name, &ancestor_titles, &p.title, is_parent);
     log_d!("confluence:doc", "[Confluence-Doc-Debug] Final Result - Title: {}, Path: {}", p.title, relative_path);
 
     let updated_at = p.version.as_ref().and_then(|v| {

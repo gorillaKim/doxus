@@ -222,8 +222,12 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
     let mut config = PluginConfig { fields };
     let mut secrets = PluginSecrets { fields: HashMap::new() };
 
-    // Inject keychain auth
-    doxus_core::auth::inject_keychain_auth(&plugin_id, &mut config, &mut secrets).await;
+    // Inject keychain auth (Wait synchronously in sync function)
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        tokio::task::block_in_place(|| handle.block_on(doxus_core::auth::inject_keychain_auth(&plugin_id, &mut config, &mut secrets)));
+    } else {
+        let _ = tokio::runtime::Runtime::new().map(|rt| rt.block_on(doxus_core::auth::inject_keychain_auth(&plugin_id, &mut config, &mut secrets)));
+    }
 
     let run_async = async move {
         plugin.initialize(config, secrets).await?;
