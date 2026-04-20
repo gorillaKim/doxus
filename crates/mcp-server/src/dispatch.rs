@@ -58,7 +58,7 @@ pub async fn dispatch_tool(server: &McpServer, name: &str, id: Value, args: &Val
         "doxus_list_documents" => tools::search::list_documents(server, id, args),
         "doxus_get_documents" => tools::search::get_documents(server, id, args),
         "doxus_resolve_alias" => tools::search::resolve_alias(server, id, args),
-        "doxus_get_toc" => tools::search::get_toc(server, id, args),
+        "doxus_get_toc" => tools::search::get_toc(server, id, args).await,
         "doxus_get_ranking" => tools::search::get_ranking(server, id, args),
         "doxus_inspect_document" => tools::search::inspect_document(server, id, args),
 

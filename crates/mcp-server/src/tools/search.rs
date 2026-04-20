@@ -433,33 +433,31 @@ pub fn resolve_alias(server: &McpServer, id: Value, args: &Value) -> McpResponse
     }
 }
 
-pub fn get_toc(server: &McpServer, id: Value, args: &Value) -> McpResponse {
+pub async fn get_toc(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     let project = match args["project"].as_str() {
         Some(p) => p,
         None => return McpResponse::err(id, -32602, "missing required arg: project"),
     };
+
     let conn = server.conn();
     let conn_lock = match conn.lock() {
         Ok(l) => l,
         Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
     };
 
-    let (db_id, source_doc_id) = match resolve_doc_id(&conn_lock, project, &args["id"]) {
+    let (_db_id, source_doc_id) = match resolve_doc_id(&conn_lock, project, &args["id"]) {
         Ok(res) => res,
         Err(e) => return McpResponse::err(id, -32602, e),
     };
 
-    let content: Result<String, _> = conn_lock.query_row(
-        "SELECT content FROM documents WHERE id = ?1",
-        params![db_id],
-        |r| r.get::<_, String>(0),
-    );
+    let pm = server.plugin_manager();
+    let service = doxus_core::document::DocumentService::new(&conn_lock, Some(pm));
 
-    match content {
-        Err(_) => McpResponse::err(
+    match service.fetch_full_content(project, &source_doc_id).await {
+        Err(e) => McpResponse::err(
             id,
             -32602,
-            format!("document '{}' not found in project '{}'", source_doc_id, project),
+            format!("Failed to fetch document '{}' in project '{}': {}", source_doc_id, project, e),
         ),
         Ok(content) => {
             let toc = extract_toc(&content);
