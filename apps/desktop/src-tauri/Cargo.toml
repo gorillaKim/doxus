@@ -31,6 +31,9 @@ sha2 = "0.10"
 base64 = { version = "0.22", features = ["alloc"] }
 rand = "0.8"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+axum = "0.7"
+tower-http = { version = "0.6", features = ["validate-request", "cors"] }
+tracing = { workspace = true }
 toml = "0.8"
 sysinfo = "0.38.4"
 walkdir = "2.5.0"

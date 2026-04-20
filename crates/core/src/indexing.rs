@@ -41,11 +41,11 @@ impl IndexingService {
         }
 
         // 키체인 인증 정보 주입
-        inject_keychain_auth(&plugin_id, &mut PluginConfig { fields: config_fields.clone() }, &mut secrets);
+        inject_keychain_auth(&plugin_id, &mut PluginConfig { fields: config_fields.clone() }, &mut secrets).await;
         
         // inject_keychain_auth가 config.fields를 직접 수정하므로, 동기화를 위해 다시 꺼내옴
         let mut final_config = PluginConfig { fields: config_fields };
-        inject_keychain_auth(&plugin_id, &mut final_config, &mut secrets);
+        inject_keychain_auth(&plugin_id, &mut final_config, &mut secrets).await;
 
         plugin.initialize(final_config, secrets).await
             .map_err(|e| format!("플러그인 초기화 실패: {e}"))?;

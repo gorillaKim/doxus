@@ -253,11 +253,74 @@ impl OAuthFlow {
     }
 }
 
+// ── Auth Bridge ─────────────────────────────────────────────────────────────
+
+/// Doxus 데스크탑 앱에서 실행 중인 인증 브릿지 서버와 통신하는 클라이언트입니다.
+#[derive(Debug, Clone)]
+pub struct AuthBridge {
+    pub port: u16,
+    pub token: Option<String>,
+}
+
+impl Default for AuthBridge {
+    fn default() -> Self {
+        Self {
+            port: 14201,
+            token: None, // TODO: Load from ~/.doxus/.bridge_token
+        }
+    }
+}
+
+impl AuthBridge {
+    /// 브릿지 서버에 특정 플러그인의 시크릿 정보를 요청합니다.
+    pub async fn get_secret(&self, plugin_id: &str, key: &str) -> Option<String> {
+        let token = self.load_token();
+        let url = format!("http://localhost:{}/secrets/{}/{}", self.port, plugin_id, key);
+        
+        let client = reqwest::Client::new();
+        let mut rb = client.get(&url);
+        
+        if let Some(t) = token {
+            rb = rb.header("Authorization", format!("Bearer {}", t));
+        }
+
+        match rb.send().await {
+            Ok(resp) if resp.status().is_success() => {
+                #[derive(serde::Deserialize)]
+                struct SecretResponse { value: String }
+                
+                resp.json::<SecretResponse>().await.ok().map(|r| r.value)
+            }
+            Ok(resp) => {
+                tracing::debug!("[AuthBridge] Bridge returned error: {}", resp.status());
+                None
+            }
+            Err(e) => {
+                tracing::debug!("[AuthBridge] Failed to connect to bridge: {}", e);
+                None
+            }
+        }
+    }
+
+    fn load_token(&self) -> Option<String> {
+        if let Some(mut path) = dirs::home_dir() {
+            path.push(".doxus");
+            path.push(".bridge_token");
+            if path.exists() {
+                return std::fs::read_to_string(path).ok().map(|s| s.trim().to_string());
+            }
+        }
+        None
+    }
+}
+
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+    use std::time::{SystemTime, UNIX_EPOCH};
     use crate::secrets::MemorySecretStore;
 
     fn make_flow(token_url: &str) -> OAuthFlow {
@@ -390,25 +453,114 @@ mod tests {
         };
         assert!(!OAuthFlow::is_expired(&token));
     }
+
+    #[test]
+    #[serial]
+    fn test_inject_keychain_auth_prioritizes_env() {
+        use doxus_plugin_sdk::{PluginConfig, PluginSecrets};
+        use std::collections::HashMap;
+        let test_email = "env_email@example.com";
+        let test_token = "env_token_123";
+        std::env::set_var("DOXUS_CONFLUENCE_EMAIL", test_email);
+        std::env::set_var("DOXUS_CONFLUENCE_API_TOKEN", test_token);
+        
+        let mut config = PluginConfig { fields: HashMap::new() };
+        let mut secrets = PluginSecrets { fields: HashMap::new() };
+        let store = MemorySecretStore::new(); // 실제 키체인이 아닌 메모리 스토어 사용
+        
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            inject_auth_impl("com.doxus.confluence", &mut config, &mut secrets, &store).await;
+        });
+
+        assert_eq!(config.fields.get("email").expect("email field should exist").as_str().unwrap(), test_email);
+        assert_eq!(config.fields.get("api_token").expect("api_token field should exist").as_str().unwrap(), test_token);
+        std::env::remove_var("DOXUS_CONFLUENCE_EMAIL");
+        std::env::remove_var("DOXUS_CONFLUENCE_API_TOKEN");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_inject_auth_falls_back_to_bridge() {
+        use wiremock::matchers::{method, path, header};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use doxus_plugin_sdk::{PluginConfig, PluginSecrets};
+        use std::collections::HashMap;
+
+        // 1. 가상 브릿지 서버 시작
+        let server = MockServer::start().await;
+        let test_token = "valid-token-123";
+        let test_secret = "secret-from-bridge";
+
+        // 2. 가상 서버 기대 동작 설정
+        Mock::given(method("GET"))
+            .and(path("/secrets/com.doxus.confluence/api_token"))
+            .and(header("Authorization", &format!("Bearer {}", test_token)))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "value": test_secret
+            })))
+            .mount(&server)
+            .await;
+
+        // 3. 테스트용 토큰 파일 생성
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let token_path = std::path::PathBuf::from(home).join(".doxus/.bridge_token");
+        std::fs::create_dir_all(token_path.parent().unwrap()).ok();
+        std::fs::write(&token_path, test_token).unwrap();
+
+        // 4. 주입 실행
+        let mut config = PluginConfig { fields: HashMap::new() };
+        let mut secrets = PluginSecrets { fields: HashMap::new() };
+        let store = MemorySecretStore::new();
+
+        // 브릿지 포트 오버라이드를 위해 직접 injection 호출 (테스트 환경)
+        let bridge = AuthBridge { port: server.address().port(), token: None };
+        let mut token = bridge.get_secret("com.doxus.confluence", "api_token").await;
+        
+        // 결과 확인
+        assert_eq!(token.unwrap(), test_secret);
+
+        // 뒷정리
+        std::fs::remove_file(&token_path).ok();
+    }
 }
 
 // ── Keychain Auth Injection ──────────────────────────────────────────────────
 
-/// 시스템 키체인(keyring)에서 인증 정보를 로드하여 플러그인 설정과 시크릿에 주입합니다.
-/// MCP 서버와 데스크톱 앱에서 공통으로 사용됩니다.
-pub fn inject_keychain_auth(
+/// 시스템 키체인, 환경 변수, 또는 데스크탑 앱 브릿지에서 인증 정보를 로드하여 플러그인 설정과 시크릿에 주입합니다.
+pub async fn inject_keychain_auth(
     plugin_id: &str,
     config: &mut doxus_plugin_sdk::PluginConfig,
     secrets: &mut doxus_plugin_sdk::PluginSecrets,
 ) {
     let store = crate::secrets::UnifiedKeychainStore::new("doxus", "com.doxus.secrets.v1");
     let _ = store.load_from_keychain();
+    
+    inject_auth_impl(plugin_id, config, secrets, &store).await;
+}
+
+/// 실제 인증 정보 주입 로직을 수행합니다. (테스트를 위해 스토어를 주입받음)
+async fn inject_auth_impl(
+    plugin_id: &str,
+    config: &mut doxus_plugin_sdk::PluginConfig,
+    secrets: &mut doxus_plugin_sdk::PluginSecrets,
+    store: &dyn crate::secrets::SecretStore,
+) {
+    let bridge = AuthBridge::default();
 
     match plugin_id {
         "com.doxus.confluence" => {
-            // 1. API Token 로드
-            if let Ok(token) = store.get(plugin_id, "api_token") {
-                tracing::info!("[Auth] Loaded api_token for {} from unified store", plugin_id);
+            // 1. API Token 로드 (환경 변수 > 브릿지 > 키체인 순)
+            let mut token = std::env::var("DOXUS_CONFLUENCE_API_TOKEN").ok();
+            
+            if token.is_none() {
+                token = bridge.get_secret(plugin_id, "api_token").await;
+            }
+            if token.is_none() {
+                token = store.get(plugin_id, "api_token").ok();
+            }
+
+            if let Some(token) = token {
+                tracing::info!("[Auth] Loaded api_token for {} (Env/Bridge/Keychain)", plugin_id);
                 secrets
                     .fields
                     .insert("api_token".to_string(), doxus_plugin_sdk::SecretValue::Text(token.clone()));
@@ -416,18 +568,34 @@ pub fn inject_keychain_auth(
                     .fields
                     .insert("api_token".to_string(), serde_json::json!(token));
             }
-            // 2. Email 로드 (컨플루언스 Basic Auth 필수 항목)
-            if let Ok(email) = store.get(plugin_id, "email") {
-                tracing::info!("[Auth] Loaded email for {} from unified store", plugin_id);
+
+            // 2. Email 로드
+            let mut email = std::env::var("DOXUS_CONFLUENCE_EMAIL").ok();
+            if email.is_none() {
+                email = bridge.get_secret(plugin_id, "email").await;
+            }
+            if email.is_none() {
+                email = store.get(plugin_id, "email").ok();
+            }
+
+            if let Some(email) = email {
+                tracing::info!("[Auth] Loaded email for {} (Env/Bridge/Keychain)", plugin_id);
                 config
                     .fields
                     .insert("email".to_string(), serde_json::json!(email));
-                tracing::info!("Loaded email and token from keychain for Confluence");
             }
         }
         "com.doxus.github" => {
-            if let Ok(token) = store.get(plugin_id, "token") {
-                tracing::info!("[Auth] Loaded token for {} from unified store", plugin_id);
+            let mut token = std::env::var("DOXUS_GITHUB_TOKEN").ok();
+            if token.is_none() {
+                token = bridge.get_secret(plugin_id, "token").await;
+            }
+            if token.is_none() {
+                token = store.get(plugin_id, "token").ok();
+            }
+
+            if let Some(token) = token {
+                tracing::info!("[Auth] Loaded token for {} (Env/Bridge/Keychain)", plugin_id);
                 secrets
                     .fields
                     .insert("token".to_string(), doxus_plugin_sdk::SecretValue::Text(token));

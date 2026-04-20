@@ -3,6 +3,7 @@
 
 use doxus_desktop_lib::AppState;
 use tauri::{Emitter, Manager};
+use std::sync::Arc;
 
 
 fn find_sidecar_script() -> std::path::PathBuf {
@@ -37,6 +38,43 @@ fn find_sidecar_script() -> std::path::PathBuf {
     candidates.remove(1) // sidecar/agent-bridge.mjs — best guess
 }
 
+/// 브릿지 토큰을 생성하거나 로드합니다.
+fn ensure_bridge_token() -> String {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let token_path = std::path::PathBuf::from(home).join(".doxus/.bridge_token");
+    
+    if token_path.exists() {
+        if let Ok(token) = std::fs::read_to_string(&token_path) {
+            let token = token.trim();
+            if !token.is_empty() {
+                return token.to_string();
+            }
+        }
+    }
+
+    // 새로운 랜덤 토큰 생성 (32바이트)
+    use rand::Rng;
+    let token: String = rand::thread_rng()
+        .sample_iter(&rand::distributions::Alphanumeric)
+        .take(32)
+        .map(char::from)
+        .collect();
+    
+    std::fs::create_dir_all(token_path.parent().unwrap()).ok();
+    if let Err(e) = std::fs::write(&token_path, &token) {
+        eprintln!("[bridge] Failed to save token: {}", e);
+    } else {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o600)).ok();
+        }
+        eprintln!("[bridge] New token generated and saved to ~/.doxus/.bridge_token");
+    }
+    
+    token
+}
+
 fn main() {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     let config_path = std::path::PathBuf::from(&home).join(".doxus/config.toml");
@@ -57,6 +95,7 @@ fn main() {
     let conn = doxus_core::db::open(&db_path).expect("failed to open db");
     let plugins_dir = std::path::PathBuf::from(&home).join(".doxus/plugins");
     let sidecar_script = find_sidecar_script();
+    let bridge_token = ensure_bridge_token();
     let embedder: std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync> =
         doxus_core::embedding::OnnxEmbedder::from_default_path()
             .map(|e| std::sync::Arc::new(e) as std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>)
@@ -65,17 +104,20 @@ fn main() {
                 std::sync::Arc::new(doxus_core::embedding::NoOpEmbedder)
             });
             
-    let (state, rx) = AppState::new(conn, plugins_dir, sidecar_script, embedder, keychain_migrated_init);
-    let manager = state.sync_manager.clone();
+    let (state_arc, rx) = AppState::new(conn, plugins_dir, sidecar_script, embedder, keychain_migrated_init);
+    let state_arc = Arc::new(state_arc);
+    let manager = state_arc.sync_manager.clone();
     
     // If migration was triggered (flag was false), mark as done in config for next time
     if !keychain_migrated_init {
         settings.keychain_migrated = true;
         let _ = doxus_desktop_lib::commands::settings::save_settings_to_path(&settings, &config_path);
     }
-    state.sidecar.set_debug(doxus_core::observability::is_debug_enabled("agent"));
-    let conn_arc = state.conn.clone();
+    state_arc.sidecar.set_debug(doxus_core::observability::is_debug_enabled("agent"));
+    let conn_arc = state_arc.conn.clone();
 
+    let state_for_tauri = state_arc.clone();
+    
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())
@@ -89,13 +131,14 @@ fn main() {
 
             // Spawn background cache cleanup task (every 30 minutes)
             let handle = app.handle().clone();
+            let conn_arc_inner = conn_arc.clone();
             tauri::async_runtime::spawn(async move {
                 let mut interval =
                     tokio::time::interval(std::time::Duration::from_secs(30 * 60));
                 interval.tick().await; // skip immediate tick (startup cleanup done in AppState::new)
                 loop {
                     interval.tick().await;
-                    if let Ok(conn) = conn_arc.lock() {
+                    if let Ok(conn) = conn_arc_inner.lock() {
                         let cache = doxus_core::cache::ContentCache::new(&conn);
                         match cache.cleanup_expired() {
                             Ok(n) if n > 0 => {
@@ -110,22 +153,29 @@ fn main() {
             });
 
             // Start SyncManager background loop
+            let manager_inner = manager.clone();
             tauri::async_runtime::spawn(async move {
-                manager.start_loop(rx).await;
+                manager_inner.start_loop(rx).await;
+            });
+
+            // Start Auth Bridge server (localhost:14201)
+            let store = state_arc.secret_store.clone();
+            tauri::async_runtime::spawn(async move {
+                doxus_desktop_lib::bridge::run_bridge_server(store, 14201, bridge_token).await;
             });
 
             Ok(())
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Focused(true) = event {
-                let state = window.state::<AppState>();
+                let state = window.state::<Arc<AppState>>();
                 let manager = state.sync_manager.clone();
                 tauri::async_runtime::spawn(async move {
                     manager.trigger(doxus_core::sync_manager::SyncTrigger::Focus).await;
                 });
             }
         })
-        .manage(state)
+        .manage(state_for_tauri)
         .invoke_handler(tauri::generate_handler![
             doxus_desktop_lib::commands::market::market_list_installed,
             doxus_desktop_lib::commands::market::market_fetch_registry,

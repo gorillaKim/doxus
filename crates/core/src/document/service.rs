@@ -84,7 +84,7 @@ impl<'a> DocumentService<'a> {
                 let mut plugin_secrets = PluginSecrets::default();
                 
                 // Inject credentials from keychain
-                inject_keychain_auth(&plugin_id, &mut plugin_config, &mut plugin_secrets);
+                inject_keychain_auth(&plugin_id, &mut plugin_config, &mut plugin_secrets).await;
 
                 // Initialize plugin
                 if let Err(e) = source.initialize(plugin_config, plugin_secrets).await {

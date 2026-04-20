@@ -908,11 +908,11 @@ pub async fn get_document_content(
                         }
                     }
 
-                    // 통합 스토리지 기반 인증 로드
                     let mut secrets = PluginSecrets::default();
-                    doxus_core::auth::inject_keychain_auth(&plugin_id, &mut config, &mut secrets);
-
                     rt.block_on(async {
+                        // 통합 스토리지 기반 인증 로드
+                        doxus_core::auth::inject_keychain_auth(&plugin_id, &mut config, &mut secrets).await;
+
                         plugin.initialize(config, secrets).await
                             .map_err(|e| format!("Confluence 플러그인 초기화 실패: {e}"))?;
                         let raw = plugin.fetch_document(&doc_id).await
@@ -991,9 +991,10 @@ pub async fn get_document_content(
                     }
                     
                     let mut secrets = PluginSecrets::default();
-                    doxus_core::auth::inject_keychain_auth(&plugin_id, &mut config, &mut secrets);
-
                     rt.block_on(async {
+                        // 통합 스토리지 기반 인증 로드
+                        doxus_core::auth::inject_keychain_auth(&plugin_id, &mut config, &mut secrets).await;
+
                         plugin.initialize(config, secrets).await
                             .map_err(|e| format!("GitHub 플러그인 초기화 실패: {e}"))?;
                         let raw = plugin.fetch_document(&doc_id).await

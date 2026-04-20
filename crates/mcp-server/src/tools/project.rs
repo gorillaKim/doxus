@@ -223,7 +223,7 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
     let mut secrets = PluginSecrets { fields: HashMap::new() };
 
     // Inject keychain auth
-    doxus_core::auth::inject_keychain_auth(&plugin_id, &mut config, &mut secrets);
+    doxus_core::auth::inject_keychain_auth(&plugin_id, &mut config, &mut secrets).await;
 
     let run_async = async move {
         plugin.initialize(config, secrets).await?;
