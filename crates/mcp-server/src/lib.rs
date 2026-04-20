@@ -36,8 +36,10 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     fn test_server() -> McpServer {
+        doxus_core::db::ensure_vec_extension();
         let conn = Connection::open_in_memory().expect("in-memory db");
         doxus_core::db::apply_pragmas(&conn).expect("pragmas");
+        doxus_core::db::create_vec0_table(&conn).expect("vec0 table");
         doxus_core::db::migrate(&conn).expect("migrate");
         let pm = Arc::new(doxus_core::plugin::PluginManager::new(std::path::PathBuf::from("/tmp/doxus-pm")));
         McpServer::new(Arc::new(Mutex::new(conn)), None, pm, std::path::PathBuf::from("/tmp/doxus-test-plugins"))

@@ -1,4 +1,5 @@
 use crate::server::McpServer;
+use crate::tools::resolve_doc_id;
 use crate::types::McpResponse;
 use rusqlite::params;
 use serde_json::{json, Value};
@@ -56,8 +57,8 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
                     .iter()
                     .map(|h| {
                         json!({
-                            "document_id": h.source_doc_id,
-                            "db_id": h.document_id,
+                            "id": h.document_id,
+                            "source_id": h.source_doc_id,
                             "title": h.title,
                             "heading": h.heading_path,
                             "snippet": h.snippet,
@@ -104,8 +105,8 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
                     .iter()
                     .map(|h| {
                         json!({
-                            "document_id": h.source_doc_id,
-                            "db_id": h.document_id,
+                            "id": h.document_id,
+                            "source_id": h.source_doc_id,
                             "title": h.title,
                             "snippet": h.snippet,
                             "score": h.score,
@@ -131,40 +132,40 @@ pub async fn get_document(server: &McpServer, id: Value, args: &Value) -> McpRes
         Some(p) => p,
         None => return McpResponse::err(id, -32602, "missing required arg: project"),
     };
-    let doc_id = match args["id"].as_str() {
-        Some(i) => i,
-        None => return McpResponse::err(id, -32602, "missing required arg: id"),
-    };
-
     let conn = server.conn();
     let conn_lock = match conn.lock() {
         Ok(l) => l,
         Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
     };
+
+    let (db_id, source_doc_id) = match resolve_doc_id(&conn_lock, project, &args["id"]) {
+        Ok(res) => res,
+        Err(e) => return McpResponse::err(id, -32602, e),
+    };
+
     let pm = server.plugin_manager();
     let service = doxus_core::document::DocumentService::new(&conn_lock, Some(pm));
 
-    match service.fetch_full_content(project, doc_id).await {
+    match service.fetch_full_content(project, &source_doc_id).await {
         Err(e) => McpResponse::err(
             id,
             -32602,
-            format!("Failed to fetch document '{doc_id}' in project '{project}': {e}"),
+            format!("Failed to fetch document '{}' in project '{}': {}", source_doc_id, project, e),
         ),
         Ok(content) => {
             // Fetch title and metadata for the header
             let (title, meta_json): (Option<String>, Option<String>) = conn_lock.query_row(
-                "SELECT title, metadata_json FROM documents d JOIN projects p ON d.project_id = p.id WHERE p.name = ?1 AND d.source_doc_id = ?2",
-                params![project, doc_id],
-                |r| Ok((r.get(0)?, r.get(1)?))
+                "SELECT title, metadata_json FROM documents WHERE id = ?1",
+                params![db_id],
+                |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?))
             ).unwrap_or((None, None));
 
             // Fetch tags
             let tags: Vec<String> = {
                 let mut stmt = conn_lock.prepare(
-                    "SELECT tag FROM document_tags dt JOIN documents d ON dt.document_id = d.id 
-                     JOIN projects p ON d.project_id = p.id WHERE p.name = ?1 AND d.source_doc_id = ?2"
+                    "SELECT tag FROM document_tags WHERE document_id = ?1"
                 ).ok().unwrap();
-                stmt.query_map(params![project, doc_id], |r| r.get(0)).ok().unwrap()
+                stmt.query_map(params![db_id], |r| r.get::<_, String>(0)).ok().unwrap()
                     .filter_map(|r| r.ok())
                     .collect()
             };
@@ -195,10 +196,6 @@ pub async fn get_section(server: &McpServer, id: Value, args: &Value) -> McpResp
         Some(p) => p,
         None => return McpResponse::err(id, -32602, "missing required arg: project"),
     };
-    let doc_id = match args["id"].as_str() {
-        Some(i) => i,
-        None => return McpResponse::err(id, -32602, "missing required arg: id"),
-    };
     let heading = match args["heading"].as_str() {
         Some(h) => h,
         None => return McpResponse::err(id, -32602, "missing required arg: heading"),
@@ -210,14 +207,19 @@ pub async fn get_section(server: &McpServer, id: Value, args: &Value) -> McpResp
         Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
     };
 
+    let (_db_id, source_doc_id) = match resolve_doc_id(&conn_lock, project, &args["id"]) {
+        Ok(res) => res,
+        Err(e) => return McpResponse::err(id, -32602, e),
+    };
+
     let pm = server.plugin_manager();
     let service = doxus_core::document::DocumentService::new(&conn_lock, Some(pm));
 
-    match service.fetch_full_content(project, doc_id).await {
+    match service.fetch_full_content(project, &source_doc_id).await {
         Err(e) => McpResponse::err(
             id,
             -32602,
-            format!("Failed to fetch document '{doc_id}' in project '{project}': {e}"),
+            format!("Failed to fetch document '{}' in project '{}': {}", source_doc_id, project, e),
         ),
         Ok(content) => {
             let section = extract_section(&content, heading);
@@ -225,7 +227,7 @@ pub async fn get_section(server: &McpServer, id: Value, args: &Value) -> McpResp
                 McpResponse::err(
                     id,
                     -32602,
-                    format!("section '{heading}' not found in document '{doc_id}'"),
+                    format!("section '{}' not found in document '{}'", heading, source_doc_id),
                 )
             } else {
                 McpResponse::text(id, section)
@@ -239,34 +241,33 @@ pub fn get_metadata(server: &McpServer, id: Value, args: &Value) -> McpResponse 
         Some(p) => p,
         None => return McpResponse::err(id, -32602, "missing required arg: project"),
     };
-    let doc_id = match args["id"].as_str() {
-        Some(i) => i,
-        None => return McpResponse::err(id, -32602, "missing required arg: id"),
-    };
-
     let conn = server.conn();
     let conn_lock = match conn.lock() {
         Ok(l) => l,
         Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
     };
+
+    let (db_id, source_doc_id) = match resolve_doc_id(&conn_lock, project, &args["id"]) {
+        Ok(res) => res,
+        Err(e) => return McpResponse::err(id, -32602, e),
+    };
+
     let row: Result<(Option<String>, String, i64), _> = conn_lock.query_row(
-        "SELECT d.title, d.content_hash, d.last_indexed
-         FROM documents d
-         JOIN projects p ON d.project_id = p.id
-         WHERE p.name = ?1 AND d.source_doc_id = ?2",
-        params![project, doc_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        "SELECT title, content_hash, last_indexed FROM documents WHERE id = ?1",
+        params![db_id],
+        |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)),
     );
 
     match row {
         Err(_) => McpResponse::err(
             id,
             -32602,
-            format!("document '{doc_id}' not found in project '{project}'"),
+            format!("document '{}' not found in project '{}'", source_doc_id, project),
         ),
         Ok((title, hash, indexed)) => {
             let meta = json!({
-                "id": doc_id,
+                "id": db_id,
+                "source_id": source_doc_id,
                 "project": project,
                 "title": title,
                 "content_hash": hash,
@@ -363,20 +364,20 @@ pub fn get_documents(server: &McpServer, id: Value, args: &Value) -> McpResponse
         Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
     };
     for doc_id_val in ids {
-        let doc_id = match doc_id_val.as_str() {
-            Some(s) => s,
-            None => continue,
+        let (_, source_doc_id) = match resolve_doc_id(&conn_lock, project, doc_id_val) {
+            Ok(res) => res,
+            Err(_) => continue,
         };
         let row: Result<(Option<String>, String), _> = conn_lock.query_row(
             "SELECT d.title, d.content
              FROM documents d
              JOIN projects p ON d.project_id = p.id
              WHERE p.name = ?1 AND d.source_doc_id = ?2",
-            params![project, doc_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            params![project, source_doc_id],
+            |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?)),
         );
         if let Ok((title, content)) = row {
-            results.push(json!({ "id": doc_id, "title": title, "content": content }));
+            results.push(json!({ "id": source_doc_id, "title": title, "content": content }));
         }
     }
 
@@ -410,7 +411,7 @@ pub fn resolve_alias(server: &McpServer, id: Value, args: &Value) -> McpResponse
          WHERE da.alias = ?1
          LIMIT 1",
         params![alias],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
     );
 
     match row {
@@ -427,30 +428,28 @@ pub fn get_toc(server: &McpServer, id: Value, args: &Value) -> McpResponse {
         Some(p) => p,
         None => return McpResponse::err(id, -32602, "missing required arg: project"),
     };
-    let doc_id = match args["id"].as_str() {
-        Some(i) => i,
-        None => return McpResponse::err(id, -32602, "missing required arg: id"),
-    };
-
     let conn = server.conn();
     let conn_lock = match conn.lock() {
         Ok(l) => l,
         Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
     };
+
+    let (db_id, source_doc_id) = match resolve_doc_id(&conn_lock, project, &args["id"]) {
+        Ok(res) => res,
+        Err(e) => return McpResponse::err(id, -32602, e),
+    };
+
     let content: Result<String, _> = conn_lock.query_row(
-        "SELECT d.content
-         FROM documents d
-         JOIN projects p ON d.project_id = p.id
-         WHERE p.name = ?1 AND d.source_doc_id = ?2",
-        params![project, doc_id],
-        |r| r.get(0),
+        "SELECT content FROM documents WHERE id = ?1",
+        params![db_id],
+        |r| r.get::<_, String>(0),
     );
 
     match content {
         Err(_) => McpResponse::err(
             id,
             -32602,
-            format!("document '{doc_id}' not found in project '{project}'"),
+            format!("document '{}' not found in project '{}'", source_doc_id, project),
         ),
         Ok(content) => {
             let toc = extract_toc(&content);
@@ -515,36 +514,36 @@ pub fn inspect_document(server: &McpServer, id: Value, args: &Value) -> McpRespo
         Some(p) => p,
         None => return McpResponse::err(id, -32602, "missing required arg: project"),
     };
-    let doc_id = match args["id"].as_str() {
-        Some(i) => i,
-        None => return McpResponse::err(id, -32602, "missing required arg: id"),
-    };
-
     let conn = server.conn();
     let conn_lock = match conn.lock() {
         Ok(l) => l,
         Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
     };
+
+    let (db_id, source_doc_id) = match resolve_doc_id(&conn_lock, project, &args["id"]) {
+        Ok(res) => res,
+        Err(e) => return McpResponse::err(id, -32602, e),
+    };
+
     let row: Result<(i64, Option<String>, String, i64, i64), _> = conn_lock.query_row(
         "SELECT d.id, d.title, d.content_hash, d.last_indexed,
                 (SELECT COUNT(*) FROM chunks c WHERE c.document_id = d.id) as chunk_count
          FROM documents d
-         JOIN projects p ON d.project_id = p.id
-         WHERE p.name = ?1 AND d.source_doc_id = ?2",
-        params![project, doc_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+         WHERE d.id = ?1",
+        params![db_id],
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?)),
     );
 
     match row {
         Err(_) => McpResponse::err(
             id,
             -32602,
-            format!("document '{doc_id}' not found in project '{project}'"),
+            format!("document '{}' not found in project '{}'", source_doc_id, project),
         ),
         Ok((db_id, title, hash, indexed, chunks)) => {
             let info = json!({
-                "db_id": db_id,
-                "source_doc_id": doc_id,
+                "id": db_id,
+                "source_id": source_doc_id,
                 "project": project,
                 "title": title,
                 "content_hash": hash,

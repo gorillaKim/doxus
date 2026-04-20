@@ -101,24 +101,24 @@ pub fn tool_list() -> Value {
             ]),
             tool("doxus_get_document", "Get full document content", &[
                 param("project", "string", "Project name"),
-                param("id", "string", "Source document ID"),
+                param("id", "string", "Document ID (Source ID or Database ID)"),
             ]),
             tool("doxus_get_section", "Get specific section by heading (token-efficient)", &[
                 param("project", "string", "Project name"),
-                param("id", "string", "Source document ID"),
+                param("id", "string", "Document ID (Source ID or Database ID)"),
                 param("heading", "string", "Heading text to find"),
             ]),
             tool("doxus_get_metadata", "Get document frontmatter and metadata", &[
                 param("project", "string", "Project name"),
-                param("id", "string", "Source document ID"),
+                param("id", "string", "Document ID (Source ID or Database ID)"),
             ]),
             tool("doxus_get_backlinks", "Get documents that link to this document", &[
                 param("project", "string", "Project name"),
-                param("id", "string", "Source document ID"),
+                param("id", "string", "Document ID (Source ID or Database ID)"),
             ]),
             tool("doxus_get_links", "Get documents this document links to", &[
                 param("project", "string", "Project name"),
-                param("id", "string", "Source document ID"),
+                param("id", "string", "Document ID (Source ID or Database ID)"),
             ]),
             tool("doxus_list_documents", "List all documents in a project", &[
                 param("project", "string", "Project name"),
@@ -126,8 +126,8 @@ pub fn tool_list() -> Value {
                 param_opt("limit", "number", "Max results (default 50)"),
             ]),
             tool("doxus_get_documents", "Batch fetch multiple documents", &[
-                param("ids", "array", "Array of document IDs"),
                 param("project", "string", "Project name"),
+                param("ids", "array", "Array of document IDs (Source IDs or Database IDs)"),
             ]),
             tool("doxus_list_projects", "List all projects with status", &[]),
             tool("doxus_add_project", "Add a new project", &[
@@ -160,7 +160,7 @@ pub fn tool_list() -> Value {
             ]),
             tool("doxus_inspect_document", "Inspect document indexing state", &[
                 param("project", "string", "Project name"),
-                param("id", "string", "Document ID"),
+                param("id", "string", "Document ID (Source ID or Database ID)"),
             ]),
             tool("doxus_status", "Get server status and health", &[]),
             tool("doxus_agent_summary", "Get a comprehensive summary of the knowledge base for orientation", &[]),
@@ -174,7 +174,7 @@ pub fn tool_list() -> Value {
             ]),
             tool("doxus_get_cluster", "Multi-hop graph traversal", &[
                 param("project", "string", "Project name"),
-                param("id", "string", "Start document ID"),
+                param("id", "string", "Start document ID (Source ID or Database ID)"),
                 param_opt("depth", "number", "Traversal depth (default 2, max 5)"),
             ]),
             // Plugin management
@@ -251,6 +251,8 @@ fn param_opt(name: &str, type_: &str, description: &str) -> Value {
 
 static HELP_TEXT: &str = r#"doxus MCP — 32 doxus_* tools
 
+NOTE: Always start by calling 'doxus_list_projects' to identify available knowledge sources.
+
 SEARCH:      doxus_search, doxus_get_document, doxus_get_section, doxus_get_metadata
 GRAPH:       doxus_get_backlinks, doxus_get_links, doxus_find_path, doxus_get_cluster
 PROJECTS:    doxus_list_projects, doxus_add_project, doxus_remove_project, doxus_index_project, doxus_sync_project
@@ -262,11 +264,9 @@ Run 'tools/list' for full schema."#;
 
 static ONBOARD_TEXT: &str = r#"Welcome to doxus!
 
-Quick start:
-1. doxus_list_projects        — see your projects
-2. doxus_add_project          — add a new project (name, path)
-3. doxus index <project>      — index via CLI (required before search)
-4. doxus_search               — search across indexed documents
-5. doxus_system_report        — check overall health
+Quick start for AI agents:
+1. doxus_list_projects        — MUST call this first to see available projects.
+2. doxus_search               — Search within a project. Use the 'id' from results for retrieval.
+3. doxus_get_document         — Get full content using the unified 'id'.
 
 For help: doxus_help"#;
