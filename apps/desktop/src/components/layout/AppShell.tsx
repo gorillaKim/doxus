@@ -78,6 +78,14 @@ function IconGraph() {
     </svg>
   );
 }
+function IconGuide() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5 shrink-0">
+      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+    </svg>
+  );
+}
 function IconSidebarCollapse({ collapsed }: { collapsed: boolean }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5 shrink-0">
@@ -98,6 +106,7 @@ const NAV_ITEMS = [
   { to: "/projects", label: "프로젝트", icon: <IconProjects /> },
   { to: "/market", label: "마켓", icon: <IconMarket /> },
   { to: "/agent", label: "에이전트", icon: <IconAgent /> },
+  { to: "/guide", label: "가이드", icon: <IconGuide /> },
   { to: "/settings", label: "설정", icon: <IconSettings /> },
 ];
 
@@ -125,12 +134,12 @@ export function AppShell({ children }: { children: ReactNode }) {
       >
         {/* 헤더: 로고 + 토글 버튼 */}
         <div className={`flex items-center px-3 py-4 ${sidebarOpen ? "justify-between" : "justify-center"}`}>
-          <div className="flex items-center gap-2 overflow-hidden">
-            <img src={logo} alt="doxus logo" className="w-6 h-6 shrink-0" />
-            {sidebarOpen && (
+          {sidebarOpen && (
+            <div className="flex items-center gap-2 overflow-hidden">
+              <img src={logo} alt="doxus logo" className="w-6 h-6 shrink-0" />
               <span className="text-base font-bold text-indigo-400 truncate">doxus</span>
-            )}
-          </div>
+            </div>
+          )}
           <button
             data-testid="sidebar-toggle"
             onClick={toggleSidebar}

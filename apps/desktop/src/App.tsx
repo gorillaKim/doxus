@@ -9,6 +9,7 @@ import MarketPage from "./pages/MarketPage";
 import DashboardPage from "./pages/DashboardPage";
 import SettingsPage from "./pages/SettingsPage";
 import AgentPage from "./pages/AgentPage";
+import GuidePage from "./pages/GuidePage";
 
 export default function App() {
   const [cacheToast, setCacheToast] = useState<string | null>(null);
@@ -34,6 +35,7 @@ export default function App() {
           <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/market" element={<MarketPage />} />
           <Route path="/agent" element={<AgentPage />} />
+          <Route path="/guide" element={<GuidePage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>
       </AppShell>
