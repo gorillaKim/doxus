@@ -120,7 +120,7 @@ async fn test_token_refresh_pushes_to_secret_backend() {
     assert_eq!(stream.documents[0].title, Some("Test Page".into()));
 
     // ── 핵심 검증: 시크릿 백엔드에 새 토큰이 저장됐는지 확인 ──────────────────
-    let service = "com.doxus.com.doxus.confluence"; // wasm_adapter uses com.doxus.{plugin_id}
+    let service = "com.doxus.confluence"; // wasm_adapter uses manifest.plugin_id
     assert_eq!(
         test_backend.get(service, "access_token").unwrap(),
         "new-access-token",

@@ -751,8 +751,13 @@ pub(crate) fn delete_document_impl(opts: DeleteDocumentOptsWasm) -> FnResult<()>
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn get_base_url(state: &PluginState) -> FnResult<String> {
-    let raw = state.get_config("base_url").ok_or(Error::msg("base_url missing"))?;
-    let mut url = raw.trim_end_matches('/').to_string();
+    let raw = state.get_config("base_url").ok_or(Error::msg("base_url missing in plugin configuration"))?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(Error::msg("base_url is empty. Please check your project configuration."));
+    }
+    
+    let mut url = trimmed.trim_end_matches('/').to_string();
     if url.contains(".atlassian.net") && !url.ends_with("/wiki") {
         url.push_str("/wiki");
     }
