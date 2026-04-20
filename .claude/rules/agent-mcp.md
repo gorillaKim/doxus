@@ -85,9 +85,8 @@ doxus_add_project       # 프로젝트 추가
 doxus_remove_project    # 프로젝트 제거
 doxus_get_backlinks     # 역방향 링크
 doxus_get_links         # 정방향 링크
-doxus_find_related      # 관련 문서 추천 (RRF)
 doxus_find_path         # 문서 간 최단 경로
-doxus_get_cluster       # 멀티홉 그래프 탐색
+doxus_get_cluster       # 멀티홉 그래프 탐색 (추천)
 doxus_index_project     # 프로젝트 인덱싱 시작
 doxus_sync_project      # 변경분 동기화
 doxus_status            # 서버 상태
@@ -112,7 +111,9 @@ doxus_status            # 서버 상태
     "doxus_get_section",
     "doxus_list_projects",
     "doxus_get_backlinks",
-    "doxus_find_related"
+    "doxus_get_links",
+    "doxus_get_cluster",
+    "doxus_find_path"
   ]
 }
 ```

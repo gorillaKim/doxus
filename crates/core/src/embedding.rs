@@ -110,7 +110,16 @@ impl OnnxEmbedder {
             .unwrap_or_else(|| std::path::Path::new("."))
             .join("tokenizer.json");
 
-        let tokenizer = Tokenizer::from_file(&tokenizer_path).ok();
+        let mut tokenizer = Tokenizer::from_file(&tokenizer_path).ok();
+        if let Some(ref mut t) = tokenizer {
+            // multilingual-e5-small has a 512 token limit.
+            // Truncate to prevent ONNX runtime broadcast errors.
+            t.with_truncation(Some(tokenizers::TruncationParams {
+                max_length: 512,
+                ..Default::default()
+            }))
+            .expect("failed to set truncation");
+        }
 
         Ok(Self {
             info: ModelInfo {

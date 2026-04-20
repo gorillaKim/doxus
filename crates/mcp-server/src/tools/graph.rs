@@ -121,93 +121,6 @@ fn links(server: &McpServer, id: Value, args: &Value, outgoing: bool) -> McpResp
     }
 }
 
-pub async fn find_related(server: &McpServer, id: Value, args: &Value) -> McpResponse {
-    use doxus_core::search::{SearchEngine, SearchMode, SearchQuery};
-
-    let project = match args["project"].as_str() {
-        Some(p) => p,
-        None => return McpResponse::err(id, -32602, "missing required arg: project"),
-    };
-    let k = args["k"].as_u64().unwrap_or(10) as usize;
-
-    let (db_id, source_doc_id) = {
-        let conn = server.conn();
-        let conn_lock = match conn.lock() {
-            Ok(l) => l,
-            Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
-        };
-        match resolve_doc_id(&conn_lock, project, &args["id"]) {
-            Ok(res) => res,
-            Err(e) => return McpResponse::err(id, -32602, e),
-        }
-    };
-
-    // 1. Fetch document content to use as query
-    let pm = server.plugin_manager();
-    let conn = server.conn();
-    let content = {
-        let conn_lock = match conn.lock() {
-            Ok(l) => l,
-            Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
-        };
-        let service = doxus_core::document::DocumentService::new(&conn_lock, Some(pm));
-        // fetch_full_content is async and doesn't hold the lock across awaits if designed correctly,
-        // but it's safer to drop here if needed.
-        service.fetch_full_content(project, &source_doc_id).await
-    };
-    
-    let content = match content {
-        Ok(c) => c,
-        Err(e) => return McpResponse::err(id, -32602, format!("failed to fetch content for similarity search: {e}")),
-    };
-
-    // 2. Use first 1000 chars as query for similarity
-    let query_text: String = content.chars().take(1000).collect();
-    
-    // Get project ID
-    let project_id = {
-       let conn = server.conn();
-       let cl = conn.lock().unwrap();
-       cl.query_row("SELECT project_id FROM documents WHERE id = ?1", params![db_id], |r| r.get::<_, i64>(0)).unwrap_or(0)
-    };
-
-    let mut q = SearchQuery::new(query_text)
-        .with_limit(k + 1) // +1 to account for self-exclusion
-        .with_projects(vec![project_id]);
-        
-    q.mode = if server.embedder().is_some() { SearchMode::Hybrid } else { SearchMode::Fts };
-
-    let hits: Result<Vec<doxus_core::search::Hit>, _> = if let Some(embedder) = server.embedder() {
-        let engine = SearchEngine::with_embedder(server.conn(), embedder);
-        engine.search_async(&q).await
-    } else {
-        let conn = server.conn();
-        let cl = conn.lock().unwrap();
-        let engine = SearchEngine::new(&*cl);
-        engine.search(&q).map(|shs| shs.into_iter().map(doxus_core::search::Hit::from).collect())
-    };
-
-    match hits {
-        Err(e) => McpResponse::err(id, -32603, e.to_string()),
-        Ok(hits) => {
-            let items: Vec<Value> = hits
-                .into_iter()
-                .filter(|h| h.source_doc_id != source_doc_id) // Exclude self
-                .take(k)
-                .map(|h| json!({
-                    "id": h.source_doc_id,
-                    "db_id": h.document_id, // SearchHit.document_id is our db_id
-                    "title": h.title,
-                    "score": h.score,
-                }))
-                .collect();
-
-            McpResponse::ok(id, json!({
-                "content": [{ "type": "text", "text": serde_json::to_string_pretty(&items).unwrap_or_default() }]
-            }))
-        }
-    }
-}
 
 pub fn find_path(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     let project = args["project"].as_str().unwrap_or("Brain"); // Default to Brain or from args
@@ -405,35 +318,6 @@ mod tests {
         assert_eq!(id1, id3);
     }
 
-    #[tokio::test]
-    async fn test_find_related_works_with_numeric_id() {
-        let server = setup_test_server();
-        
-        // Populate cache for doc1
-        {
-            let conn = server.conn();
-            let cl = conn.lock().unwrap();
-            cl.execute(
-                "INSERT INTO content_cache (plugin_id, doc_id, content, cached_at, expires_at) 
-                 VALUES ('com.doxus.obsidian', 'doc1', 'Rust is a systems language focused on safety.', 0, 9999999999)",
-                []
-            ).unwrap();
-            
-            // Also add a related doc in FTS for search results
-            let doc2_id: i64 = cl.query_row("SELECT id FROM documents WHERE source_doc_id='doc2'", [], |r| r.get(0)).unwrap();
-            cl.execute("INSERT INTO chunks (id, document_id, content, chunk_index) VALUES (2, ?1, 'Rust safety features', 0)", [doc2_id]).unwrap();
-            cl.execute("INSERT INTO chunks_fts (rowid, content) VALUES (2, 'Rust safety features')", []).unwrap();
-        }
-
-        let args = json!({
-            "project": "Brain",
-            "id": 1, // numeric ID
-            "k": 5
-        });
-
-        let resp = find_related(&server, json!(1), &args).await;
-        assert!(resp.error.is_none(), "Expected success, got error: {:?}", resp.error);
-    }
 
     #[test]
     fn test_links_standardization() {

@@ -51,10 +51,11 @@ pub const CLAUDE_MD_INSTRUCTIONS: &str = r#"이 프로젝트의 지식과 문서
 단순 검색만으로는 놓치기 쉬운 맥락을 다음 도구로 추적하십시오:
 - `doxus_get_links`: 현재 문서가 인용하거나 참조하고 있는 '앞으로의 연결고리'를 찾습니다.
 - `doxus_get_backlinks`: 현재 문서를 참조하고 있는 '뒤로의 연결고리'를 찾아 영향도 분석을 수행합니다.
-- `doxus_find_related`: 그래프 위상과 태그 유사도를 기반으로 연관된 문서를 추천받습니다.
+- `doxus_get_cluster`: 현재 문서와 다중 홉으로 연결된 지식 클러스터를 탐색하여 연관된 문서들을 한꺼번에 찾습니다.
+- `doxus_find_path`: 두 문서 사이의 복잡한 인용 관계나 참조 경로를 분석합니다.
 
 ### 💡 탐색 시나리오 (Scenarios)
-- **리서치 심화 (Deep Dive)**: 문서 A를 읽은 후 그 핵심 근거가 되는 다른 문서를 찾으려면 `doxus_get_links`를 호출하십시오.
+- **리서치 심화 (Deep Dive)**: 문서 A와 관련된 모든 맥락을 한꺼번에 파악하려면 `doxus_get_cluster`를, 구체적인 인용 근거를 찾으려면 `doxus_get_links`를 호출하십시오.
 - **영향도 평가 (Impact Analysis)**: 코드 수정 시, 해당 사양이 정의된 문서를 읽고 `doxus_get_backlinks`를 조회하여 이 변경이 영향을 줄 수 있는 다른 설계나 기획을 점검하십시오.
 - **프로젝트 횡단 탐색 (Cross-Project)**: 문서 내에서 `doxus://ProjectName/DocID` 형태의 링크를 발견하면, 해당 프로젝트명을 인자로 `doxus_get_document`를 호출하여 프로젝트를 넘나드는 탐색을 수행하십시오.
 

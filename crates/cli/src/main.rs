@@ -470,16 +470,6 @@ pub enum GraphAction {
         /// Document ID (db_id or source_doc_id)
         id: String,
     },
-    /// Find related documents
-    Related {
-        /// Project name
-        project: String,
-        /// Document ID (db_id or source_doc_id)
-        id: String,
-        /// Number of results
-        #[arg(short, long, default_value = "10")]
-        limit: usize,
-    },
     /// Find shortest path between two documents
     Path {
         /// Project name
@@ -869,45 +859,6 @@ async fn handle_graph(
             println!("{}", "─".repeat(70));
             for r in rows.flatten() {
                 println!("{:<40} {}", r.0, r.1.unwrap_or_default());
-            }
-        }
-        GraphAction::Related { project, id, limit } => {
-            use doxus_core::search::{SearchEngine, SearchQuery};
-            use doxus_core::document::DocumentService;
-
-            let (_db_id, source_doc_id) = resolve_id(conn, &project, &id)?;
-            
-            // Get content for similarity search
-            let doc_service = DocumentService::new(conn, None);
-            let content = doc_service.fetch_full_content(&project, &source_doc_id).await
-                .map_err(|e| anyhow::anyhow!("failed to fetch content: {e}"))?;
-
-            let mut query = SearchQuery::new(&content).with_limit(limit);
-            if let Ok(pid) = conn.query_row("SELECT id FROM projects WHERE name=?1", [project.clone()], |r| r.get::<_, i64>(0)) {
-                query = query.with_projects(vec![pid]);
-            }
-
-            let hits: Vec<doxus_core::search::Hit> = if let Some(emb) = embedder {
-                let search_conn = doxus_core::db::open(db_path).context("failed to open search connection")?;
-                let engine = SearchEngine::with_embedder(
-                    std::sync::Arc::new(std::sync::Mutex::new(search_conn)),
-                    emb,
-                );
-                engine.search_async(&query).await.map_err(|e| anyhow::anyhow!(e))?
-            } else {
-                SearchEngine::new(conn).search(&query)
-                    .map_err(|e| anyhow::anyhow!(e))?
-                    .into_iter()
-                    .map(doxus_core::search::Hit::from)
-                    .collect()
-            };
-
-            println!("Related to '{}' in '{}':\n", source_doc_id, project);
-            for (i, hit) in hits.iter().enumerate() {
-                if hit.source_doc_id == source_doc_id { continue; } // Skip self
-                println!("{}. {} [score: {:.6}]", i + 1, hit.title.as_deref().unwrap_or("(untitled)"), hit.score);
-                println!("   📄 {}", hit.source_doc_id);
-                println!();
             }
         }
         GraphAction::Path { project, from, to, max_hops } => {

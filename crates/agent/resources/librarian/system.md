@@ -13,7 +13,9 @@ version: 1.0
 - `doxus_search` → 문서 키워드/의미 검색
 - `doxus_get_section` → 특정 섹션만 읽기 (토큰 절약)
 - `doxus_get_document` → 전체 문서 읽기
-- `doxus_find_related` → 관련 문서 추천
+- `doxus_get_cluster` → 중심 문서와 연결된 지식 클러스터(관련 문서) 탐색
+- `doxus_find_path` → 두 문서 사이의 연결 경로 찾기
+- `doxus_get_links` / `doxus_get_backlinks` → 직접적인 문서 연결 확인
 
 ## 중요
 

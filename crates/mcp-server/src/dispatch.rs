@@ -65,7 +65,6 @@ pub async fn dispatch_tool(server: &McpServer, name: &str, id: Value, args: &Val
         // ── Graph ─────────────────────────────────────────────────────────
         "doxus_get_backlinks" => tools::graph::get_backlinks(server, id, args),
         "doxus_get_links" => tools::graph::get_links(server, id, args),
-        "doxus_find_related" => tools::graph::find_related(server, id, args).await,
         "doxus_find_path" => tools::graph::find_path(server, id, args),
         "doxus_get_cluster" => tools::graph::get_cluster(server, id, args),
 
@@ -168,11 +167,6 @@ pub fn tool_list() -> Value {
             tool("doxus_help", "Get usage documentation", &[]),
             tool("doxus_onboard", "Interactive setup guide", &[]),
             // Graph
-            tool("doxus_find_related", "Find related documents via RRF ranking", &[
-                param("project", "string", "Project name"),
-                param("id", "string", "Source document ID"),
-                param_opt("k", "number", "Number of results (default 10)"),
-            ]),
             tool("doxus_find_path", "Find shortest path between two documents", &[
                 param("from", "string", "Source document ID"),
                 param("to", "string", "Target document ID"),
@@ -258,7 +252,7 @@ fn param_opt(name: &str, type_: &str, description: &str) -> Value {
 static HELP_TEXT: &str = r#"doxus MCP — 32 doxus_* tools
 
 SEARCH:      doxus_search, doxus_get_document, doxus_get_section, doxus_get_metadata
-GRAPH:       doxus_get_backlinks, doxus_get_links, doxus_find_related, doxus_find_path, doxus_get_cluster
+GRAPH:       doxus_get_backlinks, doxus_get_links, doxus_find_path, doxus_get_cluster
 PROJECTS:    doxus_list_projects, doxus_add_project, doxus_remove_project, doxus_index_project, doxus_sync_project
 DOCUMENTS:   doxus_list_documents, doxus_get_documents, doxus_get_toc, doxus_get_ranking, doxus_resolve_alias
 PLUGINS:     doxus_plugin_list, doxus_plugin_install, doxus_plugin_status

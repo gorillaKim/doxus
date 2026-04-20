@@ -9,7 +9,7 @@ doxus는 **obsidian-nexus의 차세대 진화판**으로, WASM 플러그인 기�
 에이전트가 `doxus-mcp`를 통해 사용할 수 있는 대표적인 도구들:
 
 - **Search**: `doxus_search`, `doxus_get_document`, `doxus_get_section`, `doxus_get_metadata`
-- **Graph**: `doxus_get_links`, `doxus_get_backlinks`, `doxus_find_related`, `doxus_find_path`, `doxus_get_cluster`
+- **Graph**: `doxus_get_links`, `doxus_get_backlinks`, `doxus_find_path`, `doxus_get_cluster`
 - **Project**: `doxus_list_projects`, `doxus_add_project`, `doxus_index_project`, `doxus_sync_project`
 - **Management**: `doxus_list_documents`, `doxus_get_toc`, `doxus_resolve_alias`, `doxus_get_ranking`
 
@@ -19,8 +19,8 @@ doxus는 **obsidian-nexus의 차세대 진화판**으로, WASM 플러그인 기�
 - **Search**: `doxus search <query>`
 - **Graph Analysis**:
   - `doxus graph links <project> <id>`: 정방향 링크 조회
-  - `doxus graph related <project> <id>`: 유사 문서 추천
-  - `doxus graph cluster <project> <id>`: 다중 홉 지식 클러스터 탐색
+  - `doxus graph cluster <project> <id>`: 다중 홉 지식 클러스터(관련 문서) 탐색
+  - `doxus graph path <project> <from> <to>`: 두 문서 사이의 최단 경로 검색
 - **Indexing**: `doxus index`: 모든 프로잭트 인덱싱 갱신
 - **Status**: `doxus status`: 시스템 및 인덱스 상태 보고
 
