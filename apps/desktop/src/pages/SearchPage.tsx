@@ -57,7 +57,7 @@ function hitToEntry(hit: SearchHit): DocEntry {
   return {
     document_id: hit.document_id,
     chunk_id: hit.chunk_id,
-    title: hit.title ?? '(제목 없음)',
+    title: hit.title ?? 'Untitled',
     source_doc_id: hit.source_doc_id ?? String(hit.document_id),
     hierarchy_path: hit.file_path ?? hit.source_doc_id ?? '',
     project_name: hit.project_name ?? '',

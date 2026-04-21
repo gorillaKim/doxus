@@ -68,13 +68,31 @@ impl IndexingService {
 
             for doc in docs {
                 let source_doc_id = doc.id.0.clone();
-                let title = doc.title.as_deref().unwrap_or("Untitled").to_string();
+                let title = doc.title.as_deref()
+                    .map(|s| s.to_string())
+                    .filter(|s| !s.trim().is_empty())
+                    .or_else(|| {
+                        // Attempt to extract title from source_doc_id or relative path
+                        doc.relative_path.as_deref()
+                            .or(Some(&doc.id.0))
+                            .and_then(|p| {
+                                p.split('/').last()
+                                    .map(|s| s.strip_suffix(".md").unwrap_or(s).to_string())
+                            })
+                    })
+                    .unwrap_or_else(|| "Untitled".to_string());
 
-                // 업데이트 시간 비교를 통한 스킵 로직
-                if let (Some(new_ts), Some(old_ts)) = (doc.updated_at, existing_meta.get(&source_doc_id)) {
-                    if new_ts == *old_ts {
+                // 업데이트 시간 및 제목 상태 비교를 통한 스킵 로직
+                if let Some((old_ts, old_title)) = existing_meta.get(&source_doc_id) {
+                    let needs_repair = old_title == "Untitled" || old_title.is_empty();
+                    
+                    if doc.updated_at == Some(*old_ts) && !needs_repair {
                         crate::log_d!("indexer", "[Core-Indexer] Skipping unchanged document: {} (ID: {})", title, source_doc_id);
                         continue;
+                    }
+                    
+                    if needs_repair {
+                        crate::log_d!("indexer", "[Core-Indexer] Healing 'Untitled' document: {} (ID: {})", title, source_doc_id);
                     }
                 }
 
@@ -259,19 +277,19 @@ impl IndexingService {
         Ok(projects)
     }
 
-    async fn get_existing_metadata(&self, project_id: i64) -> Result<HashMap<String, i64>, String> {
+    async fn get_existing_metadata(&self, project_id: i64) -> Result<HashMap<String, (i64, String)>, String> {
         let conn = self.conn.lock().map_err(|_| "db lock poisoned".to_string())?;
-        let mut stmt = conn.prepare("SELECT source_doc_id, updated_at FROM documents WHERE project_id = ?1")
+        let mut stmt = conn.prepare("SELECT source_doc_id, updated_at, title FROM documents WHERE project_id = ?1")
             .map_err(|e| e.to_string())?;
         
         let meta_iter = stmt.query_map(params![project_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, Option<String>>(2)?.unwrap_or_default()))
         }).map_err(|e| e.to_string())?;
 
         let mut meta_map = HashMap::new();
         for item in meta_iter {
-            if let Ok((id, updated_at)) = item {
-                meta_map.insert(id, updated_at);
+            if let Ok((id, updated_at, title)) = item {
+                meta_map.insert(id, (updated_at, title));
             }
         }
         Ok(meta_map)

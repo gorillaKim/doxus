@@ -800,7 +800,7 @@ pub fn list_all_documents_impl(conn: &rusqlite::Connection) -> Result<serde_json
     let docs: Vec<_> = stmt
         .query_map([], |r| {
             let document_id = r.get::<_, i64>(0)?;
-            let title = r.get::<_, Option<String>>(1)?.unwrap_or_else(|| "(제목 없음)".to_string());
+            let title = r.get::<_, Option<String>>(1)?.unwrap_or_else(|| "Untitled".to_string());
             let source_doc_id = r.get::<_, String>(2)?;
             let project_name = r.get::<_, String>(3)?;
             let source_type = r.get::<_, String>(4)?;

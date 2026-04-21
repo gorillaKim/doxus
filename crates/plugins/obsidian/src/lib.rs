@@ -234,6 +234,24 @@ impl ObsidianPlugin {
             .ok_or_else(|| PluginError::Internal("plugin not initialized".into()))
     }
 
+    /// Extract document title based on:
+    /// 1. Frontmatter 'title' property
+    /// 2. First Markdown H1-H6 header
+    /// 3. File stem (filename without extension)
+    fn extract_title(&self, content: &str, fm_title: Option<String>, file_path: &std::path::Path) -> Option<String> {
+        let first_header = content.lines()
+            .find(|l| l.trim().starts_with('#'))
+            .map(|l| l.trim().trim_start_matches('#').trim().to_string());
+
+        fm_title.filter(|s| !s.trim().is_empty())
+            .or(first_header.filter(|s| !s.trim().is_empty()))
+            .or_else(|| {
+                file_path.file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .filter(|s| !s.trim().is_empty())
+            })
+    }
+
     /// Collect sorted markdown file paths relative to the vault root.
     /// No file content is read — only directory traversal.
     fn collect_markdown_paths(&self, vault: &PathBuf) -> Vec<PathBuf> {
@@ -285,13 +303,7 @@ impl ObsidianPlugin {
             (vec![], None, None, Default::default())
         };
 
-        let first_header = content.lines()
-            .find(|l| l.trim().starts_with('#'))
-            .map(|l| l.trim().trim_start_matches('#').trim().to_string());
-
-        let title = fm_title.filter(|s| !s.trim().is_empty())
-            .or(first_header.filter(|s| !s.trim().is_empty()))
-            .or_else(|| file_path.file_stem().map(|s| s.to_string_lossy().to_string()));
+        let title = self.extract_title(&content, fm_title, file_path);
 
         let tags = parse_tags(&content);
         let links = doxus_plugin_sdk::links::LinkExtractor::extract_links(&content);
@@ -442,13 +454,7 @@ impl DocSource for ObsidianPlugin {
             (vec![], None, None, Default::default())
         };
 
-        let first_header = content.lines()
-            .find(|l| l.trim().starts_with('#'))
-            .map(|l| l.trim().trim_start_matches('#').trim().to_string());
-
-        let title = fm_title.filter(|s| !s.trim().is_empty())
-            .or(first_header.filter(|s| !s.trim().is_empty()))
-            .or_else(|| path.file_stem().map(|s| s.to_string_lossy().to_string()));
+        let title = self.extract_title(&content, fm_title, &path);
 
         let tags = parse_tags(&content);
         let links = doxus_plugin_sdk::links::LinkExtractor::extract_links(&content)
