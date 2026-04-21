@@ -41,6 +41,11 @@ impl WatcherManager {
                 match res {
                     Ok(events) => {
                         for event in events {
+                            // 무시 필터링 적용
+                            if should_ignore(&event.path) {
+                                continue;
+                            }
+
                             let trigger = SyncTrigger::FileEvent {
                                 project_name: p_name.clone(),
                                 path: event.path,
@@ -65,7 +70,6 @@ impl WatcherManager {
 
         Ok(())
     }
-
     pub async fn stop_watching(&self, project_name: &str) {
         let mut watchers = self.watchers.lock().await;
         if watchers.remove(project_name).is_some() {
@@ -82,6 +86,36 @@ impl WatcherManager {
         }
         Ok(())
     }
+}
+
+/// 특정 파일이나 디렉토리가 와쳐에서 무시되어야 하는지 배정
+fn should_ignore(path: &std::path::Path) -> bool {
+    let components = path.components();
+    for component in components {
+        let name = component.as_os_str().to_string_lossy();
+        
+        // 1. 숨김 디렉토리/파일 무시 (.git, .obsidian, .doxus, .claude 등)
+        if name.starts_with('.') && name != "." && name != ".." {
+            return true;
+        }
+
+        // 2. 가비지 디렉토리 무시
+        if name == "node_modules" || name == "target" || name == "dist" {
+            return true;
+        }
+    }
+
+    // 3. DB 파일 무시 (프로젝트 루트에 db가 있는 경우 대비)
+    if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+        if file_name.starts_with("doxus.db") {
+            return true;
+        }
+    }
+
+    // 4. 확장자 필터링 (필요시 추가 가능하나 현재는 기본적으로 md 위주로만 수집하도록 IndexingService에서 걸러짐)
+    // 여기서는 최소한의 노이즈만 제거
+
+    false
 }
 
 #[cfg(test)]
@@ -105,30 +139,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_watcher_triggers_on_file_change() {
+    async fn test_watcher_ignores_hidden_files() {
         let (wm, mut rx, tmp, conn) = setup_watcher().await;
         let root = tmp.path().to_string_lossy().to_string();
 
         conn.lock().unwrap().execute(
             "INSERT INTO projects (name, display_name, path, sync_policy_json, created_at, updated_at)
-             VALUES ('watch-test', 'Watch', '', ?1, 0, 0)",
+             VALUES ('watch-ignore-test', 'WatchIgnore', '', ?1, 0, 0)",
             [format!("{{\"type\":\"realtime\",\"root\":\"{}\",\"ignore_patterns\":[],\"extensions\":[]}}", root)]
         ).unwrap();
 
-        wm.start_watching("watch-test").await.unwrap();
+        wm.start_watching("watch-ignore-test").await.unwrap();
 
-        // 파일 생성
-        let file_path = tmp.path().join("test.md");
-        std::fs::write(&file_path, "hello").unwrap();
+        // 1. 숨김 파일 생성 (.obsidian/workspace.json)
+        let obsidian_dir = tmp.path().join(".obsidian");
+        std::fs::create_dir(&obsidian_dir).unwrap();
+        let workspace_json = obsidian_dir.join("workspace.json");
+        std::fs::write(&workspace_json, "{}").unwrap();
 
-        // 트리거 수신 대기 (timeout 2s)
+        // 2. DB 파일 생성 (doxus.db)
+        let db_file = tmp.path().join("doxus.db");
+        std::fs::write(&db_file, "pure-evil-db-content").unwrap();
+
+        // 3. 정상 파일 생성 (valid.md)
+        let valid_md = tmp.path().join("valid.md");
+        std::fs::write(&valid_md, "hello").unwrap();
+
+        // 트리거 확인: 숨김/DB 파일에 대해서는 트리거가 발생하지 않고, valid.md에 대해서만 한 번 발생해야 함
         let trigger = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await.unwrap();
         assert!(trigger.is_some());
-        if let Some(SyncTrigger::FileEvent { project_name, path }) = trigger {
-            assert_eq!(project_name, "watch-test");
-            assert!(path.to_string_lossy().contains("test.md"));
-        } else {
-            panic!("Expected FileEvent trigger");
+        if let Some(SyncTrigger::FileEvent { path, .. }) = trigger {
+            assert!(path.to_string_lossy().contains("valid.md"));
+            assert!(!path.to_string_lossy().contains(".obsidian"));
+            assert!(!path.to_string_lossy().contains("doxus.db"));
         }
     }
 }

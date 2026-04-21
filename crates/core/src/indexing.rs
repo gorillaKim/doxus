@@ -140,22 +140,32 @@ impl IndexingService {
             Err(_) => return true,
         };
 
-        let (old_updated_at, last_indexed, chunk_count): (Option<i64>, Option<i64>, i64) = conn.query_row(
-            "SELECT d.updated_at, d.last_indexed, COUNT(c.id) 
+        let (old_updated_at, last_indexed, chunk_count, current_title): (Option<i64>, Option<i64>, i64, String) = conn.query_row(
+            "SELECT d.updated_at, d.last_indexed, COUNT(c.id), d.title
              FROM documents d 
              LEFT JOIN chunks c ON d.id = c.document_id
              WHERE d.project_id = ?1 AND d.source_doc_id = ?2
              GROUP BY d.id",
             params![project_id, source_doc_id],
-            |r| Ok((r.get(0).ok().flatten(), r.get(1).ok().flatten(), r.get::<_, i64>(2)?))
-        ).unwrap_or((None, None, 0));
+            |r| Ok((
+                r.get(0).ok().flatten(), 
+                r.get(1).ok().flatten(), 
+                r.get::<_, i64>(2)?,
+                r.get::<_, String>(3).unwrap_or_default()
+            ))
+        ).unwrap_or((None, None, 0, String::new()));
 
         // 1. 인덱싱된 기록이 아예 없거나 청크가 0개인 경우
         if last_indexed.is_none() || chunk_count == 0 {
             return true;
         }
 
-        // 2. 타임스탬프 비교
+        // 2. 제목이 'Untitled'인 경우 강제 재인덱싱 (데이터 복구용)
+        if current_title == "Untitled" {
+            return true;
+        }
+
+        // 3. 타임스탬프 비교
         match (new_updated_at, old_updated_at) {
             (Some(new), Some(old)) => new != old,
             (None, _) => true, // 새로운 타임스탬프 정보가 없다면 안전하게 재인덱싱

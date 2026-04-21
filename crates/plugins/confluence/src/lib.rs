@@ -579,20 +579,35 @@ pub(crate) fn fetch_changes_impl(opts: FetchChangesOptsWasm) -> FnResult<ChangeS
 
     let mut updated = Vec::new();
     let mut hierarchy = get_full_hierarchy(&mut state, &base_url, &space_info.id)?;
-
     let ancestor_id = state.get_config_string("ancestor_id");
 
-    for v1_page in r.results {
-        let v2_url = format!("{base_url}/api/v2/pages/{}?body-format=storage", v1_page.id);
-        if let Ok(v2_resp) = request_with_auth(&state, "GET", &v2_url, None) {
-             if let Ok(p_v2) = serde_json::from_slice::<ConfluencePageV2>(&v2_resp.body()) {
-                 hierarchy.insert(p_v2.id.clone(), (p_v2.title.clone(), p_v2.parent_id.clone()));
-                 let tags: Vec<String> = v1_page.metadata.as_ref()
-                    .and_then(|m| m.labels.as_ref())
-                    .map(|l| l.results.iter().map(|lab| lab.name.clone()).collect())
-                    .unwrap_or_default();
-                 updated.push(page_to_doc_v2(&state, &mut hierarchy, p_v2, root_name, &space_key, &base_url, ancestor_id.as_deref(), tags));
-             }
+    // [Doxus 고도화] N+1 문제를 해결하기 위한 배치(Batch) 처리 로직
+    // 변경된 문서 ID들을 25개씩 묶어서 본문 내용을 한 번에 요청합니다.
+    let updated_ids: Vec<String> = r.results.iter().map(|p| p.id.clone()).collect();
+    
+    for chunk in updated_ids.chunks(25) {
+        let ids_query = chunk.join(",");
+        let batch_url = format!("{base_url}/api/v2/pages?id={}&body-format=storage", ids_query);
+        
+        log_d!("confluence", "[Confluence-Batch] Fetching batch of {} docs", chunk.len());
+        
+        if let Ok(batch_resp) = request_with_auth(&state, "GET", &batch_url, None) {
+            if let Ok(batch_list) = serde_json::from_slice::<ConfluenceV2ListResponse<ConfluencePageV2>>(&batch_resp.body()) {
+                for p_v2 in batch_list.results {
+                    // 계층 구조 캐시 업데이트
+                    hierarchy.insert(p_v2.id.clone(), (p_v2.title.clone(), p_v2.parent_id.clone()));
+                    
+                    // 태그 정보 매칭 (v1 검색 결과에서 가져옴)
+                    let tags: Vec<String> = r.results.iter()
+                        .find(|v1| v1.id == p_v2.id)
+                        .and_then(|v1| v1.metadata.as_ref())
+                        .and_then(|m| m.labels.as_ref())
+                        .map(|l| l.results.iter().map(|lab| lab.name.clone()).collect())
+                        .unwrap_or_default();
+                        
+                    updated.push(page_to_doc_v2(&state, &mut hierarchy, p_v2, root_name, &space_key, &base_url, ancestor_id.as_deref(), tags));
+                }
+            }
         }
     }
 

@@ -50,6 +50,13 @@ impl SyncManager {
     }
 
     pub async fn init_watchers(&self) {
+        let active_projects = self.get_active_projects().unwrap_or_default();
+        for project_name in active_projects {
+            crate::log_d!("sync", "[SyncManager] Running initial Catch-up scan for {}", project_name);
+            let _ = self.indexing_service.index_project(&project_name).await;
+            self.update_last_sync(&project_name).await;
+        }
+
         let wm = Arc::new(crate::watcher::WatcherManager::new(
             Arc::clone(&self.indexing_service),
             self.tx.clone(),
@@ -71,7 +78,21 @@ impl SyncManager {
                     self.update_last_sync(&project_name).await;
                 }
                 SyncTrigger::FileEvent { project_name, .. } => {
-                    // TODO: Debounce or Batch FileEvents
+                    // 쿨다운 적용: 마지막 동기화 이후 너무 짧은 시간(예: 2초) 내에는 스킵
+                    let should_skip = {
+                        let last_syncs = self.last_sync_times.lock().await;
+                        if let Some(last) = last_syncs.get(&project_name) {
+                            last.elapsed() < Duration::from_secs(2)
+                        } else {
+                            false
+                        }
+                    };
+
+                    if should_skip {
+                        crate::log_d!("sync", "[SyncManager] Skipping FileEvent for {} (cooldown)", project_name);
+                        continue;
+                    }
+
                     let _ = self.indexing_service.index_project(&project_name).await;
                     self.update_last_sync(&project_name).await;
                 }
@@ -124,7 +145,28 @@ impl SyncManager {
                 // Realtime은 FileEvent가 직접 index_project를 호출하므로 global_sync에서는 스킵
                 false
             }
-            (SyncPolicy::OnFocus, SyncTrigger::Focus) => true,
+            (SyncPolicy::OnFocus, SyncTrigger::Focus) => {
+                let last_syncs = self.last_sync_times.lock().await;
+                if let Some(last) = last_syncs.get(project_name) {
+                    // 플러그인 유형에 따라 쿨다운 차등 적용
+                    // TODO: 인덱싱 서비스에서 플러그인 정보를 미리 가져오도록 최적화 가능
+                    let plugin_id = match self.get_project_plugin_id(project_name).await {
+                        Ok(id) => id,
+                        Err(_) => "com.doxus.obsidian".to_string(), // 기본값
+                    };
+
+                    let is_external = plugin_id.contains("confluence") || plugin_id.contains("github") || !plugin_id.starts_with("com.doxus");
+                    let cooldown_secs = if is_external { 15 * 60 } else { 60 };
+
+                    if last.elapsed() < Duration::from_secs(cooldown_secs) {
+                        crate::log_d!("sync", "[SyncManager] Skipping Focus trigger for {} (cooldown {}s)", project_name, cooldown_secs);
+                        return false;
+                    }
+                    true
+                } else {
+                    true
+                }
+            }
             (SyncPolicy::Interval { seconds }, SyncTrigger::Periodic) => {
                 let last_syncs = self.last_sync_times.lock().await;
                 if let Some(last) = last_syncs.get(project_name) {
@@ -155,6 +197,22 @@ impl SyncManager {
         // Reset jitter
         let mut jitter_map = self.jitter_map.lock().await;
         jitter_map.remove(project_name);
+    }
+
+    async fn get_project_plugin_id(&self, project_name: &str) -> Result<String, String> {
+        let conn = self.indexing_service.conn();
+        let conn = conn.lock().map_err(|_| "db lock poisoned")?;
+        
+        let plugin_id: String = conn.query_row(
+            "SELECT COALESCE(si.plugin_id, p.source_type) 
+             FROM projects p 
+             LEFT JOIN source_instances si ON p.id = si.project_id 
+             WHERE p.name = ?1",
+            rusqlite::params![project_name],
+            |row| row.get(0)
+        ).map_err(|e| e.to_string())?;
+
+        Ok(plugin_id)
     }
 }
 

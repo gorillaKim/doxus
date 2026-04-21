@@ -76,9 +76,10 @@ fn parse_tags(content: &str) -> Vec<String> {
 }
 
 /// Extract `aliases:` and `created:` / `date:` from YAML frontmatter.
-fn parse_frontmatter_meta(fm: &str) -> (Vec<String>, Option<i64>, std::collections::HashMap<String, serde_json::Value>) {
+fn parse_frontmatter_meta(fm: &str) -> (Vec<String>, Option<i64>, Option<String>, std::collections::HashMap<String, serde_json::Value>) {
     let mut aliases: Vec<String> = Vec::new();
     let mut created_at: Option<i64> = None;
+    let mut title: Option<String> = None;
     let mut metadata = std::collections::HashMap::new();
     
     let mut lines = fm.lines().peekable();
@@ -156,6 +157,10 @@ fn parse_frontmatter_meta(fm: &str) -> (Vec<String>, Option<i64>, std::collectio
                         }
                     }
                 }
+
+                if key == "title" {
+                    title = Some(val.to_string());
+                }
                 
                 serde_json::Value::String(val.to_string())
             };
@@ -165,7 +170,7 @@ fn parse_frontmatter_meta(fm: &str) -> (Vec<String>, Option<i64>, std::collectio
             }
         }
     }
-    (aliases, created_at, metadata)
+    (aliases, created_at, title, metadata)
 }
 
 /// Parse `tags:` field from YAML frontmatter string (no external crate).
@@ -266,10 +271,26 @@ impl ObsidianPlugin {
             .to_string_lossy()
             .to_string();
 
-        let title = content
-            .lines()
-            .find(|l| l.starts_with("# "))
-            .map(|l| l[2..].trim().to_string())
+        // 1. Try to find title in frontmatter
+        // 2. Try to find first markdown header (any level)
+        // 3. Fallback to file stem
+        let (aliases, fm_created_at, fm_title, mut metadata) = if let Some(rest) = content.strip_prefix("---") {
+            let rest = rest.strip_prefix('\n').unwrap_or(rest);
+            if let Some(end) = rest.find("\n---") {
+                parse_frontmatter_meta(&rest[..end])
+            } else {
+                (vec![], None, None, Default::default())
+            }
+        } else {
+            (vec![], None, None, Default::default())
+        };
+
+        let first_header = content.lines()
+            .find(|l| l.trim().starts_with('#'))
+            .map(|l| l.trim().trim_start_matches('#').trim().to_string());
+
+        let title = fm_title.filter(|s| !s.trim().is_empty())
+            .or(first_header.filter(|s| !s.trim().is_empty()))
             .or_else(|| file_path.file_stem().map(|s| s.to_string_lossy().to_string()));
 
         let tags = parse_tags(&content);
@@ -284,17 +305,6 @@ impl ObsidianPlugin {
             .and_then(|m| m.created().ok())
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs() as i64));
 
-        // frontmatter aliases + created_at + generic metadata
-        let (aliases, fm_created_at, mut metadata) = if let Some(rest) = content.strip_prefix("---") {
-            let rest = rest.strip_prefix('\n').unwrap_or(rest);
-            if let Some(end) = rest.find("\n---") {
-                parse_frontmatter_meta(&rest[..end])
-            } else {
-                (vec![], None, Default::default())
-            }
-        } else {
-            (vec![], None, Default::default())
-        };
         let created_at = fm_created_at.or(fs_created_at);
 
         if !links.is_empty() {
@@ -418,23 +428,29 @@ impl DocSource for ObsidianPlugin {
         let content = std::fs::read_to_string(&path)
             .map_err(|e| PluginError::NotFound(format!("{}: {e}", id.0)))?;
 
-        let title = content
-            .lines()
-            .find(|l| l.starts_with("# "))
-            .map(|l| l[2..].trim().to_string())
-            .or_else(|| path.file_stem().map(|s| s.to_string_lossy().to_string()));
-
-        let tags = parse_tags(&content);
-        let (aliases, fm_created_at, metadata) = if let Some(rest) = content.strip_prefix("---") {
+        // 1. Try to find title in frontmatter
+        // 2. Try to find first markdown header (any level)
+        // 3. Fallback to file stem
+        let (aliases, fm_created_at, fm_title, metadata) = if let Some(rest) = content.strip_prefix("---") {
             let rest = rest.strip_prefix('\n').unwrap_or(rest);
             if let Some(end) = rest.find("\n---") {
                 parse_frontmatter_meta(&rest[..end])
             } else {
-                (vec![], None, Default::default())
+                (vec![], None, None, Default::default())
             }
         } else {
-            (vec![], None, Default::default())
+            (vec![], None, None, Default::default())
         };
+
+        let first_header = content.lines()
+            .find(|l| l.trim().starts_with('#'))
+            .map(|l| l.trim().trim_start_matches('#').trim().to_string());
+
+        let title = fm_title.filter(|s| !s.trim().is_empty())
+            .or(first_header.filter(|s| !s.trim().is_empty()))
+            .or_else(|| path.file_stem().map(|s| s.to_string_lossy().to_string()));
+
+        let tags = parse_tags(&content);
         let links = doxus_plugin_sdk::links::LinkExtractor::extract_links(&content)
             .into_iter()
             .filter(|l| l != &id.0)
