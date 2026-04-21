@@ -100,8 +100,12 @@ mod tests {
     use super::*;
 
     fn make_conn() -> rusqlite::Connection {
+        crate::db::ensure_vec_extension();
         let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::apply_pragmas(&conn).unwrap();
+        crate::db::create_vec0_table(&conn).unwrap();
         crate::db::migrate(&conn).unwrap();
+
         // FK 제약 통과를 위해 테스트용 프로젝트 삽입
         conn.execute(
             "INSERT INTO projects (id, name, display_name, path, created_at, updated_at) \

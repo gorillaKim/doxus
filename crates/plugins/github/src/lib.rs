@@ -455,6 +455,10 @@ impl DocSource for GitHubPlugin {
         }
     }
 
+    fn guide(&self) -> Option<&'static str> {
+        Some(include_str!("../GUIDE.md"))
+    }
+
     fn supports_write(&self) -> bool {
         true
     }

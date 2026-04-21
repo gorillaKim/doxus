@@ -944,6 +944,8 @@ fn page_to_doc_v2(
     let relative_path = path_utils::build_relative_path(&final_root_name, &ancestor_titles, &p.title, is_parent);
     log_d!("confluence:doc", "[Confluence-Doc-Debug] Final Result - Title: {}, Path: {}", p.title, relative_path);
 
+    // TIP: 인덱싱 최적화를 위해 updated_at을 제공하는 것이 좋습니다.
+    // 업데이트 시간이 없을 경우 코어에서 매번 전체 인덱싱을 수행하게 됩니다.
     let updated_at = p.version.as_ref().and_then(|v| {
         v.created_at.as_ref()
             .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
@@ -1279,6 +1281,10 @@ impl DocSource for ConfluencePlugin {
 
     async fn validate_config(&self, _config: &PluginConfig) -> Result<(), PluginError> {
         Ok(())
+    }
+
+    fn guide(&self) -> Option<&'static str> {
+        Some(include_str!("../GUIDE.md"))
     }
 
     async fn initialize(&mut self, config: PluginConfig, secrets: PluginSecrets) -> Result<(), PluginError> {

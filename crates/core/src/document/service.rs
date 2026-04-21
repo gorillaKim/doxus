@@ -20,13 +20,15 @@ pub enum ServiceError {
     Io(#[from] std::io::Error),
 }
 
-pub struct DocumentService<'a> {
-    conn: &'a Connection,
-    plugin_manager: Option<&'a PluginManager>,
+use std::sync::{Arc, Mutex};
+
+pub struct DocumentService {
+    conn: Arc<Mutex<Connection>>,
+    plugin_manager: Option<Arc<PluginManager>>,
 }
 
-impl<'a> DocumentService<'a> {
-    pub fn new(conn: &'a Connection, plugin_manager: Option<&'a PluginManager>) -> Self {
+impl DocumentService {
+    pub fn new(conn: Arc<Mutex<Connection>>, plugin_manager: Option<Arc<PluginManager>>) -> Self {
         Self { conn, plugin_manager }
     }
 
@@ -34,38 +36,61 @@ impl<'a> DocumentService<'a> {
     /// 1. Local file (if available)
     /// 2. Database cache (if valid)
     /// 3. Remote fetch via plugin (if available)
-    pub async fn fetch_full_content(&self, project_name: &str, source_doc_id: &str) -> Result<String, ServiceError> {
-        // 1. Get project metadata first (required for plugin/config setup)
-        let (project_id, source_type, config_json) = self.conn.query_row(
-            "SELECT id, source_type, config_json FROM projects WHERE name = ?1",
-            params![project_name],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)),
-        ).map_err(|_| ServiceError::NotFound(format!("Project '{}' not found", project_name)))?;
+    pub async fn fetch_full_content(&self, project_name: &str, source_doc_id: &str) -> Result<doxus_plugin_sdk::RawDocument, ServiceError> {
+        // 1. Get project metadata first
+        let (_project_id, source_type, config_json, file_path) = {
+            let conn = self.conn.lock().map_err(|_| ServiceError::Sqlite(rusqlite::Error::QueryReturnedNoRows))?;
+            let (pid, stype, cjson) = conn.query_row(
+                "SELECT id, source_type, config_json FROM projects WHERE name = ?1",
+                params![project_name],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)),
+            ).map_err(|_| ServiceError::NotFound(format!("Project '{}' not found", project_name)))?;
 
-        // 2. Try to get document-specific info (file_path) - Optional for indexed docs
-        let file_path: Option<String> = self.conn.query_row(
-            "SELECT file_path FROM documents WHERE project_id = ?1 AND source_doc_id = ?2",
-            params![project_id, source_doc_id],
-            |row| row.get::<_, Option<String>>(0),
-        ).ok().flatten();
+            let fpath: Option<String> = conn.query_row(
+                "SELECT file_path FROM documents WHERE project_id = ?1 AND source_doc_id = ?2",
+                params![pid, source_doc_id],
+                |row| row.get::<_, Option<String>>(0),
+            ).ok().flatten();
+            
+            (pid, stype, cjson, fpath)
+        };
 
         // 3. Try Local File Strategy
         if let Some(path_str) = file_path {
             let path = Path::new(&path_str);
             if path.exists() && path.is_file() {
-                return Ok(std::fs::read_to_string(path)?);
+                let content = std::fs::read_to_string(path)?;
+                return Ok(doxus_plugin_sdk::RawDocument {
+                    id: doxus_plugin_sdk::SourceDocId(source_doc_id.to_string()),
+                    title: None,
+                    content,
+                    content_type: doxus_plugin_sdk::ContentType::Markdown,
+                    url: None,
+                    metadata: std::collections::HashMap::new(),
+                    tags: vec![],
+                    aliases: vec![],
+                    links: vec![],
+                    created_at: None,
+                    updated_at: None,
+                    relative_path: Some(path_str),
+                });
             }
         }
 
         // 3. Try Cache Strategy
-        let cache = ContentCache::new(self.conn);
         let plugin_id = PluginManager::normalize_id(&source_type);
-        if let Ok(Some(cached)) = cache.get(&plugin_id, source_doc_id) {
-            return Ok(cached);
+        {
+            let conn = self.conn.lock().map_err(|_| ServiceError::Sqlite(rusqlite::Error::QueryReturnedNoRows))?;
+            let cache = ContentCache::new(&conn);
+            if let Ok(Some(data_json)) = cache.get_full(&plugin_id, source_doc_id) {
+                if let Ok(doc) = serde_json::from_str::<doxus_plugin_sdk::RawDocument>(&data_json) {
+                    return Ok(doc);
+                }
+            }
         }
 
         // 4. Try Remote Fetch Strategy
-        if let Some(pm) = self.plugin_manager {
+        if let Some(pm) = &self.plugin_manager {
             if let Some(mut source) = pm.get_source(&plugin_id) {
                 // Determine TTL and prepare config
                 let mut config_fields: std::collections::HashMap<String, serde_json::Value> =
@@ -98,10 +123,13 @@ impl<'a> DocumentService<'a> {
                 let doc_id = doxus_plugin_sdk::SourceDocId(source_doc_id.to_string());
                 match source.fetch_document(&doc_id).await {
                     Ok(doc) => {
-                        let content = doc.content;
-                        // Save to cache
-                        let _ = cache.set(&plugin_id, source_doc_id, &content, ttl_minutes);
-                        return Ok(content);
+                        // Save to cache (full object)
+                        if let Ok(data_json) = serde_json::to_string(&doc) {
+                            let conn = self.conn.lock().map_err(|_| ServiceError::Sqlite(rusqlite::Error::QueryReturnedNoRows))?;
+                            let cache = ContentCache::new(&conn);
+                            let _ = cache.set_full(&plugin_id, source_doc_id, &doc.content, &data_json, ttl_minutes);
+                        }
+                        return Ok(doc);
                     }
                     Err(e) => {
                         return Err(ServiceError::Plugin(format!("Failed to fetch document: {}", e)));
@@ -114,16 +142,21 @@ impl<'a> DocumentService<'a> {
     }
 
     /// Force refresh the cache and return new content
-    pub async fn refresh_content(&self, project_name: &str, source_doc_id: &str) -> Result<String, ServiceError> {
-        let cache = ContentCache::new(self.conn);
-        let source_type: String = self.conn.query_row(
-            "SELECT source_type FROM projects WHERE name = ?1",
-            params![project_name],
-            |row| row.get(0),
-        ).map_err(|_| ServiceError::NotFound(format!("Project '{}' not found", project_name)))?;
-
-        let plugin_id = PluginManager::normalize_id(&source_type);
-        cache.invalidate(&plugin_id, source_doc_id)?;
+    pub async fn refresh_content(&self, project_name: &str, source_doc_id: &str) -> Result<doxus_plugin_sdk::RawDocument, ServiceError> {
+        let (_source_type, _plugin_id) = {
+            let conn = self.conn.lock().map_err(|_| ServiceError::Sqlite(rusqlite::Error::QueryReturnedNoRows))?;
+            let stype: String = conn.query_row(
+                "SELECT source_type FROM projects WHERE name = ?1",
+                params![project_name],
+                |row| row.get(0),
+            ).map_err(|_| ServiceError::NotFound(format!("Project '{}' not found", project_name)))?;
+            let pid = PluginManager::normalize_id(&stype);
+            
+            let cache = ContentCache::new(&conn);
+            cache.invalidate(&pid, source_doc_id)?;
+            (stype, pid)
+        };
+        
         self.fetch_full_content(project_name, source_doc_id).await
     }
 }
@@ -211,11 +244,14 @@ mod tests {
                 config_capture: config_clone.clone(),
             })
         });
+        let pm_arc = Arc::new(pm);
+        let TestDb { conn } = db;
+        let conn_arc = Arc::new(Mutex::new(conn));
 
-        let service = DocumentService::new(&db.conn, Some(&pm));
-        let content = service.fetch_full_content("p1", "d1").await.unwrap();
+        let service = DocumentService::new(conn_arc, Some(pm_arc));
+        let doc = service.fetch_full_content("p1", "d1").await.unwrap();
 
-        assert_eq!(content, "Mock Content");
+        assert_eq!(doc.content, "Mock Content");
         assert!(initialized.load(Ordering::SeqCst), "Plugin should have been initialized");
         
         let captured = config_capture.lock().unwrap().take().unwrap();

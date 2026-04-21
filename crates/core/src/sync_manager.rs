@@ -41,6 +41,10 @@ impl SyncManager {
         let _ = self.tx.send(trigger).await;
     }
 
+    pub fn indexer(&self) -> Arc<IndexingService> {
+        Arc::clone(&self.indexing_service)
+    }
+
     pub async fn start_loop(self: Arc<Self>, mut rx: mpsc::Receiver<SyncTrigger>) {
         crate::log_d!("sync", "[SyncManager] Background loop started");
         

@@ -94,20 +94,6 @@ fn sanitize_fts_token(token: &str) -> String {
         .replace('-', " ")
 }
 
-#[allow(dead_code)]
-fn build_prefix_fallback_query(query: &str) -> String {
-    let tokens: Vec<String> = query
-        .split_whitespace()
-        .filter(|w| w.chars().count() >= 2)
-        .map(|w| format!("\"{}\"*", sanitize_fts_token(w)))
-        .collect();
-    if tokens.is_empty() {
-        format!("\"{}\"", sanitize_fts_token(query.trim()))
-    } else {
-        tokens.join(" OR ")
-    }
-}
-
 fn build_fts_query(query: &str) -> String {
     let trimmed = query.trim();
     if trimmed.is_empty() {
@@ -211,24 +197,6 @@ impl From<SearchHit> for Hit {
     }
 }
 
-struct NoOpEmbedder;
-
-#[async_trait::async_trait]
-impl EmbeddingProvider for NoOpEmbedder {
-    async fn embed(&self, _texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
-        Err(EmbeddingError::Inference("no embedder configured".into()))
-    }
-    fn dimension(&self) -> usize { 384 }
-    fn model_info(&self) -> &crate::embedding::ModelInfo {
-        static INFO: std::sync::OnceLock<crate::embedding::ModelInfo> = std::sync::OnceLock::new();
-        INFO.get_or_init(|| crate::embedding::ModelInfo {
-            name: "noop".to_string(),
-            dimension: 384,
-            max_tokens: 0,
-        })
-    }
-}
-
 pub struct SearchEngine {
     conn: Arc<Mutex<Connection>>,
     embedder: Arc<dyn EmbeddingProvider + Send + Sync>,
@@ -246,7 +214,7 @@ impl SearchEngine {
     pub fn new_fts_only(conn: Connection) -> Self {
         Self {
             conn: Arc::new(Mutex::new(conn)),
-            embedder: Arc::new(NoOpEmbedder) as Arc<dyn EmbeddingProvider + Send + Sync>,
+            embedder: Arc::new(crate::embedding::NoOpEmbedder) as Arc<dyn EmbeddingProvider + Send + Sync>,
         }
     }
 
@@ -425,7 +393,6 @@ impl SearchEngine {
                     assemble_context_sync(&conn, hit, &mut loaded_sections, &mut total_chars, GLOBAL_CEILING)?;
                 } else {
                     hit.context_content = hit.snippet.clone();
-                    // Using direct length access if possible or ensuring closure is clear
                     if let Some(ref s) = hit.context_content {
                         total_chars += s.len();
                     }
@@ -462,8 +429,6 @@ impl SearchEngine {
         }).await?
     }
 }
-
-// BatchIndexingRequest and DocMeta removed - now in schema.rs
 
 fn index_document_sync(
     conn: &Connection,
@@ -517,7 +482,6 @@ fn index_document_sync(
     conn.execute("DELETE FROM document_metadata WHERE document_id = ?1", [doc_id])?;
     for (k, v) in &meta.metadata { conn.execute("INSERT OR REPLACE INTO document_metadata (document_id, key, value) VALUES (?1, ?2, ?3)", params![doc_id, k, v.to_string()])?; }
 
-    // 5. Populate document_links
     conn.execute("DELETE FROM document_links WHERE source_id = ?1", [doc_id])?;
     for raw_link in &meta.links {
         conn.execute(
@@ -786,7 +750,6 @@ mod tests {
         let content = "The quick brown fox jumps over the lazy dog. Rust is amazing.";
         std::fs::write(&file_path, content).unwrap();
 
-        // 1. Insert as local (obsidian) project
         db.conn.execute("INSERT INTO projects(name, display_name, path, source_type, status, created_at, updated_at) VALUES ('obsidian', 'Obsidian', ?1, 'obsidian', 'active', 0, 0)", [temp_dir.to_string_lossy().to_string()]).unwrap();
         let pid: i64 = db.conn.query_row("SELECT id FROM projects WHERE source_type='obsidian'", [], |r| r.get(0)).unwrap();
 
@@ -797,11 +760,9 @@ mod tests {
         };
         engine.index_document_with_meta(pid, "test1", "Test File", content, &meta, "reference").unwrap();
 
-        // 2. Verify content is NULL in DB
         let db_content: Option<String> = db.conn.query_row("SELECT content FROM chunks WHERE document_id = (SELECT id FROM documents WHERE source_doc_id='test1')", [], |r| r.get(0)).unwrap();
         assert!(db_content.is_none(), "DB content should be offloaded (NULL) for local files");
 
-        // 3. Search and check snippet
         let query = SearchQuery::new("brown fox");
         let hits = engine.search(&query).unwrap();
         assert!(!hits.is_empty());

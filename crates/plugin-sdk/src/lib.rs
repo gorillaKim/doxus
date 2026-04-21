@@ -271,6 +271,10 @@ pub trait DocSource: Send + Sync {
     fn capabilities(&self) -> Capabilities;
 
     async fn validate_config(&self, config: &PluginConfig) -> Result<(), PluginError>;
+    
+    fn guide(&self) -> Option<&'static str> {
+        None
+    }
 
     async fn initialize(
         &mut self,
