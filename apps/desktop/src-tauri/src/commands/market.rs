@@ -1,6 +1,8 @@
 use doxus_core::secrets::SecretStore;
 use std::sync::Arc;
 
+
+
 fn find_doxus_mcp_binary() -> Option<std::path::PathBuf> {
     // 1. exe 옆 (프로덕션 번들 및 dev target/debug/)
     if let Ok(exe) = std::env::current_exe() {
@@ -71,8 +73,9 @@ pub async fn market_list_installed(
             "version": "1.0.0",
             "trust": "official",
             "description": "Confluence Cloud/Server REST API integration",
-            "installed": installed_ids.contains(&"com.doxus.confluence".to_string()),
-            "builtin": false,
+            "installed": true,
+            "builtin": true,
+            "guide_url": "internal://guide/confluence",
             "config_schema": config_schema(&[
                 ("name", "프로젝트 이름", "text", true, "confluence-docs"),
                 ("base_url", "Base URL", "url", true, "https://yourcompany.atlassian.net"),
@@ -91,8 +94,9 @@ pub async fn market_list_installed(
             "version": "1.0.0",
             "trust": "official",
             "description": "GitHub Issues, Wiki, Discussions",
-            "installed": installed_ids.contains(&"com.doxus.github".to_string()),
-            "builtin": false,
+            "installed": true,
+            "builtin": true,
+            "guide_url": "internal://guide/github",
             "config_schema": config_schema(&[
                 ("name", "프로젝트 이름", "text", true, "github-docs"),
                 ("repo", "저장소 (owner/repo)", "text", true, "myorg/myrepo"),
@@ -827,7 +831,7 @@ pub async fn market_fetch_registry(
                     checksum_sha256: "".to_string(),
                     public_key_hex: "".to_string(),
                     auth_type: "api_token".to_string(),
-                    guide_url: concat!(env!("CARGO_MANIFEST_DIR"), "/../../../crates/plugins/confluence/GUIDE.md").to_string(),
+                    guide_url: "internal://guide/confluence".to_string(),
                 },
                 doxus_core::marketplace::registry::RegistryEntry {
                     plugin_id: "com.doxus.github".to_string(),
@@ -837,7 +841,7 @@ pub async fn market_fetch_registry(
                     checksum_sha256: "".to_string(),
                     public_key_hex: "".to_string(),
                     auth_type: "api_token".to_string(),
-                    guide_url: concat!(env!("CARGO_MANIFEST_DIR"), "/../../../crates/plugins/github/GUIDE.md").to_string(),
+                    guide_url: "internal://guide/github".to_string(),
                 },
             ])
         }
@@ -845,20 +849,36 @@ pub async fn market_fetch_registry(
 }
 
 #[tauri::command]
-pub async fn market_fetch_guide(guide_url: String) -> Result<String, String> {
+pub async fn market_fetch_guide(
+    state: tauri::State<'_, Arc<crate::AppState>>,
+    guide_url: String 
+) -> Result<String, String> {
     if guide_url.is_empty() {
         return Err("가이드 URL이 없습니다".to_string());
     }
+
+    // 내장 가이드 처리 (internal://guide/{plugin_id})
+    if let Some(plugin_id) = guide_url.strip_prefix("internal://guide/") {
+        let source = state.plugin_manager.get_source(plugin_id)
+            .ok_or_else(|| format!("플러그인 '{}'을 찾을 수 없습니다", plugin_id))?;
+        
+        return source.guide()
+            .map(|s| s.to_string())
+            .ok_or_else(|| format!("플러그인 '{}'에 내장 가이드가 없습니다", plugin_id));
+    }
+
     // 로컬 파일 경로인 경우 직접 읽기
     if guide_url.starts_with('/') || guide_url.starts_with("file://") {
         let path = guide_url.trim_start_matches("file://");
         return std::fs::read_to_string(path).map_err(|e| format!("가이드 파일 읽기 실패: {e}"));
     }
+
     // 원격 URL: HTTP 요청
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| e.to_string())?;
+    
     match client.get(&guide_url).send().await {
         Ok(res) if res.status().is_success() => res.text().await.map_err(|e| e.to_string()),
         Ok(res) => Err(format!("가이드 로드 실패: HTTP {}", res.status())),

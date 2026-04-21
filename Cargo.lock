@@ -1813,6 +1813,7 @@ dependencies = [
  "keyring 2.3.3",
  "mockito",
  "rand 0.8.5",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

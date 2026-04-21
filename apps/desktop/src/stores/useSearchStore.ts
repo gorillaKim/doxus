@@ -57,6 +57,7 @@ interface SearchState {
   search: () => Promise<void>;
   clear: () => void;
   listAllDocuments: () => Promise<void>;
+  updateDocumentMetadata: (docId: string, meta: Partial<AllDocument>) => void;
 }
 
 const DEFAULT_FILTERS: SearchFilters = { sourceTypes: [], projectNames: [], tagQuery: '' };
@@ -108,5 +109,16 @@ export const useSearchStore = create<SearchState>((set, get) => ({
       console.error('[listAllDocuments]', e);
       set({ allDocsLoading: false });
     }
+  },
+
+  updateDocumentMetadata: (docId: string, meta: Partial<AllDocument>) => {
+    set((state) => ({
+      allDocuments: state.allDocuments.map((d) => 
+        d.source_doc_id === docId ? { ...d, ...meta } : d
+      ),
+      hits: state.hits.map((h) => 
+        h.source_doc_id === docId ? { ...h, ...meta } : h
+      ),
+    }));
   },
 }));

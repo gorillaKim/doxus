@@ -679,7 +679,7 @@ function AdvancedSearchPanel({
 
 export function SearchPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const { query, filters, hits, isLoading, error, setQuery, setFilters, search, clear, allDocuments, allDocsLoading, listAllDocuments } = useSearchStore();
+  const { query, filters, hits, isLoading, error, setQuery, setFilters, search, clear, allDocuments, allDocsLoading, listAllDocuments, updateDocumentMetadata } = useSearchStore();
   usePluginStore((s) => s.emojiMap);
   const [inputValue, setInputValue] = useState(query);
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -788,6 +788,15 @@ export function SearchPage() {
         source_project_id: result.source_project_id ?? doc.source_project_id ?? '',
         source_doc_id: result.source_doc_id ?? doc.source_doc_id ?? '',
       });
+
+      // 전역 스토어 상태 동기화 (리스트 툴팁 등 갱신)
+      updateDocumentMetadata(identifier, {
+        tags: result.tags,
+        updated_at: result.updated_at ?? undefined,
+        last_indexed: result.last_indexed ?? undefined,
+        cache_ttl: result.cache_ttl ?? undefined,
+      });
+
       if (forceRefresh) {
         if (refreshToastTimer.current) clearTimeout(refreshToastTimer.current);
         setRefreshToast('최신 콘텐츠로 업데이트됨');
