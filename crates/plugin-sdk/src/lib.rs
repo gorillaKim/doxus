@@ -133,11 +133,28 @@ pub struct HealthStatus {
     pub message: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WatchOptions {
+    pub root: std::path::PathBuf,
+    pub ignore_patterns: Vec<String>,
+    pub extensions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SyncPolicy {
+    Realtime(WatchOptions),
+    Interval { seconds: u64 },
+    OnFocus,
+    Manual,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Capabilities {
     pub incremental_sync: bool,
     pub oauth: bool,
     pub native_search: bool,
+    pub sync_policy: SyncPolicy,
 }
 
 // ── SSRF protection ───────────────────────────────────────────────────────────
@@ -596,5 +613,40 @@ mod tests {
             validate_base_url("https://fe80::1/api"),
             Err(PluginError::PermissionDenied(_))
         ));
+    }
+
+    #[test]
+    fn sync_policy_serialization() {
+        let policy = SyncPolicy::Realtime(WatchOptions {
+            root: std::path::PathBuf::from("/tmp"),
+            ignore_patterns: vec![".git".into()],
+            extensions: vec!["md".into()],
+        });
+        let json = serde_json::to_string(&policy).unwrap();
+        assert!(json.contains("\"type\":\"realtime\""));
+        assert!(json.contains("\"root\":\"/tmp\""));
+
+        let back: SyncPolicy = serde_json::from_str(&json).unwrap();
+        assert_eq!(policy, back);
+
+        let interval = SyncPolicy::Interval { seconds: 3600 };
+        let json_int = serde_json::to_string(&interval).unwrap();
+        assert!(json_int.contains("\"type\":\"interval\""));
+        assert!(json_int.contains("\"seconds\":3600"));
+    }
+
+    #[test]
+    fn capabilities_with_policy_serialization() {
+        let caps = Capabilities {
+            incremental_sync: true,
+            oauth: false,
+            native_search: true,
+            sync_policy: SyncPolicy::OnFocus,
+        };
+        let json = serde_json::to_string(&caps).unwrap();
+        assert!(json.contains("\"sync_policy\":{\"type\":\"on_focus\"}"));
+        
+        let back: Capabilities = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back.sync_policy, SyncPolicy::OnFocus));
     }
 }

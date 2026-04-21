@@ -7,7 +7,7 @@ use crate::plugin::PluginManager;
 use crate::search::{SearchEngine, DocMeta};
 use crate::auth::inject_keychain_auth;
 use crate::links::{LinkExtractor, LinkResolver};
-use doxus_plugin_sdk::{FetchAllOpts, PluginConfig, PluginSecrets};
+use doxus_plugin_sdk::{FetchAllOpts, PluginConfig, PluginSecrets, SyncPolicy};
 
 pub struct IndexingService {
     conn: Arc<Mutex<rusqlite::Connection>>,
@@ -30,7 +30,7 @@ impl IndexingService {
 
     /// 프로젝트의 소스 타입 및 설정을 조회하여 인덱싱을 수행합니다.
     pub async fn index_project(&self, name: &str) -> Result<usize, String> {
-        let (project_id, plugin_id, config_json, project_path, strategy) = self.get_project_config(name).await?;
+        let (project_id, plugin_id, config_json, project_path, strategy, _policy) = self.get_project_config(name).await?;
         
         // 1. 플러그인 초기화
         let mut plugin = self.plugin_manager.get_source(&plugin_id)
@@ -163,22 +163,41 @@ impl IndexingService {
         }
     }
 
-    async fn get_project_config(&self, name: &str) -> Result<(i64, String, String, String, String), String> {
+    pub async fn get_project_policy(&self, name: &str) -> Result<SyncPolicy, String> {
+        let conn = self.conn.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let policy_json: Option<String> = conn.query_row(
+            "SELECT sync_policy_json FROM projects WHERE name = ?1",
+            params![name],
+            |r| r.get(0)
+        ).map_err(|e| format!("정책 조회 실패: {e}"))?;
+
+        match policy_json {
+            Some(json) => serde_json::from_str(&json).map_err(|e| format!("정책 파싱 실패: {e}")),
+            None => Ok(SyncPolicy::Interval { seconds: 7200 }), // Default to 2h
+        }
+    }
+
+    async fn get_project_config(&self, name: &str) -> Result<(i64, String, String, String, String, SyncPolicy), String> {
         let conn = self.conn.lock().map_err(|_| "db lock poisoned".to_string())?;
         let row = conn.query_row(
-            "SELECT p.id, si.plugin_id, si.config_json, p.path, p.storage_strategy
+            "SELECT p.id, si.plugin_id, si.config_json, p.path, p.storage_strategy, p.sync_policy_json
              FROM projects p
              JOIN source_instances si ON p.id = si.project_id
              WHERE p.name = ?1
              LIMIT 1",
             params![name],
-            |r| Ok((
-                r.get::<_, i64>(0)?, 
-                r.get::<_, String>(1)?, 
-                r.get::<_, String>(2)?, 
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?
-            ))
+            |r| {
+                let pid: i64 = r.get(0)?;
+                let plugin_id: String = r.get(1)?;
+                let config_json: String = r.get(2)?;
+                let path: String = r.get(3)?;
+                let strategy: String = r.get(4)?;
+                let policy_json: Option<String> = r.get(5)?;
+                let policy = policy_json
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .unwrap_or(SyncPolicy::Interval { seconds: 7200 });
+                Ok((pid, plugin_id, config_json, path, strategy, policy))
+            }
         );
 
         if let Ok(r) = row {
@@ -186,7 +205,7 @@ impl IndexingService {
         }
 
         conn.query_row(
-            "SELECT id, COALESCE(source_type, 'obsidian'), COALESCE(config_json, '{}'), path, storage_strategy
+            "SELECT id, COALESCE(source_type, 'obsidian'), COALESCE(config_json, '{}'), path, storage_strategy, sync_policy_json
              FROM projects WHERE name = ?1",
             params![name],
             |r| {
@@ -195,12 +214,16 @@ impl IndexingService {
                 let cjson: String = r.get(2)?;
                 let ppath: String = r.get(3)?;
                 let strategy: String = r.get(4)?;
+                let policy_json: Option<String> = r.get(5)?;
                 let plugin_id = if stype == "obsidian" || stype == "confluence" || stype == "github" {
                     format!("com.doxus.{stype}")
                 } else {
                     stype
                 };
-                Ok((pid, plugin_id, cjson, ppath, strategy))
+                let policy = policy_json
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .unwrap_or(SyncPolicy::Interval { seconds: 7200 });
+                Ok((pid, plugin_id, cjson, ppath, strategy, policy))
             }
         ).map_err(|e| format!("프로젝트 설정을 찾을 수 없습니다: {e}"))
     }
@@ -256,7 +279,7 @@ mod tests {
         let db = TestDb::new();
         let conn = Arc::new(std::sync::Mutex::new(db.conn));
         let pm = Arc::new(PluginManager::new(std::path::PathBuf::from("/tmp/plugins")));
-        let engine = Arc::new(SearchEngine::new_fts_only(conn.clone()));
+        let engine = Arc::new(SearchEngine::with_embedder(conn.clone(), Arc::new(crate::embedding::NoOpEmbedder)));
         let indexer = IndexingService::new(conn.clone(), pm, engine);
 
         // 테스트용 프로젝트 삽입
@@ -284,5 +307,26 @@ mod tests {
 
         // 4. 새로운 문서인 경우 -> true
         assert!(indexer.needs_reindexing(1, "new_doc", Some(100)).await);
+    }
+
+    #[tokio::test]
+    async fn test_get_project_policy() {
+        let db = TestDb::new();
+        let conn = Arc::new(std::sync::Mutex::new(db.conn));
+        let pm = Arc::new(PluginManager::new(std::path::PathBuf::from("/tmp")));
+        let engine = Arc::new(SearchEngine::with_embedder(conn.clone(), Arc::new(crate::embedding::NoOpEmbedder)));
+        let indexer = IndexingService::new(conn.clone(), pm, engine);
+
+        conn.lock().unwrap().execute(
+            "INSERT INTO projects (name, display_name, path, sync_policy_json, created_at, updated_at) \
+             VALUES ('test-policy', 'Test', '/tmp', '{\"type\":\"on_focus\"}', 0, 0)",
+            [],
+        ).unwrap();
+
+        let policy = indexer.get_project_policy("test-policy").await.unwrap();
+        assert!(matches!(policy, SyncPolicy::OnFocus));
+
+        let default_policy = indexer.get_project_policy("non-existent").await;
+        assert!(default_policy.is_err());
     }
 }

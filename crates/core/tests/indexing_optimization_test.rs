@@ -24,6 +24,7 @@ impl DocSource for MockSource {
             incremental_sync: true,
             oauth: false,
             native_search: false,
+            sync_policy: doxus_plugin_sdk::SyncPolicy::OnFocus,
         }
     }
     async fn validate_config(&self, _config: &PluginConfig) -> Result<(), PluginError> { Ok(()) }

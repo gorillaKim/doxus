@@ -450,8 +450,9 @@ impl DocSource for GitHubPlugin {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             incremental_sync: true,
-            oauth: false,
+            oauth: true,
             native_search: false,
+            sync_policy: doxus_plugin_sdk::SyncPolicy::Interval { seconds: 7200 },
         }
     }
 

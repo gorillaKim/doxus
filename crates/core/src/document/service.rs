@@ -190,7 +190,12 @@ mod tests {
             }))
         }
         fn capabilities(&self) -> Capabilities {
-            Capabilities { incremental_sync: true, oauth: false, native_search: false }
+            Capabilities {
+                incremental_sync: true,
+                oauth: false,
+                native_search: false,
+                sync_policy: doxus_plugin_sdk::SyncPolicy::OnFocus,
+            }
         }
         async fn validate_config(&self, _: &PluginConfig) -> Result<(), PluginError> { Ok(()) }
         async fn initialize(&mut self, config: PluginConfig, _: PluginSecrets) -> Result<(), PluginError> {

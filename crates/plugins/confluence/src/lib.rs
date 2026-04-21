@@ -1276,6 +1276,7 @@ impl DocSource for ConfluencePlugin {
             incremental_sync: true,
             oauth: true,
             native_search: false,
+            sync_policy: doxus_plugin_sdk::SyncPolicy::Interval { seconds: 7200 },
         }
     }
 

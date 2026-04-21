@@ -340,6 +340,11 @@ impl DocSource for ObsidianPlugin {
             incremental_sync: true,
             oauth: false,
             native_search: false,
+            sync_policy: doxus_plugin_sdk::SyncPolicy::Realtime(doxus_plugin_sdk::WatchOptions {
+                root: self.vault_path.clone().unwrap_or_default(),
+                ignore_patterns: vec![".git".to_string(), ".obsidian".to_string(), "node_modules".to_string()],
+                extensions: vec!["md".to_string(), "txt".to_string()],
+            }),
         }
     }
 

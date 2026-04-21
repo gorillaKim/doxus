@@ -317,6 +317,7 @@ impl DocSource for WasmDocSourceAdapter {
             incremental_sync: false,
             oauth: false,
             native_search: false,
+            sync_policy: doxus_plugin_sdk::SyncPolicy::Interval { seconds: 7200 },
         }
     }
 
@@ -527,6 +528,7 @@ mod tests {
         assert!(!caps.incremental_sync);
         assert!(!caps.oauth);
         assert!(!caps.native_search);
+        assert!(matches!(caps.sync_policy, doxus_plugin_sdk::SyncPolicy::Interval { .. }));
     }
 
     // health_check_returns_unhealthy_for_minimal_wasm is defined below with other wasm bridge tests

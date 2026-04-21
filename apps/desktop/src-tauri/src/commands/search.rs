@@ -603,10 +603,16 @@ pub async fn index_project(
 
     let total = indexing_service.index_project(&name).await?;
 
+    let message = if total == 0 {
+        "이미 최신 상태입니다 (0개 변경)".to_string()
+    } else {
+        format!("{total}개 문서 인덱싱 완료")
+    };
+
     Ok(serde_json::json!({
         "status": "ok",
         "indexed": total,
-        "message": format!("{total}개 문서 인덱싱 완료")
+        "message": message
     }))
 }
 
@@ -638,10 +644,16 @@ pub async fn trigger_reindex(
         }
     }
 
+    let message = if total == 0 {
+        "모든 프로젝트가 이미 최신 상태입니다".to_string()
+    } else {
+        format!("{total}개 문서 재인덱싱 완료")
+    };
+
     Ok(serde_json::json!({
         "status": "ok",
         "indexed": total,
-        "message": format!("{total}개 문서 재인덱싱 완료")
+        "message": message
     }))
 }
 

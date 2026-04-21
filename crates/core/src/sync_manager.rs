@@ -14,13 +14,16 @@ pub enum SyncTrigger {
     Idle,
     /// 특정 프로젝트 수동 동기화
     Manual(String),
+    /// 파일 시스템 감시자에 의한 이벤트 (Push)
+    FileEvent { project_name: String, path: std::path::PathBuf },
 }
 
 pub struct SyncManager {
     indexing_service: Arc<IndexingService>,
     tx: mpsc::Sender<SyncTrigger>,
     last_sync_times: Arc<Mutex<HashMap<String, Instant>>>,
-    min_interval: Duration,
+    jitter_map: Arc<Mutex<HashMap<String, f64>>>,
+    watcher_manager: Arc<Mutex<Option<Arc<crate::watcher::WatcherManager>>>>,
 }
 
 impl SyncManager {
@@ -31,7 +34,8 @@ impl SyncManager {
                 indexing_service,
                 tx,
                 last_sync_times: Arc::new(Mutex::new(HashMap::new())),
-                min_interval: Duration::from_secs(300), // 5분 기본 Throttling
+                jitter_map: Arc::new(Mutex::new(HashMap::new())),
+                watcher_manager: Arc::new(Mutex::new(None)),
             },
             rx,
         )
@@ -45,6 +49,16 @@ impl SyncManager {
         Arc::clone(&self.indexing_service)
     }
 
+    pub async fn init_watchers(&self) {
+        let wm = Arc::new(crate::watcher::WatcherManager::new(
+            Arc::clone(&self.indexing_service),
+            self.tx.clone(),
+        ));
+        let _ = wm.restart_all().await;
+        let mut guard = self.watcher_manager.lock().await;
+        *guard = Some(wm);
+    }
+
     pub async fn start_loop(self: Arc<Self>, mut rx: mpsc::Receiver<SyncTrigger>) {
         crate::log_d!("sync", "[SyncManager] Background loop started");
         
@@ -54,15 +68,21 @@ impl SyncManager {
             match trigger {
                 SyncTrigger::Manual(project_name) => {
                     let _ = self.indexing_service.index_project(&project_name).await;
+                    self.update_last_sync(&project_name).await;
+                }
+                SyncTrigger::FileEvent { project_name, .. } => {
+                    // TODO: Debounce or Batch FileEvents
+                    let _ = self.indexing_service.index_project(&project_name).await;
+                    self.update_last_sync(&project_name).await;
                 }
                 SyncTrigger::Focus | SyncTrigger::Periodic | SyncTrigger::Idle => {
-                    self.run_global_sync().await;
+                    self.run_global_sync(trigger).await;
                 }
             }
         }
     }
 
-    async fn run_global_sync(&self) {
+    async fn run_global_sync(&self, trigger: SyncTrigger) {
         let active_projects = match self.get_active_projects() {
             Ok(p) => p,
             Err(e) => {
@@ -72,8 +92,8 @@ impl SyncManager {
         };
 
         for project_name in active_projects {
-            if self.should_sync(&project_name).await {
-                crate::log_d!("sync", "[SyncManager] Syncing project: {}", project_name);
+            if self.should_sync(&project_name, &trigger).await {
+                crate::log_d!("sync", "[SyncManager] Syncing project: {} (Trigger: {:?})", project_name, trigger);
                 match self.indexing_service.index_project(&project_name).await {
                     Ok(n) => {
                         crate::log_d!("sync", "[SyncManager] Indexed {} documents for {}", n, project_name);
@@ -91,17 +111,104 @@ impl SyncManager {
         self.indexing_service.list_active_projects()
     }
 
-    async fn should_sync(&self, project_name: &str) -> bool {
-        let last_syncs = self.last_sync_times.lock().await;
-        if let Some(last) = last_syncs.get(project_name) {
-            last.elapsed() >= self.min_interval
-        } else {
-            true
+    async fn should_sync(&self, project_name: &str, trigger: &SyncTrigger) -> bool {
+        let policy = match self.indexing_service.get_project_policy(project_name).await {
+            Ok(p) => p,
+            Err(_) => return false,
+        };
+
+        use doxus_plugin_sdk::SyncPolicy;
+
+        match (policy, trigger) {
+            (SyncPolicy::Realtime(_), _) => {
+                // Realtime은 FileEvent가 직접 index_project를 호출하므로 global_sync에서는 스킵
+                false
+            }
+            (SyncPolicy::OnFocus, SyncTrigger::Focus) => true,
+            (SyncPolicy::Interval { seconds }, SyncTrigger::Periodic) => {
+                let last_syncs = self.last_sync_times.lock().await;
+                if let Some(last) = last_syncs.get(project_name) {
+                    let jitter = self.get_jitter(project_name).await;
+                    let interval = Duration::from_secs_f64(seconds as f64 * (1.0 + jitter));
+                    last.elapsed() >= interval
+                } else {
+                    true
+                }
+            }
+            (SyncPolicy::Manual, _) => false,
+            _ => false,
         }
+    }
+
+    async fn get_jitter(&self, project_name: &str) -> f64 {
+        let mut jitter_map = self.jitter_map.lock().await;
+        *jitter_map.entry(project_name.to_string()).or_insert_with(|| {
+            use rand::Rng;
+            let mut rng = rand::thread_rng();
+            rng.gen_range(-0.1..0.1) // ±10% jitter
+        })
     }
 
     async fn update_last_sync(&self, project_name: &str) {
         let mut last_syncs = self.last_sync_times.lock().await;
         last_syncs.insert(project_name.to_string(), Instant::now());
+        // Reset jitter
+        let mut jitter_map = self.jitter_map.lock().await;
+        jitter_map.remove(project_name);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::TestDb;
+    use crate::plugin::PluginManager;
+    use crate::search::SearchEngine;
+    use doxus_plugin_sdk::SyncPolicy;
+
+    async fn setup_manager() -> (Arc<SyncManager>, Arc<std::sync::Mutex<rusqlite::Connection>>) {
+        let db = TestDb::new();
+        let conn = Arc::new(std::sync::Mutex::new(db.conn));
+        let pm = Arc::new(PluginManager::new(std::path::PathBuf::from("/tmp")));
+        let engine = Arc::new(SearchEngine::with_embedder(conn.clone(), Arc::new(crate::embedding::NoOpEmbedder) as Arc<dyn crate::embedding::EmbeddingProvider + Send + Sync>));
+        let indexer = Arc::new(IndexingService::new(conn.clone(), pm, engine));
+        let (mgr, _) = SyncManager::new(indexer);
+        (Arc::new(mgr), conn)
+    }
+
+    #[tokio::test]
+    async fn test_should_sync_on_focus() {
+        let (mgr, conn) = setup_manager().await;
+        
+        conn.lock().unwrap().execute(
+            "INSERT INTO projects (name, display_name, path, sync_policy_json, created_at, updated_at)
+             VALUES ('proj1', 'P1', '', '{\"type\":\"on_focus\"}', 0, 0)",
+            []
+        ).unwrap();
+
+        // 1. Focus trigger -> true
+        assert!(mgr.should_sync("proj1", &SyncTrigger::Focus).await);
+
+        // 2. Periodic trigger -> false
+        assert!(!mgr.should_sync("proj1", &SyncTrigger::Periodic).await);
+    }
+
+    #[tokio::test]
+    async fn test_should_sync_interval() {
+        let (mgr, conn) = setup_manager().await;
+        
+        conn.lock().unwrap().execute(
+            "INSERT INTO projects (name, display_name, path, sync_policy_json, created_at, updated_at)
+             VALUES ('proj1', 'P1', '', '{\"type\":\"interval\",\"seconds\":60}', 0, 0)",
+            []
+        ).unwrap();
+
+        // No record of last sync -> true
+        assert!(mgr.should_sync("proj1", &SyncTrigger::Periodic).await);
+
+        mgr.update_last_sync("proj1").await;
+
+        // Just synced -> false
+        assert!(!mgr.should_sync("proj1", &SyncTrigger::Periodic).await);
     }
 }

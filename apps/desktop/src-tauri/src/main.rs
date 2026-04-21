@@ -155,6 +155,7 @@ fn main() {
             // Start SyncManager background loop
             let manager_inner = manager.clone();
             tauri::async_runtime::spawn(async move {
+                manager_inner.init_watchers().await;
                 manager_inner.start_loop(rx).await;
             });
 

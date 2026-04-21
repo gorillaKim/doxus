@@ -174,6 +174,7 @@ mod tests {
                 incremental_sync: true,
                 oauth: false,
                 native_search: false,
+                sync_policy: doxus_plugin_sdk::SyncPolicy::OnFocus,
             }
         }
 

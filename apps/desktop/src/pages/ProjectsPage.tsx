@@ -277,8 +277,8 @@ export function ProjectsPage() {
 
       {indexResult && (
         <div className="fixed bottom-6 right-6 z-50 px-4 py-3 bg-gray-900 border border-gray-700 rounded-xl shadow-xl text-sm text-gray-200 max-w-xs">
-          <span className="font-medium text-indigo-400">{indexResult.name}</span>
-          <span className="ml-2">{indexResult.message}</span>
+          <span className="font-medium text-indigo-400">{indexResult.name}: </span>
+          <span className="ml-1">{indexResult.message}</span>
         </div>
       )}
 

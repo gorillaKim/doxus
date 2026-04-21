@@ -131,6 +131,7 @@ static MIGRATIONS: &[(&str, &str)] = &[
     ("V27__hybrid_storage_schema", include_str!("migrations/V27__hybrid_storage_schema.sql")),
     ("V28__hybrid_storage_repair", include_str!("migrations/V28__hybrid_storage_repair.sql")),
     ("V29__add_source_project_id", include_str!("migrations/V29__add_source_project_id.sql")),
+    ("V30__add_sync_config", include_str!("migrations/V30__add_sync_config.sql")),
 ];
 
 // ── Test helper ──────────────────────────────────────────────────────────────
@@ -431,5 +432,22 @@ mod tests {
         );
 
         assert!(res.is_ok(), "Failed to insert document with url: {:?}", res.err());
+    }
+
+    #[test]
+    fn v30_projects_has_sync_policy_json() {
+        let db = TestDb::new();
+        db.conn.execute(
+            "INSERT INTO projects(name, display_name, path, sync_policy_json, created_at, updated_at)
+             VALUES ('policy-test', 'Policy Test', '/tmp', '{\"type\":\"manual\"}', unixepoch(), unixepoch())",
+            [],
+        ).expect("sync_policy_json column should exist in projects table");
+        
+        let policy: String = db.conn.query_row(
+            "SELECT sync_policy_json FROM projects WHERE name='policy-test'",
+            [],
+            |r| r.get(0)
+        ).unwrap();
+        assert_eq!(policy, "{\"type\":\"manual\"}");
     }
 }
