@@ -66,4 +66,20 @@ impl McpServer {
     pub fn plugin_manager(&self) -> &Arc<doxus_core::plugin::PluginManager> {
         &self.plugin_manager
     }
+
+    /// Creates a SearchEngine instance for this server.
+    pub fn engine(&self) -> Arc<doxus_core::search::SearchEngine> {
+        use doxus_core::search::SearchEngine;
+        let embedder = self.embedder().unwrap_or_else(|| {
+            // FTS-only fallback
+            Arc::new(doxus_core::embedding::NoOpEmbedder)
+        });
+        Arc::new(SearchEngine::with_embedder(self.conn(), embedder))
+    }
+
+    /// Creates an IndexingService instance for this server.
+    pub fn indexer(&self) -> doxus_core::indexing::IndexingService {
+        use doxus_core::indexing::IndexingService;
+        IndexingService::new(self.conn(), Arc::clone(&self.plugin_manager), self.engine())
+    }
 }
