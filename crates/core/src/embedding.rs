@@ -23,6 +23,8 @@ pub struct ModelInfo {
     pub name: String,
     pub dimension: usize,
     pub max_tokens: usize,
+    /// 물리적 모델 파일 경로 (있을 경우)
+    pub path: Option<String>,
 }
 
 #[async_trait]
@@ -91,6 +93,7 @@ impl OnnxEmbedder {
         }
 
         let path = model_path.into();
+        let path_clone = path.clone();
         if !path.exists() {
             return Err(EmbeddingError::ModelLoad(format!(
                 "model not found at {}",
@@ -98,34 +101,28 @@ impl OnnxEmbedder {
             )));
         }
 
-        let session = Session::builder()
-            .map_err(|e| EmbeddingError::ModelLoad(e.to_string()))?
-            .commit_from_file(&path)
-            .ok()
-            .map(Mutex::new);
-
-        // Tokenizer lives next to the model file as tokenizer.json
-        let tokenizer_path = path
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."))
-            .join("tokenizer.json");
-
+        let tokenizer_path = path.parent().unwrap_or_else(|| std::path::Path::new(".")).join("tokenizer.json");
         let mut tokenizer = Tokenizer::from_file(&tokenizer_path).ok();
         if let Some(ref mut t) = tokenizer {
-            // multilingual-e5-small has a 512 token limit.
-            // Truncate to prevent ONNX runtime broadcast errors.
             t.with_truncation(Some(tokenizers::TruncationParams {
                 max_length: 512,
                 ..Default::default()
             }))
             .expect("failed to set truncation");
         }
+        
+        let session = Session::builder()
+            .map_err(|e| EmbeddingError::ModelLoad(e.to_string()))?
+            .commit_from_file(&path)
+            .ok()
+            .map(Mutex::new);
 
         Ok(Self {
             info: ModelInfo {
                 name: "multilingual-e5-small".to_string(),
                 dimension: 384,
                 max_tokens: 512,
+                path: Some(path_clone.to_string_lossy().to_string()),
             },
             session,
             tokenizer,
@@ -275,6 +272,7 @@ impl OllamaEmbedder {
                 name: model.clone(),
                 dimension,
                 max_tokens: 512,
+                path: None,
             },
             base_url: base_url.into(),
             model,
@@ -346,14 +344,15 @@ impl EmbeddingProvider for OllamaEmbedder {
     }
 }
 
+pub const MULTILINGUAL_E5_SMALL_SHA256: &str = "ca456c06b3a9505ddfd9131408916dd79290368331e7d76bb621f1cba6bc8665";
+
 /// Resolve the ONNX model path from multiple candidate locations.
 ///
 /// Priority order:
 /// 1. `DOXUS_MODEL_PATH` environment variable (if file + tokenizer.json exist)
 /// 2. macOS app bundle `{exe}/../Resources/models/multilingual-e5-small.onnx`
 /// 3. `~/.doxus/models/multilingual-e5-small.onnx` (shared install path for MCP/CLI)
-/// 4. Legacy MCP path: `~/.doxus/models/multilingual-e5-small/model.onnx`
-/// 5. Dev workspace: `{exe_ancestry}/crates/core/models/multilingual-e5-small.onnx`
+/// 4. Dev workspace: `{exe_ancestry}/crates/core/models/multilingual-e5-small.onnx`
 ///
 /// Each candidate is accepted only if both the `.onnx` file and `tokenizer.json`
 /// exist in the same directory.
@@ -382,7 +381,6 @@ pub fn resolve_model_path() -> Option<std::path::PathBuf> {
     }
 
     let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-    let legacy_path = home.join(".doxus/models/multilingual-e5-small/model.onnx");
 
     let candidates: Vec<std::path::PathBuf> = [
         // macOS bundle: {exe}/../Resources/models/
@@ -395,8 +393,6 @@ pub fn resolve_model_path() -> Option<std::path::PathBuf> {
             }),
         // Shared install path (MCP + CLI share this)
         Some(home.join(".doxus/models").join(model_name)),
-        // Legacy MCP path (subdirectory layout from older versions)
-        Some(legacy_path.clone()),
         // Dev: exe is in target/{debug,release}/, go up 3 levels to workspace root
         std::env::current_exe()
             .ok()
@@ -415,15 +411,7 @@ pub fn resolve_model_path() -> Option<std::path::PathBuf> {
 
     for candidate in &candidates {
         if valid(candidate) {
-            if candidate == &legacy_path {
-                tracing::warn!(
-                    "resolve_model_path: using legacy model path {:?}; \
-                     move files to ~/.doxus/models/ to suppress this warning",
-                    candidate
-                );
-            } else {
-                tracing::debug!("resolve_model_path: found {:?}", candidate);
-            }
+            tracing::debug!("resolve_model_path: found {:?}", candidate);
             return Some(candidate.clone());
         }
     }
@@ -432,8 +420,33 @@ pub fn resolve_model_path() -> Option<std::path::PathBuf> {
     None
 }
 
+/// Verify the SHA256 checksum of the model file.
+pub fn verify_model_checksum(path: &std::path::Path, expected_hex: &str) -> bool {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let n = match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(_) => return false,
+        };
+        hasher.update(&buffer[..n]);
+    }
+    let actual_hex = hex::encode(hasher.finalize());
+    actual_hex == expected_hex
+}
+
 impl OnnxEmbedder {
     /// Create an embedder using the default model path resolution (see `resolve_model_path`).
+    /// Also verifies the SHA256 checksum of the model file.
     pub fn from_default_path() -> Result<Self, EmbeddingError> {
         let path = resolve_model_path().ok_or_else(|| {
             EmbeddingError::ModelLoad(
@@ -442,6 +455,17 @@ impl OnnxEmbedder {
                     .into(),
             )
         })?;
+
+        // Verify checksum (only for the standard model)
+        if path.file_name().and_then(|n| n.to_str()) == Some("multilingual-e5-small.onnx") {
+            if !verify_model_checksum(&path, MULTILINGUAL_E5_SMALL_SHA256) {
+                return Err(EmbeddingError::ModelLoad(format!(
+                    "model checksum mismatch at {}; the file may be corrupt",
+                    path.display()
+                )));
+            }
+        }
+
         Self::new(path)
     }
 }
@@ -452,12 +476,12 @@ pub struct NoOpEmbedder;
 #[async_trait::async_trait]
 impl EmbeddingProvider for NoOpEmbedder {
     async fn embed(&self, _texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
-        Err(EmbeddingError::Inference("no embedder configured".into()))
+        Ok(vec![])
     }
     fn dimension(&self) -> usize { 0 }
     fn model_info(&self) -> &ModelInfo {
         static INFO: std::sync::LazyLock<ModelInfo> = std::sync::LazyLock::new(|| {
-            ModelInfo { name: "noop".into(), dimension: 0, max_tokens: 0 }
+            ModelInfo { name: "noop".into(), dimension: 0, max_tokens: 0, path: None }
         });
         &INFO
     }
@@ -475,8 +499,9 @@ impl MockEmbedder {
             dimension,
             info: ModelInfo {
                 name: "mock".to_string(),
-                dimension,
+                dimension: dimension,
                 max_tokens: 512,
+                path: None,
             },
         }
     }

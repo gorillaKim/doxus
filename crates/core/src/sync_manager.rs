@@ -18,12 +18,36 @@ pub enum SyncTrigger {
     FileEvent { project_name: String, path: std::path::PathBuf },
 }
 
+use std::collections::VecDeque;
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SyncStatus {
+    pub active_tasks: Vec<ActiveTaskSummary>,
+    pub recent_triggers: Vec<SyncTriggerSummary>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ActiveTaskSummary {
+    pub project_name: String,
+    pub started_at: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SyncTriggerSummary {
+    pub trigger_type: String,
+    pub project_name: Option<String>,
+    pub details: Option<String>,
+    pub timestamp: i64,
+}
+
 pub struct SyncManager {
     indexing_service: Arc<IndexingService>,
     tx: mpsc::Sender<SyncTrigger>,
     last_sync_times: Arc<Mutex<HashMap<String, Instant>>>,
     jitter_map: Arc<Mutex<HashMap<String, f64>>>,
     watcher_manager: Arc<Mutex<Option<Arc<crate::watcher::WatcherManager>>>>,
+    active_tasks: Arc<Mutex<std::collections::HashMap<String, i64>>>,
+    recent_triggers: Arc<Mutex<VecDeque<SyncTriggerSummary>>>,
 }
 
 impl SyncManager {
@@ -36,6 +60,8 @@ impl SyncManager {
                 last_sync_times: Arc::new(Mutex::new(HashMap::new())),
                 jitter_map: Arc::new(Mutex::new(HashMap::new())),
                 watcher_manager: Arc::new(Mutex::new(None)),
+                active_tasks: Arc::new(Mutex::new(std::collections::HashMap::new())),
+                recent_triggers: Arc::new(Mutex::new(VecDeque::with_capacity(10))),
             },
             rx,
         )
@@ -72,10 +98,35 @@ impl SyncManager {
         while let Some(trigger) = rx.recv().await {
             crate::log_d!("sync", "[SyncManager] Received trigger: {:?}", trigger);
             
+            // Record trigger to recent list
+            {
+                let mut recent = self.recent_triggers.lock().await;
+                if recent.len() >= 10 {
+                    recent.pop_back();
+                }
+                
+                let (t_type, p_name, details) = match &trigger {
+                    SyncTrigger::Focus => ("Focus", None, Some("Window focused - checking projects".to_string())),
+                    SyncTrigger::Periodic => ("Periodic", None, Some("Scheduled periodic check".to_string())),
+                    SyncTrigger::Idle => ("Idle", None, Some("System idle - background maintenance".to_string())),
+                    SyncTrigger::Manual(name) => ("Manual", Some(name.clone()), Some(format!("User requested sync for {}", name))),
+                    SyncTrigger::FileEvent { project_name, path } => {
+                        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown file");
+                        ("FileEvent", Some(project_name.clone()), Some(format!("Changed: {}", filename)))
+                    }
+                };
+                
+                recent.push_front(SyncTriggerSummary {
+                    trigger_type: t_type.to_string(),
+                    project_name: p_name,
+                    details,
+                    timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().unwrap_or_default().as_secs() as i64,
+                });
+            }
+            
             match trigger {
                 SyncTrigger::Manual(project_name) => {
-                    let _ = self.indexing_service.index_project(&project_name).await;
-                    self.update_last_sync(&project_name).await;
+                    self.run_task(&project_name).await;
                 }
                 SyncTrigger::FileEvent { project_name, .. } => {
                     // 쿨다운 적용: 마지막 동기화 이후 너무 짧은 시간(예: 2초) 내에는 스킵
@@ -93,13 +144,28 @@ impl SyncManager {
                         continue;
                     }
 
-                    let _ = self.indexing_service.index_project(&project_name).await;
-                    self.update_last_sync(&project_name).await;
+                    self.run_task(&project_name).await;
                 }
                 SyncTrigger::Focus | SyncTrigger::Periodic | SyncTrigger::Idle => {
                     self.run_global_sync(trigger).await;
                 }
             }
+        }
+    }
+
+    async fn run_task(&self, project_name: &str) {
+        {
+            let mut active = self.active_tasks.lock().await;
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().unwrap_or_default().as_secs() as i64;
+            active.insert(project_name.to_string(), now);
+        }
+        
+        let _ = self.indexing_service.index_project(project_name).await;
+        self.update_last_sync(project_name).await;
+        
+        {
+            let mut active = self.active_tasks.lock().await;
+            active.remove(project_name);
         }
     }
 
@@ -115,16 +181,20 @@ impl SyncManager {
         for project_name in active_projects {
             if self.should_sync(&project_name, &trigger).await {
                 crate::log_d!("sync", "[SyncManager] Syncing project: {} (Trigger: {:?})", project_name, trigger);
-                match self.indexing_service.index_project(&project_name).await {
-                    Ok(n) => {
-                        crate::log_d!("sync", "[SyncManager] Indexed {} documents for {}", n, project_name);
-                        self.update_last_sync(&project_name).await;
-                    }
-                    Err(e) => {
-                        crate::log_d!("sync", "[SyncManager] Sync failed for {}: {}", project_name, e);
-                    }
-                }
+                self.run_task(&project_name).await;
             }
+        }
+    }
+
+    pub async fn get_status(&self) -> SyncStatus {
+        let active = self.active_tasks.lock().await;
+        let recent = self.recent_triggers.lock().await;
+        SyncStatus {
+            active_tasks: active.iter().map(|(name, started_at)| ActiveTaskSummary {
+                project_name: name.clone(),
+                started_at: *started_at,
+            }).collect(),
+            recent_triggers: recent.iter().cloned().collect(),
         }
     }
 

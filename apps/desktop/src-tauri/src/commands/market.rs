@@ -241,11 +241,9 @@ pub async fn get_embedding_status(
     let embedded_chunks: i64 = conn
         .query_row("SELECT COUNT(*) FROM chunk_embeddings WHERE embedding IS NOT NULL", [], |r| r.get(0))
         .unwrap_or(0);
-    // embedder 로드 여부는 dimension으로 확인 (NoOpEmbedder = 0, OnnxEmbedder = 384)
-    let embedder_dim = state.embedder.dimension();
-    let model_loaded = embedder_dim > 0;
-    let model = if model_loaded { "ONNX (multilingual-e5-small)" } else { "미활성 (모델 로드 실패)" };
-    // 모델은 로드됐지만 아직 재인덱싱 안 된 경우와 모델 자체가 없는 경우를 구분
+    let info = state.embedder.model_info();
+    let model_loaded = info.dimension > 0;
+    let model = if model_loaded { format!("ONNX ({})", info.name) } else { "미활성 (모델 로드 실패)".to_string() };
     let status = if !model_loaded {
         "inactive"
     } else if embedded_chunks > 0 {
@@ -256,11 +254,20 @@ pub async fn get_embedding_status(
     Ok(serde_json::json!({
         "model": model,
         "model_loaded": model_loaded,
-        "dimension": embedder_dim,
+        "dimension": info.dimension,
         "total_documents": total_docs,
         "embedded_chunks": embedded_chunks,
-        "status": status
+        "status": status,
+        "path": info.path,
     }))
+}
+
+#[tauri::command]
+pub async fn get_sync_status(
+    state: tauri::State<'_, Arc<crate::AppState>>,
+) -> Result<serde_json::Value, String> {
+    let status = state.sync_manager.get_status().await;
+    Ok(serde_json::json!(status))
 }
 
 #[tauri::command]

@@ -188,6 +188,7 @@ fn main() {
             doxus_desktop_lib::commands::market::get_plugin_logs,
             doxus_desktop_lib::commands::market::clear_audit_log,
             doxus_desktop_lib::commands::market::get_embedding_status,
+            doxus_desktop_lib::commands::market::get_sync_status,
             doxus_desktop_lib::commands::market::trigger_sync,
             doxus_desktop_lib::commands::market::market_install_plugin,
             doxus_desktop_lib::commands::market::market_uninstall_plugin,
