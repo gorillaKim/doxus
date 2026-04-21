@@ -692,34 +692,58 @@ export function SearchPage() {
   const refreshToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const processedDocIdRef = useRef<string | null>(null);
 
+  const allDocsRef = useRef(allDocuments);
+  useEffect(() => { allDocsRef.current = allDocuments; }, [allDocuments]);
+
   useEffect(() => { listAllDocuments(); }, [listAllDocuments]);
 
-  // URL 파라미터 기반 자동 선택 및 태그 필터링
+  // 1. 초기 로드 시 또는 데이터 준비 시 URL 기반 자동 선택
+  const [initialSyncDone, setInitialSyncDone] = useState(false);
   useEffect(() => {
-    if (allDocsLoading || allDocuments.length === 0) return;
+    if (initialSyncDone || allDocsLoading || allDocuments.length === 0) return;
 
     const docId = searchParams.get('docId');
-    const tag = searchParams.get('tag');
-
-    // 이미 URL로부터 처리된 상태라면 중복 처리 방지 (Race condition 가드)
-    if (docId === processedDocIdRef.current) return;
-
     if (docId) {
       const numericId = parseInt(docId, 10);
       const doc = allDocuments.find(d => d.document_id === numericId);
       if (doc) {
         processedDocIdRef.current = docId;
-        const entry = allDocToEntry(doc);
-        handleSelectDoc(entry);
+        handleSelectDoc(allDocToEntry(doc));
+        setInitialSyncDone(true);
+      }
+    } else {
+      setInitialSyncDone(true);
+    }
+  }, [allDocuments, allDocsLoading, initialSyncDone]);
+
+  // 2. 브라우저 내비게이션(URL 변경) 대응
+  useEffect(() => {
+    const docId = searchParams.get('docId');
+    const tag = searchParams.get('tag');
+
+    // 이미 처리된 URL이면 무시
+    if (docId === processedDocIdRef.current) return;
+
+    if (docId) {
+      const numericId = parseInt(docId, 10);
+      // allDocsRef를 사용하여 스토어 업데이트에 의한 재실행을 방지
+      const doc = allDocsRef.current.find(d => d.document_id === numericId);
+      if (doc) {
+        processedDocIdRef.current = docId;
+        handleSelectDoc(allDocToEntry(doc));
       }
     } else if (tag) {
       setFilters({ tagQuery: `#${tag}` });
       search();
-      processedDocIdRef.current = null; // 태그 검색 시에는 ID 가드 초기화
+      processedDocIdRef.current = null;
     } else {
+      // URL에서 docId가 사라진 경우 (초기화)
+      setSelectedDoc(null);
+      setPreviewContent(null);
+      setPreviewMeta(null);
       processedDocIdRef.current = null;
     }
-  }, [allDocuments, allDocsLoading, searchParams]);
+  }, [searchParams]); // 오직 searchParams 변경에만 반응
 
   const availablePlugins = (() => {
     const seen = new Set<string>();
