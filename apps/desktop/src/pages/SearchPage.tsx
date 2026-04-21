@@ -5,6 +5,7 @@ import ReactMarkdown from 'react-markdown';
 import rehypeRaw from 'rehype-raw';
 import remarkGfm from 'remark-gfm';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { useSearchStore, AllDocument, SearchHit, SearchFilters } from '../stores/useSearchStore';
 import { usePluginStore } from '../stores/usePluginStore';
 
@@ -694,6 +695,22 @@ export function SearchPage() {
 
   const allDocsRef = useRef(allDocuments);
   useEffect(() => { allDocsRef.current = allDocuments; }, [allDocuments]);
+
+  useEffect(() => {
+    const unlisten = listen<{ project_name: string; source_doc_id: string; last_indexed: number }>(
+      'document-indexed',
+      (event) => {
+        console.log('[SearchPage] Received document-indexed event:', event.payload);
+        updateDocumentMetadata(event.payload.source_doc_id, {
+          last_indexed: event.payload.last_indexed
+        });
+      }
+    );
+
+    return () => {
+      unlisten.then(f => f());
+    };
+  }, [updateDocumentMetadata]);
 
   useEffect(() => { listAllDocuments(); }, [listAllDocuments]);
 

@@ -648,12 +648,14 @@ pub async fn trigger_reindex(
 
 #[tauri::command]
 pub async fn get_document_content(
+    app_handle: tauri::AppHandle,
     state: tauri::State<'_, Arc<crate::AppState>>,
     file_path: String,
     project_name: Option<String>,
     force_refresh: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     use doxus_core::document::DocumentService;
+    use tauri::Emitter;
 
     let conn_arc = state.conn.clone();
     let indexer = state.sync_manager.indexer();
@@ -701,13 +703,14 @@ pub async fn get_document_content(
         let pname_clone = pname.clone();
         let doc_clone = doc.clone();
         let indexer_clone = indexer.clone();
+        let handle_clone = app_handle.clone();
 
         tauri::async_runtime::spawn(async move {
             let conn = indexer_clone.conn();
             let project_info = {
                 let conn_lock = conn.lock().unwrap_or_else(|e| e.into_inner());
                 conn_lock.query_row(
-                    "SELECT id, storage_strategy FROM projects WHERE name = ?1",
+                    "SELECT id, storage_strategy FROM projects WHERE name = ?1 OR source_project_id = ?1",
                     rusqlite::params![pname_clone],
                     |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
                 ).ok()
@@ -717,7 +720,17 @@ pub async fn get_document_content(
                 if indexer_clone.needs_reindexing(pid, &doc_clone.id.0, doc_clone.updated_at).await {
                     doxus_core::log_d!("commands", "[JIT-Indexer] App background indexing triggered for: {} (ID: {})", 
                         doc_clone.title.as_deref().unwrap_or("Untitled"), doc_clone.id.0);
-                    let _ = indexer_clone.index_single_document(pid, doc_clone, &strategy).await;
+                    
+                    let doc_id_for_log = doc_clone.id.0.clone();
+                    if let Ok(_) = indexer_clone.index_single_document(pid, doc_clone, &strategy).await {
+                        // 실제 인덱싱 완료 시 프런트엔드에 알림 이벤트 발행
+                        let _ = handle_clone.emit("document-indexed", serde_json::json!({
+                            "project_name": pname_clone,
+                            "source_doc_id": doc_id_for_log,
+                            "last_indexed": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs() as i64)
+                        }));
+                        doxus_core::log_d!("commands", "[JIT-Indexer] Event emitted: document-indexed for {}", doc_id_for_log);
+                    }
                 }
             }
         });
@@ -725,6 +738,16 @@ pub async fn get_document_content(
     }
 
     // 3. 프런트엔드 호환 응답 생성
+    // force_refresh 시에도 바로 DB 값을 읽어와서 반환 (가짜 시간 제거)
+    let last_indexed = {
+        let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+        conn.query_row(
+            "SELECT last_indexed FROM documents d JOIN projects p ON d.project_id = p.id WHERE (p.name = ?1 OR p.source_project_id = ?1) AND d.source_doc_id = ?2",
+            rusqlite::params![project_name, doc.id.0],
+            |r| r.get::<_, Option<i64>>(0)
+        ).ok().flatten()
+    };
+
     Ok(serde_json::json!({
         "title": doc.title,
         "content": doc.content,
@@ -739,16 +762,7 @@ pub async fn get_document_content(
         "url": doc.url,
         "source_project_id": project_name,
         "source_doc_id": doc.id.0,
-        "last_indexed": (if force_refresh.unwrap_or(false) { 
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs() as i64)
-        } else {
-            let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
-            conn.query_row(
-                "SELECT last_indexed FROM documents d JOIN projects p ON d.project_id = p.id WHERE p.name = ?1 AND d.source_doc_id = ?2",
-                rusqlite::params![project_name, doc.id.0],
-                |r| r.get::<_, i64>(0)
-            ).ok()
-        }),
+        "last_indexed": last_indexed,
         "cache_ttl": ({
             let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
             conn.query_row(
