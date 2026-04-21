@@ -702,6 +702,9 @@ export function SearchPage() {
 
     if (docId) {
       const numericId = parseInt(docId, 10);
+      // 이미 현재 선택된 문서라면 리로드 방지 (무한 루프 가드)
+      if (selectedDoc?.document_id === numericId) return;
+
       const doc = allDocuments.find(d => d.document_id === numericId);
       if (doc) {
         const entry = allDocToEntry(doc);
@@ -711,7 +714,7 @@ export function SearchPage() {
       setFilters({ tagQuery: `#${tag}` });
       search();
     }
-  }, [allDocuments, allDocsLoading, searchParams]);
+  }, [allDocuments, allDocsLoading, searchParams, selectedDoc]);
 
   const availablePlugins = (() => {
     const seen = new Set<string>();
