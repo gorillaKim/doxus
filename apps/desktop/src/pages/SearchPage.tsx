@@ -690,6 +690,7 @@ export function SearchPage() {
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [refreshToast, setRefreshToast] = useState<string | null>(null);
   const refreshToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const processedDocIdRef = useRef<string | null>(null);
 
   useEffect(() => { listAllDocuments(); }, [listAllDocuments]);
 
@@ -700,21 +701,25 @@ export function SearchPage() {
     const docId = searchParams.get('docId');
     const tag = searchParams.get('tag');
 
+    // 이미 URL로부터 처리된 상태라면 중복 처리 방지 (Race condition 가드)
+    if (docId === processedDocIdRef.current) return;
+
     if (docId) {
       const numericId = parseInt(docId, 10);
-      // 이미 현재 선택된 문서라면 리로드 방지 (무한 루프 가드)
-      if (selectedDoc?.document_id === numericId) return;
-
       const doc = allDocuments.find(d => d.document_id === numericId);
       if (doc) {
+        processedDocIdRef.current = docId;
         const entry = allDocToEntry(doc);
         handleSelectDoc(entry);
       }
     } else if (tag) {
       setFilters({ tagQuery: `#${tag}` });
       search();
+      processedDocIdRef.current = null; // 태그 검색 시에는 ID 가드 초기화
+    } else {
+      processedDocIdRef.current = null;
     }
-  }, [allDocuments, allDocsLoading, searchParams, selectedDoc]);
+  }, [allDocuments, allDocsLoading, searchParams]);
 
   const availablePlugins = (() => {
     const seen = new Set<string>();
@@ -820,7 +825,9 @@ export function SearchPage() {
     setPreviewError(null);
     
     // URL 파라미터 업데이트 (새로고침 시 상태 유지용)
-    setSearchParams({ docId: doc.document_id.toString() }, { replace: true });
+    const newId = doc.document_id.toString();
+    processedDocIdRef.current = newId; 
+    setSearchParams({ docId: newId }, { replace: true });
 
     if (doc.document_id) {
       invoke('increment_view_count', { documentId: doc.document_id }).catch(() => {});
