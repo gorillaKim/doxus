@@ -1,8 +1,10 @@
 use crate::server::McpServer;
 use crate::tools::resolve_doc_id;
 use crate::types::McpResponse;
+use regex::Regex;
 use rusqlite::params;
 use serde_json::{json, Value};
+use std::sync::OnceLock;
 
 pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     use doxus_core::search::{SearchEngine, SearchMode, SearchQuery};
@@ -571,17 +573,28 @@ pub fn inspect_document(server: &McpServer, id: Value, args: &Value) -> McpRespo
     }
 }
 
+static RE_HEADER: OnceLock<Regex> = OnceLock::new();
+
+fn header_regex() -> &'static Regex {
+    RE_HEADER.get_or_init(|| {
+        // Pattern: Starts with 0-3 spaces, followed by 1-6 '#' chars,
+        // then either whitespace + content OR just end of line.
+        Regex::new(r"^\s{0,3}(#{1,6})(?:\s+(.*)|$)").unwrap()
+    })
+}
+
 /// Extract a section starting at `heading` until the next same-or-higher level heading or EOF.
 pub fn extract_section(content: &str, heading: &str) -> String {
     let heading_lower = heading.to_lowercase();
+    let re = header_regex();
     let mut in_section = false;
     let mut section_level = 0usize;
     let mut result = Vec::new();
 
     for line in content.lines() {
-        if line.starts_with('#') {
-            let level = line.chars().take_while(|&c| c == '#').count();
-            let text = line.trim_start_matches('#').trim().to_lowercase();
+        if let Some(caps) = re.captures(line) {
+            let level = caps.get(1).map_or(0, |m| m.as_str().len());
+            let text = caps.get(2).map_or("", |m| m.as_str().trim()).to_lowercase();
 
             if in_section {
                 if level <= section_level {
@@ -605,14 +618,77 @@ pub fn extract_section(content: &str, heading: &str) -> String {
 
 /// Build a table of contents from markdown headings.
 pub fn extract_toc(content: &str) -> String {
+    let re = header_regex();
     let mut lines = vec![];
     for line in content.lines() {
-        if line.starts_with('#') {
-            let level = line.chars().take_while(|&c| c == '#').count();
-            let text = line.trim_start_matches('#').trim();
+        if let Some(caps) = re.captures(line) {
+            let level = caps.get(1).map_or(0, |m| m.as_str().len());
+            let text = caps.get(2).map_or("", |m| m.as_str().trim());
             let indent = "  ".repeat(level.saturating_sub(1));
             lines.push(format!("{indent}- {text}"));
         }
     }
+
+    if lines.is_empty() && !content.trim().is_empty() {
+        let sample = content.chars().take(200).collect::<String>();
+        tracing::debug!("[Search] No headings found in content. Sample: {:?}", sample);
+    }
+
     lines.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_toc_standard() {
+        let content = "# Header 1\n## Header 2\n### Header 3";
+        let toc = extract_toc(content);
+        assert_eq!(toc, "- Header 1\n  - Header 2\n    - Header 3");
+    }
+
+    #[test]
+    fn test_extract_toc_with_indentation() {
+        let content = "  # Indented 2 spaces\n   ## Indented 3 spaces";
+        let toc = extract_toc(content);
+        assert_eq!(toc, "- Indented 2 spaces\n  - Indented 3 spaces");
+    }
+
+    #[test]
+    fn test_extract_toc_exclude_code_blocks() {
+        let content = "    # This is a code block (4 spaces)";
+        let toc = extract_toc(content);
+        assert_eq!(toc, "");
+    }
+
+    #[test]
+    fn test_extract_toc_exclude_no_space_after_hash() {
+        let content = "#NoSpace\n###NoSpaceEither";
+        let toc = extract_toc(content);
+        assert_eq!(toc, "");
+    }
+
+    #[test]
+    fn test_extract_toc_exclude_mid_sentence() {
+        let content = "Learning C# is fun #programming";
+        let toc = extract_toc(content);
+        assert_eq!(toc, "");
+    }
+
+    #[test]
+    fn test_extract_toc_empty_header() {
+        let content = "# \n## ";
+        let toc = extract_toc(content);
+        assert_eq!(toc, "- \n  - ");
+    }
+
+    #[test]
+    fn test_extract_section_basic() {
+        let content = "# Introduction\nThis is intro.\n## Subtitle\nDetails here.\n# Next Section";
+        let section = extract_section(content, "introduction");
+        assert!(section.contains("This is intro."));
+        assert!(section.contains("## Subtitle"));
+        assert!(!section.contains("# Next Section"));
+    }
 }
