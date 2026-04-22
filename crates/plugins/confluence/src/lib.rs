@@ -528,16 +528,15 @@ pub(crate) fn fetch_document_impl(opts: FetchDocumentOptsWasm) -> FnResult<RawDo
     let p: ConfluencePageV2 = serde_json::from_slice(&resp.body())?;
 
     let space_key = state.get_config_string("space_key").unwrap_or_else(|| "Unknown".to_string());
-    let space_url = format!("{base_url}/api/v2/spaces?keys={space_key}");
-    let space_resp = request_with_auth(&state, "GET", &space_url, None)?;
-    let space_list: ConfluenceV2ListResponse<ConfluenceSpace> = serde_json::from_slice(&space_resp.body())?;
-    let space_info = space_list.results.first().ok_or(Error::msg("Space not found"))?;
-    let root_name = space_info.name.as_ref().unwrap_or(&space_info.key);
+    let root_name = state.get_config_string("space_name").unwrap_or_else(|| space_key.clone());
 
-    let mut hierarchy = get_full_hierarchy(&mut state, &base_url, &space_info.id)?;
+    // [Doxus Optimize] 단일 문서 조회 시에는 전체 계층 구조를 가져오지 않습니다.
+    // resolve_ancestors에서 필요한 시점에만 상단 노드를 가져오도록(Lazy fetch) 변경하여 
+    // 수천 개의 페이지가 있는 스페이스에서도 즉시 응답하도록 개선합니다.
+    let mut hierarchy = HashMap::new();
 
     let ancestor_id = state.get_config_string("ancestor_id");
-    Ok(page_to_doc_v2(&state, &mut hierarchy, p, root_name, &space_key, &base_url, ancestor_id.as_deref(), vec![]))
+    Ok(page_to_doc_v2(&state, &mut hierarchy, p, &root_name, &space_key, &base_url, ancestor_id.as_deref(), vec![]))
 }
 
 #[cfg_attr(target_arch = "wasm32", plugin_fn)]
@@ -1086,7 +1085,14 @@ fn resolve_ancestors(
 
     log_d!("confluence:ancestors", "[Confluence-Ancestors-Debug] Resolving ancestors for: {}, stop_id: {:?}", current_id, stop_id);
 
+    let mut depth = 0;
     loop {
+        depth += 1;
+        if depth > 50 { 
+            log_d!("confluence:ancestors", "[Confluence-Ancestors-Debug] - Depth limit (>50) reached. Breaking loop.");
+            break; 
+        }
+
         let (title, parent_id) = if let Some(info) = hierarchy.get(&cursor) {
             info.clone()
         } else {
@@ -1108,7 +1114,7 @@ fn resolve_ancestors(
         }
 
         if let Some(pid) = parent_id {
-            if pid.is_empty() {
+            if pid.is_empty() || pid == cursor { // Cycle/Root check
                 if stop_id.is_none() {
                     root_title = title.clone();
                     // Do not add root-level title to ancestors to avoid redundant top folder
