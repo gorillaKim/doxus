@@ -32,7 +32,7 @@
     ],
     "resources": [
       "sidecar/**/*",
-      "../../../crates/plugins/**/*.wasm",
+      "../../../crates/plugins/**/target/wasm32-wasip1/release/*.wasm",
       "../../../crates/plugins/**/manifest.toml"
     ],
     "externalBin": [
