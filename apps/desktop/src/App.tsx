@@ -10,6 +10,7 @@ import DashboardPage from "./pages/DashboardPage";
 import SettingsPage from "./pages/SettingsPage";
 import AgentPage from "./pages/AgentPage";
 import GuidePage from "./pages/GuidePage";
+import { ModelDownloadModal } from "./components/ModelDownloadModal";
 
 export default function App() {
   const [cacheToast, setCacheToast] = useState<string | null>(null);
@@ -45,6 +46,8 @@ export default function App() {
           🗑️ {cacheToast}
         </div>
       )}
+
+      <ModelDownloadModal />
     </BrowserRouter>
   );
 }

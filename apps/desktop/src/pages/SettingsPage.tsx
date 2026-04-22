@@ -132,6 +132,7 @@ export default function SettingsPage() {
   });
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsResult, setSettingsResult] = useState<string | null>(null);
+  const [modelExists, setModelExists] = useState<boolean | null>(null);
   const [dbTestResult, setDbTestResult] = useState<string | null>(null);
   const [dbTestLoading, setDbTestLoading] = useState(false);
   const [mcpTestResult, setMcpTestResult] = useState<string | null>(null);
@@ -165,6 +166,10 @@ export default function SettingsPage() {
     invoke<AppSettings>('load_settings')
       .then(setAppSettings)
       .catch(() => { /* use defaults */ });
+
+    invoke<{ exists: boolean; path: string | null }>('check_model_status')
+      .then((s) => setModelExists(s.exists))
+      .catch(() => setModelExists(false));
 
     fetchStatus();
 
@@ -349,6 +354,34 @@ export default function SettingsPage() {
                   </span>
                 )}
               </div>
+            </div>
+          </section>
+
+          {/* 임베딩 모델 파일 */}
+          <section className="flex flex-col gap-4">
+            <h2 className="text-sm font-semibold text-gray-400 tracking-tight">임베딩 모델 파일</h2>
+            <div className="bg-gray-900/50 border border-gray-800/80 rounded-xl p-5 flex items-center justify-between gap-4">
+              <div className="flex flex-col gap-1">
+                <span className="text-sm font-medium text-gray-300">multilingual-e5-small</span>
+                <span className="text-xs text-gray-500">
+                  의미 기반 벡터 검색용 ONNX 모델 (~110MB)
+                  <code className="ml-1 text-gray-600">~/.doxus/models/</code>
+                </span>
+              </div>
+              {modelExists === null ? (
+                <span className="text-xs text-gray-500">확인 중...</span>
+              ) : modelExists ? (
+                <span className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full font-medium border bg-emerald-950 text-emerald-400 border-emerald-800">
+                  ● 설치됨
+                </span>
+              ) : (
+                <button
+                  onClick={() => window.dispatchEvent(new CustomEvent("doxus:open-model-download"))}
+                  className="px-3 py-1.5 rounded-lg bg-indigo-500 hover:bg-indigo-400 text-white text-xs font-medium transition"
+                >
+                  다운로드
+                </button>
+              )}
             </div>
           </section>
 
