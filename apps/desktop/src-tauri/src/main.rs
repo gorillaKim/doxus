@@ -52,11 +52,28 @@ fn ensure_plugins(target_dir: &std::path::Path) {
                         let ext = path.extension().and_then(|e| e.to_str());
                         let filename = path.file_name().and_then(|f| f.to_str()).unwrap_or("");
                         
-                        if ext == Some("wasm") || filename == "manifest.toml" {
-                            let target_path = target_dir.join(path.file_name().unwrap());
-                            if !target_path.exists() {
-                                let _ = std::fs::copy(&path, &target_path);
-                                eprintln!("[plugins] Installed: {}", target_path.display());
+                        if ext == Some("wasm") {
+                            // 1. WASM 파일 복사
+                            let target_wasm = target_dir.join(path.file_name().unwrap());
+                            if !target_wasm.exists() {
+                                let _ = std::fs::copy(&path, &target_wasm);
+                                eprintln!("[plugins] Installed WASM: {}", target_wasm.display());
+                            }
+                            
+                            // 2. 동반 매니페스트 확인 및 복사 (foo.wasm -> foo.manifest.toml)
+                            let companion_manifest = path.with_extension("manifest.toml");
+                            if companion_manifest.exists() {
+                                let target_manifest = target_dir.join(companion_manifest.file_name().unwrap());
+                                let _ = std::fs::copy(&companion_manifest, &target_manifest);
+                                eprintln!("[plugins] Installed companion: {}", target_manifest.display());
+                            } else {
+                                // 3. 폴더 내 generic manifest.toml이 있는지 확인 (하위 호환성)
+                                let generic_manifest = path.parent().unwrap().join("manifest.toml");
+                                if generic_manifest.exists() {
+                                    let target_manifest = target_dir.join(format!("{}.manifest.toml", path.file_stem().unwrap().to_str().unwrap()));
+                                    let _ = std::fs::copy(&generic_manifest, &target_manifest);
+                                    eprintln!("[plugins] Installed generic as companion: {}", target_manifest.display());
+                                }
                             }
                         }
                     }

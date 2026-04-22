@@ -32,8 +32,8 @@
     ],
     "resources": [
       "sidecar/**/*",
-      "../../../crates/plugins/**/target/wasm32-wasip1/release/*.wasm",
-      "../../../crates/plugins/**/manifest.toml"
+      "../../../crates/plugins/*/*.wasm",
+      "../../../crates/plugins/*/*.manifest.toml"
     ],
     "externalBin": [
       "binaries/doxus-mcp"

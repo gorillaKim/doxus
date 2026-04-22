@@ -1,5 +1,5 @@
 [package]
-name = "doxus-plugin-confluence"
+name = "confluence"
 version = "0.1.0"
 edition = "2021"
 

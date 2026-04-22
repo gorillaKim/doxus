@@ -89,7 +89,7 @@ impl AppState {
             Box::new(doxus_plugin_obsidian::ObsidianPlugin::new())
         });
         plugin_manager.register_factory(&PluginManager::normalize_id("confluence"), || {
-            Box::new(doxus_plugin_confluence::ConfluencePlugin::new())
+            Box::new(confluence::ConfluencePlugin::new())
         });
         plugin_manager.register_factory(&PluginManager::normalize_id("github"), || {
             Box::new(doxus_plugin_github::GitHubPlugin::new())

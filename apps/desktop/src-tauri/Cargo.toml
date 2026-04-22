@@ -22,7 +22,7 @@ doxus-core = { path = "../../../crates/core" }
 doxus-agent = { path = "../../../crates/agent" }
 doxus-plugin-sdk = { path = "../../../crates/plugin-sdk" }
 doxus-plugin-obsidian = { path = "../../../crates/plugins/obsidian" }
-doxus-plugin-confluence = { path = "../../../crates/plugins/confluence" }
+confluence = { path = "../../../crates/plugins/confluence" }
 doxus-plugin-github = { path = "../../../crates/plugins/github" }
 tokio = { workspace = true }
 rusqlite = { workspace = true }
