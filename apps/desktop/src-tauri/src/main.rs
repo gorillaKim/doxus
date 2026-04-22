@@ -6,6 +6,69 @@ use tauri::{Emitter, Manager};
 use std::sync::Arc;
 
 
+fn find_bundle_plugins_dir() -> Option<std::path::PathBuf> {
+    // macOS 프로덕션 번들: MacOS/../Resources/
+    let base_res = std::env::current_exe().ok()
+        .and_then(|exe| exe.parent()?.parent().map(|p| p.join("Resources")))?;
+    
+    if !base_res.exists() { return None; }
+
+    // Resources 폴더 내에서 'crates/plugins'가 포함된 경로를 검색합니다. (Tauri의 _up_ 핸들링 대응)
+    fn find_recursive(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+        if dir.ends_with("crates/plugins") {
+            return Some(dir.to_path_buf());
+        }
+        if dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    if let Some(found) = find_recursive(&entry.path()) {
+                        return Some(found);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    find_recursive(&base_res)
+}
+
+/// 내장된 플러그인들을 ~/.doxus/plugins 폴더로 복사합니다.
+fn ensure_plugins(target_dir: &std::path::Path) {
+    std::fs::create_dir_all(target_dir).ok();
+
+    if let Some(bundle_dir) = find_bundle_plugins_dir() {
+        if !bundle_dir.exists() { return; }
+        
+        // 재귀적으로 .wasm 및 .manifest.toml 파일을 찾습니다.
+        fn visit_dirs(dir: &std::path::Path, target_dir: &std::path::Path) -> std::io::Result<()> {
+            if dir.is_dir() {
+                for entry in std::fs::read_dir(dir)? {
+                    let entry = entry?;
+                    let path = entry.path();
+                    if path.is_dir() {
+                        visit_dirs(&path, target_dir)?;
+                    } else {
+                        let ext = path.extension().and_then(|e| e.to_str());
+                        let filename = path.file_name().and_then(|f| f.to_str()).unwrap_or("");
+                        
+                        if ext == Some("wasm") || filename == "manifest.toml" {
+                            let target_path = target_dir.join(path.file_name().unwrap());
+                            if !target_path.exists() {
+                                let _ = std::fs::copy(&path, &target_path);
+                                eprintln!("[plugins] Installed: {}", target_path.display());
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        let _ = visit_dirs(&bundle_dir, target_dir);
+    }
+}
+
 fn find_sidecar_script() -> std::path::PathBuf {
     // 1. 환경변수 오버라이드 (개발/테스트용)
     if let Ok(p) = std::env::var("DOXUS_SIDECAR_PATH") {
@@ -94,6 +157,10 @@ fn main() {
         });
     let conn = doxus_core::db::open(&db_path).expect("failed to open db");
     let plugins_dir = std::path::PathBuf::from(&home).join(".doxus/plugins");
+    
+    // Ensure plugins are synced from bundle to plugins_dir
+    ensure_plugins(&plugins_dir);
+
     let sidecar_script = find_sidecar_script();
     let bridge_token = ensure_bridge_token();
     let embedder: std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync> =

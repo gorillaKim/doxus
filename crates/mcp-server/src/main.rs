@@ -71,7 +71,7 @@ async fn main() -> Result<()> {
     let plugins_dir = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".doxus/plugins");
-    let server = McpServer::new(Arc::clone(&conn), None, Arc::clone(&plugin_manager), plugins_dir);
+    let server = McpServer::new(Arc::clone(&conn), db_path.clone(), None, Arc::clone(&plugin_manager), plugins_dir);
     let embedder_handle = server.embedder_arc();
     
     // Background thread to load ONNX

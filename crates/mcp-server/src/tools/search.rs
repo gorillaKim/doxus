@@ -141,14 +141,24 @@ pub async fn get_document(server: &McpServer, id: Value, args: &Value) -> McpRes
     }; // <- 락이 여기서 자동으로 해제(Drop)됩니다.
 
     let pm = server.plugin_manager();
-    let service = doxus_core::document::DocumentService::new(server.conn(), Some(pm.clone()));
+    let service = doxus_core::document::DocumentService::new_with_path(server.db_path(), Some(pm.clone()));
 
     match service.fetch_full_content(project, &source_doc_id).await {
-        Err(e) => McpResponse::err(
-            id,
-            -32602,
-            format!("Failed to fetch document '{}' in project '{}': {}", source_doc_id, project, e),
-        ),
+        Err(e) => {
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/tmp/doxus-error.log") 
+            {
+                use std::io::Write;
+                let _ = writeln!(file, "[Error] fetch failed for {} in {}: {}", source_doc_id, project, e);
+            }
+            McpResponse::err(
+                id,
+                -32602,
+                format!("Failed to fetch document '{}' in project '{}': {}", source_doc_id, project, e),
+            )
+        },
         Ok(doc) => {
             let mut title = doc.title.clone().unwrap_or(source_doc_id.clone());
             let tags = doc.tags.clone();

@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 
 pub struct McpServer {
     pub(crate) conn: Arc<Mutex<Connection>>,
+    pub(crate) db_path: PathBuf,
     pub(crate) embedder: Arc<Mutex<Option<Arc<dyn EmbeddingProvider + Send + Sync>>>>,
     pub(crate) plugin_manager: Arc<doxus_core::plugin::PluginManager>,
     pub(crate) plugins_dir: PathBuf,
@@ -14,12 +15,14 @@ pub struct McpServer {
 impl McpServer {
     pub fn new(
         conn: Arc<Mutex<Connection>>,
+        db_path: PathBuf,
         embedder: Option<Arc<dyn EmbeddingProvider + Send + Sync>>,
         plugin_manager: Arc<doxus_core::plugin::PluginManager>,
         plugins_dir: PathBuf,
     ) -> Self {
         Self {
             conn,
+            db_path,
             embedder: Arc::new(Mutex::new(embedder)),
             plugin_manager,
             plugins_dir,
@@ -29,12 +32,14 @@ impl McpServer {
 
     pub fn new_with_file_scheme(
         conn: Arc<Mutex<Connection>>,
+        db_path: PathBuf,
         embedder: Option<Arc<dyn EmbeddingProvider + Send + Sync>>,
         plugin_manager: Arc<doxus_core::plugin::PluginManager>,
         plugins_dir: PathBuf,
     ) -> Self {
         Self {
             conn,
+            db_path,
             embedder: Arc::new(Mutex::new(embedder)),
             plugin_manager,
             plugins_dir,
@@ -45,6 +50,10 @@ impl McpServer {
     /// Provides access to the underlying SQLite connection.
     pub fn conn(&self) -> Arc<Mutex<Connection>> {
         Arc::clone(&self.conn)
+    }
+
+    pub fn db_path(&self) -> std::path::PathBuf {
+        self.db_path.clone()
     }
 
     /// Provides access to the embedding provider, if currently loaded.

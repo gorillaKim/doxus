@@ -31,7 +31,9 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "sidecar/**/*"
+      "sidecar/**/*",
+      "../../../crates/plugins/**/*.wasm",
+      "../../../crates/plugins/**/manifest.toml"
     ],
     "externalBin": [
       "binaries/doxus-mcp"
