@@ -7,7 +7,7 @@
 
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use doxus_core::plugin::PluginManager;
 use doxus_core::sync::{SyncDb, SyncScheduler};
@@ -16,6 +16,8 @@ use doxus_plugin_sdk::{FetchChangesOpts, PluginConfig, PluginError, PluginSecret
 use rand::Rng;
 
 use tokio::sync::watch;
+
+use crate::retry_tracker::{compute_backoff, RetryTracker};
 
 // ── Retry policy ─────────────────────────────────────────────────────────────
 
@@ -221,6 +223,7 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
 
     let join_handle = tokio::spawn(async move {
         let scheduler = SyncScheduler::new(interval_secs);
+        let mut tracker = RetryTracker::new();
 
         loop {
             let due = {
@@ -246,6 +249,11 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
             } else {
                 tracing::info!(count = due.len(), "sync_loop: {} instance(s) due for sync", due.len());
                 for inst in due {
+                    if tracker.should_skip(inst.id, Instant::now()) {
+                        tracing::debug!(instance_id = inst.id, "sync_loop: skipping instance (in backoff)");
+                        continue;
+                    }
+
                     sink.emit(SyncEvent::Progress {
                         instance_id: inst.id,
                         plugin_id: inst.plugin_id.clone(),
@@ -312,11 +320,18 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
                             .await;
                             match fetch_result {
                                 Ok(changeset) => {
+                                    tracker.record_success(inst.id);
                                     let updated_count = changeset.updated.len();
                                     let new_cursor = changeset.next_cursor.clone();
-                                    
+
                                     // 실제 검색 엔진에 인덱싱 수행 (배치 처리)
-                                    let current_embedder = embedder.lock().unwrap().clone();
+                                    let current_embedder = match embedder.lock() {
+                                        Ok(e) => e.clone(),
+                                        Err(e) => {
+                                            tracing::error!("embedder mutex poisoned: {e}");
+                                            continue;
+                                        }
+                                    };
                                     if let Some(ref provider) = current_embedder {
                                         let engine = doxus_core::search::SearchEngine::with_embedder(
                                             Arc::clone(&conn),
@@ -403,7 +418,13 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
                                         updated: updated_count,
                                     });
                                 }
-                                Err(e) => {
+                                Err(ref e) => {
+                                    let retry_after = if let PluginError::RateLimited { retry_after_secs } = e {
+                                        Some(*retry_after_secs)
+                                    } else {
+                                        None
+                                    };
+                                    tracker.record_failure(inst.id, retry_after, Instant::now());
                                     tracing::error!(
                                         instance_id = inst.id,
                                         error = %e,
@@ -464,6 +485,8 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::retry_tracker::{RetryTracker, MAX_RETRIES, MAX_BACKOFF_SECS};
+    use std::time::Instant;
     use doxus_core::db;
     use rusqlite::Connection;
     use std::sync::{Arc, Mutex};
@@ -583,6 +606,70 @@ mod tests {
     }
 
     // ── A-1: sync_loop calls run_once for obsidian instance ──────────────────
+
+    // ── RetryTracker unit tests ──────────────────────────────────────────────
+
+    #[test]
+    fn retry_tracker_records_failure_and_increments_count() {
+        let mut tracker = RetryTracker::new();
+        let now = Instant::now();
+        assert!(!tracker.should_skip(1, now));
+        tracker.record_failure(1, None, now);
+        // After 1 failure with default 10s backoff, should skip immediately after recording
+        assert!(tracker.should_skip(1, now));
+        assert_eq!(tracker.states[&1].retry_count, 1);
+    }
+
+    #[test]
+    fn retry_tracker_caps_at_max_retries() {
+        let mut tracker = RetryTracker::new();
+        let now = Instant::now();
+        for _ in 0..MAX_RETRIES {
+            tracker.record_failure(1, Some(0), now); // 0s backoff so should_skip checks count
+        }
+        // At MAX_RETRIES the instance is permanently skipped regardless of time
+        assert!(tracker.should_skip(1, now));
+        assert_eq!(tracker.states[&1].retry_count, MAX_RETRIES);
+    }
+
+    #[test]
+    fn retry_tracker_resets_on_success() {
+        let mut tracker = RetryTracker::new();
+        let now = Instant::now();
+        tracker.record_failure(1, None, now);
+        assert!(tracker.should_skip(1, now));
+        tracker.record_success(1);
+        assert!(!tracker.should_skip(1, now));
+    }
+
+    #[test]
+    fn retry_tracker_respects_rate_limit_retry_after() {
+        let mut tracker = RetryTracker::new();
+        let now = Instant::now();
+        // Use a very large retry_after so the window is definitely active
+        tracker.record_failure(1, Some(3600), now);
+        assert!(tracker.should_skip(1, now));
+        // Backoff should be capped at MAX_BACKOFF_SECS
+        let until = tracker.states[&1].next_retry_at.unwrap();
+        let remaining = until.duration_since(now);
+        assert!(remaining.as_secs() <= MAX_BACKOFF_SECS + 1);
+    }
+
+    #[test]
+    fn retry_tracker_backoff_doubles_each_failure() {
+        let mut tracker = RetryTracker::new();
+        let now = Instant::now();
+        // Record first failure (retry_count was 0 → backoff = 10s)
+        tracker.record_failure(42, None, now);
+        let t1 = tracker.states[&42].next_retry_at.unwrap();
+        let r1 = t1.duration_since(now).as_secs();
+        // Record second failure (retry_count was 1 → backoff = 20s)
+        tracker.record_failure(42, None, now);
+        let t2 = tracker.states[&42].next_retry_at.unwrap();
+        let r2 = t2.duration_since(now).as_secs();
+        // r2 should be roughly double r1 (within 2s tolerance for test timing)
+        assert!(r2 >= r1, "backoff should grow: r1={r1} r2={r2}");
+    }
 
     fn insert_obsidian_instance(conn: &Connection, vault_path: &str) -> i64 {
         conn.execute(

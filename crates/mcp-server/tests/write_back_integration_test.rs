@@ -3,7 +3,7 @@ use serde_json::json;
 use std::sync::{Arc, Mutex};
 use doxus_mcp::McpServer;
 use async_trait::async_trait;
-use doxus_plugin_sdk::{DocSource, PluginConfig, PluginSecrets, SourceDocId, RawDocument, ContentType, PluginMetadata, PluginKind, Capabilities, FetchAllOpts, DocumentStream, HealthStatus, PluginError};
+use doxus_plugin_sdk::{DocSource, PluginConfig, PluginSecrets, SourceDocId, RawDocument, ContentType, PluginMetadata, PluginKind, Capabilities, SyncPolicy, FetchAllOpts, DocumentStream, HealthStatus, PluginError};
 
 struct MockWriteSource {
     meta: PluginMetadata,
@@ -12,7 +12,7 @@ struct MockWriteSource {
 #[async_trait]
 impl DocSource for MockWriteSource {
     fn metadata(&self) -> &PluginMetadata { &self.meta }
-    fn capabilities(&self) -> Capabilities { Capabilities { incremental_sync: false, oauth: false, native_search: false } }
+    fn capabilities(&self) -> Capabilities { Capabilities { incremental_sync: false, oauth: false, native_search: false, sync_policy: SyncPolicy::Manual } }
     async fn validate_config(&self, _: &PluginConfig) -> Result<(), PluginError> { Ok(()) }
     async fn initialize(&mut self, _: PluginConfig, _: PluginSecrets) -> Result<(), PluginError> { Ok(()) }
     async fn fetch_all(&self, _: FetchAllOpts) -> Result<DocumentStream, PluginError> { 

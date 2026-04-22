@@ -3,6 +3,7 @@
 //! Exposes doxus_* tools for AI agent integration.
 
 pub mod sync_loop;
+pub mod retry_tracker;
 
 pub mod types;
 pub use types::{McpRequest, McpResponse, McpError};
