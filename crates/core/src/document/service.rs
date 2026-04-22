@@ -221,10 +221,33 @@ impl DocumentService {
                     Ok(Err(e)) => {
                         tracing::error!("[DS] Fetch FAILED: {}", e);
                         ds_log(&format!("[ERR] [DS] Fetch FAILED: {}", e));
+                        
+                        // Persist error to audit log
+                        if let Some(path) = &self.db_path {
+                            if let Ok(conn) = crate::db::open(path) {
+                                crate::observability::persist_audit(&conn, &crate::observability::AuditEvent::DocumentFetchError {
+                                    project: project_name.to_string(),
+                                    doc_id: source_doc_id.to_string(),
+                                    message: e.to_string(),
+                                });
+                            }
+                        }
+
                         return Err(ServiceError::Plugin(format!("Failed to fetch document: {}", e)));
                     }
                     Err(_) => {
                         ds_log("[ERR] [DS] Fetch TIMEOUT (30s)"); tracing::error!("[DS] Fetch TIMEOUT (30s)");
+                        
+                        if let Some(path) = &self.db_path {
+                            if let Ok(conn) = crate::db::open(path) {
+                                crate::observability::persist_audit(&conn, &crate::observability::AuditEvent::DocumentFetchError {
+                                    project: project_name.to_string(),
+                                    doc_id: source_doc_id.to_string(),
+                                    message: "Timeout (30s)".to_string(),
+                                });
+                            }
+                        }
+                        
                         return Err(ServiceError::Plugin("Plugin fetch timed out after 30s".to_string()));
                     }
                 }
@@ -237,17 +260,31 @@ impl DocumentService {
     /// Force refresh the cache and return new content
     pub async fn refresh_content(&self, project_name: &str, source_doc_id: &str) -> Result<doxus_plugin_sdk::RawDocument, ServiceError> {
         let (_source_type, _plugin_id) = {
-            let conn = self.conn.lock().map_err(|_| ServiceError::Sqlite(rusqlite::Error::QueryReturnedNoRows))?;
-            let stype: String = conn.query_row(
-                "SELECT source_type FROM projects WHERE name = ?1",
-                params![project_name],
-                |row| row.get(0),
-            ).map_err(|_| ServiceError::NotFound(format!("Project '{}' not found", project_name)))?;
-            let pid = PluginManager::normalize_id(&stype);
-            
-            let cache = ContentCache::new(&conn);
-            cache.invalidate(&pid, source_doc_id)?;
-            (stype, pid)
+            if let Some(path) = &self.db_path {
+                let conn = crate::db::open(path).map_err(ServiceError::Db)?;
+                let stype: String = conn.query_row(
+                    "SELECT source_type FROM projects WHERE name = ?1",
+                    params![project_name],
+                    |row| row.get(0),
+                ).map_err(|_| ServiceError::NotFound(format!("Project '{}' not found", project_name)))?;
+                let pid = PluginManager::normalize_id(&stype);
+                
+                let cache = ContentCache::new(&conn);
+                cache.invalidate(&pid, source_doc_id)?;
+                (stype, pid)
+            } else {
+                let conn = self.conn.lock().map_err(|_| ServiceError::Sqlite(rusqlite::Error::QueryReturnedNoRows))?;
+                let stype: String = conn.query_row(
+                    "SELECT source_type FROM projects WHERE name = ?1",
+                    params![project_name],
+                    |row| row.get(0),
+                ).map_err(|_| ServiceError::NotFound(format!("Project '{}' not found", project_name)))?;
+                let pid = PluginManager::normalize_id(&stype);
+                
+                let cache = ContentCache::new(&conn);
+                cache.invalidate(&pid, source_doc_id)?;
+                (stype, pid)
+            }
         };
         
         self.fetch_full_content(project_name, source_doc_id).await

@@ -381,9 +381,21 @@ pub async fn upsert_claude_mcp_config(target: String) -> Result<(), String> {
         }
 
         if let Some(mcp_servers) = config.get_mut("mcpServers").and_then(|m| m.as_object_mut()) {
+            let bridge_token = std::fs::read_to_string(std::path::PathBuf::from(&home).join(".doxus/.bridge_token"))
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            let db_path = std::env::var("DOXUS_DB_PATH").unwrap_or_else(|_| {
+                format!("{}/.doxus/db/doxus.db", home)
+            });
+
             mcp_servers.insert("doxus".to_string(), serde_json::json!({
                 "command": mcp_path.clone(),
                 "args": [],
+                "env": {
+                    "DOXUS_BRIDGE_TOKEN": bridge_token,
+                    "DOXUS_DB_PATH": db_path
+                },
                 "type": "stdio"
             }));
         }

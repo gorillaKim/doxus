@@ -223,7 +223,7 @@ pub async fn get_toc(server: &McpServer, id: Value, args: &Value) -> McpResponse
     };
 
     let pm = server.plugin_manager();
-    let service = doxus_core::document::DocumentService::new(server.conn(), Some(pm.clone()));
+    let service = doxus_core::document::DocumentService::new_with_path(server.db_path(), Some(pm.clone()));
 
     match service.fetch_full_content(project, &source_doc_id).await {
         Err(e) => McpResponse::err(id, -32602, e.to_string()),
@@ -254,7 +254,7 @@ pub async fn get_section(server: &McpServer, id: Value, args: &Value) -> McpResp
     };
 
     let pm = server.plugin_manager();
-    let service = doxus_core::document::DocumentService::new(server.conn(), Some(pm.clone()));
+    let service = doxus_core::document::DocumentService::new_with_path(server.db_path(), Some(pm.clone()));
 
     match service.fetch_full_content(project, &source_doc_id).await {
         Err(e) => McpResponse::err(id, -32602, e.to_string()),

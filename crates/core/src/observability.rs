@@ -50,6 +50,8 @@ pub enum AuditEvent {
     PluginError { plugin_id: String, message: String },
     SyncStart { source_instance_id: i64 },
     SyncComplete { source_instance_id: i64, docs_synced: usize },
+    DocumentFetchError { project: String, doc_id: String, message: String },
+    SystemError { module: String, message: String },
 }
 
 impl AuditEvent {
@@ -61,6 +63,8 @@ impl AuditEvent {
             AuditEvent::PluginError { .. } => "plugin_error",
             AuditEvent::SyncStart { .. } => "sync_start",
             AuditEvent::SyncComplete { .. } => "sync_complete",
+            AuditEvent::DocumentFetchError { .. } => "document_fetch_error",
+            AuditEvent::SystemError { .. } => "system_error",
         }
     }
 
@@ -72,6 +76,8 @@ impl AuditEvent {
             AuditEvent::PluginError { .. } => None,
             AuditEvent::SyncStart { .. } => None,
             AuditEvent::SyncComplete { .. } => None,
+            AuditEvent::DocumentFetchError { .. } => None, // Could resolve project name to ID if needed
+            AuditEvent::SystemError { .. } => None,
         }
     }
 }
