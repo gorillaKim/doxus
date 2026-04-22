@@ -56,7 +56,12 @@ mod native_compat {
 
     pub mod http {
         use once_cell::sync::Lazy;
-        static CLIENT: Lazy<reqwest::blocking::Client> = Lazy::new(reqwest::blocking::Client::new);
+        static CLIENT: Lazy<reqwest::blocking::Client> = Lazy::new(|| {
+            reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .expect("Failed to create HTTP client")
+        });
 
         pub fn request(req: &super::HttpRequest, body: Option<Vec<u8>>) -> super::FnResult<super::HttpResponse> {
             let method = match req.method.as_deref().unwrap_or("GET") {
@@ -784,10 +789,10 @@ pub(crate) fn delete_document_impl(opts: DeleteDocumentOptsWasm) -> FnResult<()>
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn get_base_url(state: &PluginState) -> FnResult<String> {
-    let raw = state.get_config("base_url").ok_or(Error::msg("base_url missing in plugin configuration"))?;
+    let raw = state.get_config("base_url").ok_or_else(|| Error::msg("base_url missing in plugin configuration"))?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err(Error::msg("base_url is empty. Please check your project configuration."));
+        return Err(Error::msg("base_url is empty. Please check your project configuration.").into());
     }
     
     let mut url = trimmed.trim_end_matches('/').to_string();
@@ -825,7 +830,6 @@ fn request_with_auth(state: &PluginState, method: &str, url: &str, body: Option<
         req.headers.insert("Content-Type".to_string(), "application/json".to_string());
     }
     
-    log_d!("confluence", "[Confluence-Debug] Sending {} request to: {}", method, url);
     let resp = http::request(&req, body).map_err(|e| {
         log_d!("confluence", "[Confluence-Debug] HTTP REQUEST FAILED: {} -> {}", url, e);
         e

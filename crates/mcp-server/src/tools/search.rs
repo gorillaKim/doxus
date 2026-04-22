@@ -127,16 +127,18 @@ pub async fn get_document(server: &McpServer, id: Value, args: &Value) -> McpRes
         Some(p) => p,
         None => return McpResponse::err(id, -32602, "missing required arg: project"),
     };
-    let conn = server.conn();
-    let conn_lock = match conn.lock() {
-        Ok(l) => l,
-        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
-    };
+    let (_db_id, source_doc_id) = {
+        let conn = server.conn();
+        let conn_lock = match conn.lock() {
+            Ok(l) => l,
+            Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+        };
 
-    let (_db_id, source_doc_id) = match resolve_doc_id(&conn_lock, project, &args["id"]) {
-        Ok(res) => res,
-        Err(e) => return McpResponse::err(id, -32602, e),
-    };
+        match resolve_doc_id(&conn_lock, project, &args["id"]) {
+            Ok(res) => res,
+            Err(e) => return McpResponse::err(id, -32602, e),
+        }
+    }; // <- 락이 여기서 자동으로 해제(Drop)됩니다.
 
     let pm = server.plugin_manager();
     let service = doxus_core::document::DocumentService::new(server.conn(), Some(pm.clone()));

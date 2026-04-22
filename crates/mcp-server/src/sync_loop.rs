@@ -17,7 +17,7 @@ use rand::Rng;
 
 use tokio::sync::watch;
 
-use crate::retry_tracker::{compute_backoff, RetryTracker};
+use crate::retry_tracker::RetryTracker;
 
 // ── Retry policy ─────────────────────────────────────────────────────────────
 

@@ -43,9 +43,7 @@ export class ClaudeAdapter {
       pathToClaudeCodeExecutable: cliPath,
       settings: {
         enabledPlugins: { "serena@claude-plugins-official": false },
-        mcpServers: {
-          doxus: { command: process.env.DOXUS_MCP_PATH || "doxus-mcp", args: [], type: "stdio" }
-        }
+        mcpServers: mcpServers || {}
       },
       // Serena 등 허가되지 않은 도구 차단
       canUseTool: async (toolName, _input, opts) => {

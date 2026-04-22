@@ -527,45 +527,29 @@ pub async fn generate_project_claude_md(path: String) -> Result<(), String> {
 // ── 헬퍼 ─────────────────────────────────────────────────────────────────────
 
 fn find_doxus_mcp() -> Option<std::path::PathBuf> {
-    // 0. macOS standard installation path
-    #[cfg(target_os = "macos")]
-    {
-        let installed = std::path::PathBuf::from("/Applications/doxus.app/Contents/MacOS/doxus-mcp");
-        if installed.exists() { return Some(installed); }
-    }
-
-    // 1. Next to the executable (inside release bundle)
+    // 1. Next to the executable (Highest priority - covers both dev and bundled cases)
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let candidate = dir.join("doxus-mcp");
-            if candidate.exists() { return Some(candidate); }
+            if candidate.exists() { 
+                return Some(candidate); 
+            }
         }
     }
 
-    // 2. PATH 탐색
-    if let Some(found) = std::env::var_os("PATH").and_then(|path_var| {
-        std::env::split_paths(&path_var).find_map(|dir| {
-            let candidate = dir.join("doxus-mcp");
-            if candidate.exists() { Some(candidate) } else { None }
-        })
-    }) {
-        return Some(found);
-    }
-
-    // 3. dev 모드 폴백: current_exe에서 workspace root(target 부모) 탐색
+    // 2. Search up from current executable for workspace root (dev mode coverage)
     if let Ok(exe) = std::env::current_exe() {
         let mut dir = exe.as_path();
         while let Some(parent) = dir.parent() {
-            // target/ 디렉토리를 찾으면 그 부모가 workspace root
+            // Check if we are at workspace root (parent of target/)
             if parent.file_name().map(|n| n == "target").unwrap_or(false) {
-                // workspace_root/target/debug 또는 release
+                // Return corresponding build artifact if found
                 let debug = parent.join("debug").join("doxus-mcp");
                 if debug.exists() { return Some(debug); }
                 let release = parent.join("release").join("doxus-mcp");
                 if release.exists() { return Some(release); }
                 break;
             }
-            // target/debug/build/... 구조 처리
             if dir.file_name().map(|n| n == "target").unwrap_or(false) {
                 let debug = dir.join("debug").join("doxus-mcp");
                 if debug.exists() { return Some(debug); }
@@ -575,6 +559,23 @@ fn find_doxus_mcp() -> Option<std::path::PathBuf> {
             }
             dir = parent;
         }
+    }
+
+    // 3. System PATH search
+    if let Some(found) = std::env::var_os("PATH").and_then(|path_var| {
+        std::env::split_paths(&path_var).find_map(|dir| {
+            let candidate = dir.join("doxus-mcp");
+            if candidate.exists() { Some(candidate) } else { None }
+        })
+    }) {
+        return Some(found);
+    }
+
+    // 4. macOS standard installation path (Last resort fallback)
+    #[cfg(target_os = "macos")]
+    {
+        let installed = std::path::PathBuf::from("/Applications/doxus.app/Contents/MacOS/doxus-mcp");
+        if installed.exists() { return Some(installed); }
     }
 
     None
