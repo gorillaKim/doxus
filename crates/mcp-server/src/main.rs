@@ -45,11 +45,11 @@ async fn main() -> Result<()> {
     let sync_conn = doxus_core::db::open(&db_path)?;
     let sync_conn = Arc::new(Mutex::new(sync_conn));
 
-    // Default sync interval: 3600 s (1 hour).  Override via DOXUS_SYNC_INTERVAL_SECS.
+    // Default sync interval: 10800 s (3 hours).  Override via DOXUS_SYNC_INTERVAL_SECS.
     let interval_secs: u64 = std::env::var("DOXUS_SYNC_INTERVAL_SECS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(3600);
+        .unwrap_or(10800);
 
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     let plugins_dir = std::path::PathBuf::from(&home).join(".doxus/plugins");

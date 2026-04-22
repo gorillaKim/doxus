@@ -307,10 +307,11 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
                                 max_delay: Duration::from_secs(30),
                             };
                             let cursor = inst.sync_cursor.clone();
+                            let since = inst.last_synced.unwrap_or(0);
                             let fetch_result = retry_with_backoff(&retry_policy, || {
                                 let cursor = cursor.clone();
                                 let opts = FetchChangesOpts {
-                                    since: 0,
+                                    since,
                                     cursor,
                                     page_size: 100,
                                     known_ids: vec![],
