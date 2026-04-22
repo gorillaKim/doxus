@@ -106,23 +106,41 @@ impl DocumentService {
 
         // 3. Try Local File Strategy
         if let Some(path_str) = file_path {
+            let log_id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_micros() % 1000000;
+            ds_log(&format!("[DS][{}] Candidate: {}", log_id, path_str));
             let path = Path::new(&path_str);
-            if path.exists() && path.is_file() {
-                let content = std::fs::read_to_string(path)?;
-                return Ok(doxus_plugin_sdk::RawDocument {
-                    id: doxus_plugin_sdk::SourceDocId(source_doc_id.to_string()),
-                    title: None,
-                    content,
-                    content_type: doxus_plugin_sdk::ContentType::Markdown,
-                    url: None,
-                    metadata: std::collections::HashMap::new(),
-                    tags: vec![],
-                    aliases: vec![],
-                    links: vec![],
-                    created_at: None,
-                    updated_at: None,
-                    relative_path: Some(path_str),
-                });
+            
+            ds_log(&format!("[DS][{}] Calling exists()...", log_id));
+            let exists = path.exists();
+            ds_log(&format!("[DS][{}] exists() -> {}", log_id, exists));
+            
+            if exists {
+                ds_log(&format!("[DS][{}] Calling is_file()...", log_id));
+                let is_f = path.is_file();
+                ds_log(&format!("[DS][{}] is_file() -> {}", log_id, is_f));
+                
+                if is_f {
+                    ds_log(&format!("[DS][{}] Reading file...", log_id));
+                    if let Ok(content) = std::fs::read_to_string(path) {
+                        ds_log(&format!("[DS][{}] Read SUCCESS (len: {})", log_id, content.len()));
+                        return Ok(doxus_plugin_sdk::RawDocument {
+                            id: doxus_plugin_sdk::SourceDocId(source_doc_id.to_string()),
+                            title: None,
+                            content,
+                            content_type: doxus_plugin_sdk::ContentType::Markdown,
+                            url: None,
+                            metadata: std::collections::HashMap::new(),
+                            tags: vec![],
+                            aliases: vec![],
+                            links: vec![],
+                            created_at: None,
+                            updated_at: None,
+                            relative_path: Some(path_str),
+                        });
+                    }
+                }
+            } else {
+                ds_log(&format!("[DS][{}] Not found.", log_id));
             }
         }
 
