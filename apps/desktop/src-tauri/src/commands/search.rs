@@ -1,15 +1,89 @@
 use doxus_core::search::{SearchEngine, SearchQuery};
 use doxus_core::indexing::IndexingService;
+use rusqlite::OptionalExtension;
 use std::sync::Arc;
 
 #[cfg(test)]
-/// Index all active projects using their registered plugin. Returns count of indexed documents.
-/// Index all active projects using their registered plugin. Returns count of indexed documents.
-pub(crate) fn run_reindex(conn: &rusqlite::Connection, _plugin_manager: &doxus_core::plugin::PluginManager) -> Result<usize, String> {
-    // Note: This sync version is mostly for tests.
-    // For now, we'll return 0 to satisfy the compiler while we focus on the main UI fix.
-    // Tests should be updated to use the new IndexingService with a proper runtime.
-    Ok(0)
+pub(crate) fn run_reindex(conn: &rusqlite::Connection, plugin_manager: &doxus_core::plugin::PluginManager) -> Result<usize, String> {
+    use sha2::{Digest, Sha256};
+    use doxus_plugin_sdk::FetchAllOpts;
+
+    let projects: Vec<(i64, String, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, name, COALESCE(source_type, 'obsidian') FROM projects WHERE status = 'active'"
+        ).map_err(|e| e.to_string())?;
+        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+        let mut acc = Vec::new();
+        while let Ok(Some(row)) = rows.next() {
+            if let (Ok(id), Ok(name), Ok(st)) = (row.get::<_, i64>(0), row.get::<_, String>(1), row.get::<_, String>(2)) {
+                acc.push((id, name, st));
+            }
+        }
+        acc
+    };
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut total = 0usize;
+    for (project_id, project_name, source_type) in projects {
+        let plugin_id = doxus_core::plugin::PluginManager::normalize_id(&source_type);
+        let mut source = match plugin_manager.get_source(&plugin_id) {
+            Some(s) => s,
+            None => continue,
+        };
+
+        let path: String = conn.query_row(
+            "SELECT path FROM projects WHERE id = ?1",
+            rusqlite::params![project_id],
+            |r| r.get(0),
+        ).map_err(|e| e.to_string())?;
+
+        let config = doxus_plugin_sdk::PluginConfig {
+            fields: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("path".to_string(), serde_json::Value::String(path));
+                m
+            },
+        };
+        if let Err(e) = rt.block_on(source.initialize(config, doxus_plugin_sdk::PluginSecrets::default())) {
+            eprintln!("plugin init error for {}: {}", project_name, e);
+            continue;
+        }
+
+        let opts = FetchAllOpts { cursor: None, page_size: 100 };
+        let stream = match rt.block_on(source.fetch_all(opts)) {
+            Ok(s) => s,
+            Err(e) => { eprintln!("fetch_all error: {}", e); continue; }
+        };
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+
+        for doc in stream.documents {
+            let hash = format!("{:x}", Sha256::digest(doc.content.as_bytes()));
+            conn.execute(
+                "INSERT INTO documents (project_id, source_doc_id, title, content_hash, last_indexed)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(project_id, source_doc_id) DO UPDATE SET title=excluded.title, content_hash=excluded.content_hash, last_indexed=excluded.last_indexed",
+                rusqlite::params![project_id, &doc.id.0, doc.title, hash, now],
+            ).map_err(|e| e.to_string())?;
+            let doc_id: i64 = conn.query_row(
+                "SELECT id FROM documents WHERE project_id = ?1 AND source_doc_id = ?2",
+                rusqlite::params![project_id, &doc.id.0],
+                |r| r.get(0),
+            ).map_err(|e| e.to_string())?;
+            conn.execute(
+                "INSERT INTO chunks (document_id, content, chunk_index) VALUES (?1, ?2, 0)
+                 ON CONFLICT(document_id, chunk_index) DO UPDATE SET content=excluded.content",
+                rusqlite::params![doc_id, doc.content],
+            ).map_err(|e| e.to_string())?;
+            total += 1;
+        }
+    }
+    Ok(total)
 }
 
 #[derive(serde::Serialize)]
@@ -75,9 +149,90 @@ pub async fn get_top_documents(
 }
 
 #[cfg(test)]
+pub(crate) fn get_document_content_impl(
+    conn: &rusqlite::Connection,
+    file_path: &str,
+) -> Result<serde_json::Value, String> {
+    let (doc_id, title): (i64, String) = conn.query_row(
+        "SELECT id, COALESCE(title, '') FROM documents WHERE source_doc_id = ?1 LIMIT 1",
+        rusqlite::params![file_path],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .map_err(|_| "문서를 찾을 수 없음".to_string())?;
+
+    let mut stmt = conn
+        .prepare("SELECT content FROM chunks WHERE document_id = ?1 ORDER BY chunk_index")
+        .map_err(|e| e.to_string())?;
+    let parts: Vec<String> = stmt
+        .query_map(rusqlite::params![doc_id], |r| r.get(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    let content = parts.join("\n");
+
+    Ok(serde_json::json!({
+        "title": title,
+        "content": content,
+        "file_path": file_path,
+    }))
+}
+
+pub fn reindex_if_stale(
+    conn: &rusqlite::Connection,
+    project_name: &str,
+    source_doc_id: &str,
+    title: &str,
+    content: &str,
+) -> Result<bool, String> {
+    use sha2::{Digest, Sha256};
+    let new_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
+
+    let row: Option<(i64, String)> = conn
+        .query_row(
+            "SELECT d.id, d.content_hash FROM documents d
+             JOIN projects p ON d.project_id = p.id
+             WHERE p.name = ?1 AND d.source_doc_id = ?2 LIMIT 1",
+            rusqlite::params![project_name, source_doc_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+
+    let (doc_id, stored_hash) = match row {
+        None => return Ok(false),
+        Some(v) => v,
+    };
+
+    if stored_hash == new_hash {
+        return Ok(false);
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_secs() as i64;
+    conn.execute(
+        "UPDATE documents SET title = ?1, content_hash = ?2, last_indexed = ?3 WHERE id = ?4",
+        rusqlite::params![title, new_hash, now, doc_id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "INSERT INTO chunks (document_id, content, chunk_index) VALUES (?1, ?2, 0)
+         ON CONFLICT(document_id, chunk_index) DO UPDATE SET content = excluded.content",
+        rusqlite::params![doc_id, content],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(true)
+}
+
+#[cfg(test)]
 mod tests {
     fn make_conn() -> rusqlite::Connection {
+        doxus_core::db::ensure_vec_extension();
         let conn = rusqlite::Connection::open_in_memory().unwrap();
+        doxus_core::db::create_vec0_table(&conn).unwrap();
         doxus_core::db::migrate(&conn).unwrap();
         conn
     }
@@ -184,7 +339,7 @@ mod tests {
         ).unwrap();
         let project_id: i64 = conn.query_row("SELECT last_insert_rowid()", [], |r| r.get(0)).unwrap();
         conn.execute(
-            "INSERT INTO documents (project_id, source_doc_id, title, content, content_hash, last_indexed) VALUES (?1,'d1','T','C','h',?2)",
+            "INSERT INTO documents (project_id, source_doc_id, title, content_hash, last_indexed) VALUES (?1,'d1','T','h',?2)",
             rusqlite::params![project_id, now],
         ).unwrap();
         let doc_id: i64 = conn.query_row("SELECT last_insert_rowid()", [], |r| r.get(0)).unwrap();
@@ -219,7 +374,7 @@ mod tests {
 
         for (i, title) in ["Doc A", "Doc B", "Doc C"].iter().enumerate() {
             conn.execute(
-                "INSERT INTO documents (project_id, source_doc_id, title, content, content_hash, last_indexed) VALUES (?1,?2,?3,'C','h',?4)",
+                "INSERT INTO documents (project_id, source_doc_id, title, content_hash, last_indexed) VALUES (?1,?2,?3,'h',?4)",
                 rusqlite::params![pid, format!("d{}", i), title, now],
             ).unwrap();
             let did: i64 = conn.query_row("SELECT last_insert_rowid()", [], |r| r.get(0)).unwrap();
@@ -247,8 +402,13 @@ mod tests {
         ).unwrap();
         let pid: i64 = conn.query_row("SELECT last_insert_rowid()", [], |r| r.get(0)).unwrap();
         conn.execute(
-            "INSERT INTO documents (project_id, source_doc_id, title, content, content_hash, last_indexed) VALUES (?1, '/path/to/note.md', 'My Note', '# Hello', 'h', ?2)",
+            "INSERT INTO documents (project_id, source_doc_id, title, content_hash, last_indexed) VALUES (?1, '/path/to/note.md', 'My Note', 'h', ?2)",
             rusqlite::params![pid, now],
+        ).unwrap();
+        let did: i64 = conn.query_row("SELECT last_insert_rowid()", [], |r| r.get(0)).unwrap();
+        conn.execute(
+            "INSERT INTO chunks (document_id, content, chunk_index) VALUES (?1, '# Hello', 0)",
+            rusqlite::params![did],
         ).unwrap();
 
         let result = super::get_document_content_impl(&conn, "/path/to/note.md").unwrap();
@@ -412,7 +572,8 @@ pub async fn search_documents(
 
     let has_filter = source_types.is_some() || project_names.is_some();
 
-    let engine = SearchEngine::with_embedder(state.conn.clone(), state.embedder.clone());
+    let embedder = state.embedder.read().await.clone();
+    let engine = SearchEngine::with_embedder(state.conn.clone(), embedder);
     let mut q = SearchQuery::new(&query).with_limit(limit.unwrap_or(20));
     if has_filter {
         q = q.with_projects(filter_ids);
@@ -591,9 +752,10 @@ pub async fn index_project(
     state: tauri::State<'_, Arc<crate::AppState>>,
     name: String,
 ) -> Result<serde_json::Value, String> {
+    let embedder = state.embedder.read().await.clone();
     let engine = std::sync::Arc::new(SearchEngine::with_embedder(
         std::sync::Arc::clone(&state.conn),
-        std::sync::Arc::clone(&state.embedder),
+        embedder,
     ));
     let indexing_service = doxus_core::indexing::IndexingService::new(
         std::sync::Arc::clone(&state.conn),
@@ -620,9 +782,10 @@ pub async fn index_project(
 pub async fn trigger_reindex(
     state: tauri::State<'_, Arc<crate::AppState>>,
 ) -> Result<serde_json::Value, String> {
+    let embedder = state.embedder.read().await.clone();
     let engine = std::sync::Arc::new(SearchEngine::with_embedder(
         std::sync::Arc::clone(&state.conn),
-        std::sync::Arc::clone(&state.embedder),
+        embedder,
     ));
     let indexing_service = IndexingService::new(
         std::sync::Arc::clone(&state.conn),

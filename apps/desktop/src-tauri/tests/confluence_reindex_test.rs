@@ -8,7 +8,9 @@ use doxus_desktop_lib::commands::search::reindex_if_stale;
 use rusqlite::Connection;
 
 fn make_conn() -> Connection {
+    doxus_core::db::ensure_vec_extension();
     let conn = Connection::open_in_memory().unwrap();
+    doxus_core::db::create_vec0_table(&conn).unwrap();
     doxus_core::db::migrate(&conn).unwrap();
     conn
 }
@@ -29,9 +31,9 @@ fn insert_document(conn: &Connection, project_id: i64, source_doc_id: &str, titl
     let hash = format!("{:x}", Sha256::digest(content.as_bytes()));
     let now = 1_700_000_000i64;
     conn.execute(
-        "INSERT INTO documents (project_id, source_doc_id, title, content, content_hash, last_indexed)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        rusqlite::params![project_id, source_doc_id, title, content, hash, now],
+        "INSERT INTO documents (project_id, source_doc_id, title, content_hash, last_indexed)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![project_id, source_doc_id, title, hash, now],
     )
     .unwrap();
 }

@@ -10,7 +10,9 @@ use doxus_desktop_lib::commands::search::list_all_documents_impl;
 use rusqlite::Connection;
 
 fn make_conn() -> Connection {
+    doxus_core::db::ensure_vec_extension();
     let conn = Connection::open_in_memory().unwrap();
+    doxus_core::db::create_vec0_table(&conn).unwrap();
     doxus_core::db::migrate(&conn).unwrap();
     conn
 }
@@ -30,9 +32,9 @@ fn insert_project(conn: &Connection, name: &str, status: &str, source_type: Opti
 fn insert_document(conn: &Connection, project_id: i64, source_doc_id: &str, title: &str) {
     let now = 1_700_000_000i64;
     conn.execute(
-        "INSERT INTO documents (project_id, source_doc_id, title, content, content_hash, last_indexed)
-         VALUES (?1, ?2, ?3, ?4, 'hash', ?5)",
-        rusqlite::params![project_id, source_doc_id, title, "body", now],
+        "INSERT INTO documents (project_id, source_doc_id, title, content_hash, last_indexed)
+         VALUES (?1, ?2, ?3, 'hash', ?4)",
+        rusqlite::params![project_id, source_doc_id, title, now],
     )
     .unwrap();
 }
