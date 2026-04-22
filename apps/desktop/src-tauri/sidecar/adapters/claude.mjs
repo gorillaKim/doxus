@@ -34,16 +34,23 @@ export class ClaudeAdapter {
       }
     }
 
+    const mcpServersConfig = JSON.parse(JSON.stringify(mcpServers || {}));
+    if (mcpServersConfig.doxus && req.bridgeToken) {
+      if (!mcpServersConfig.doxus.env) mcpServersConfig.doxus.env = {};
+      mcpServersConfig.doxus.env.DOXUS_BRIDGE_TOKEN = req.bridgeToken;
+      log("Injected DOXUS_BRIDGE_TOKEN for doxus mcp");
+    }
+
     return {
       model,
       systemPrompt,
-      mcpServers: mcpServers || {},
+      mcpServers: mcpServersConfig,
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,
       pathToClaudeCodeExecutable: cliPath,
       settings: {
         enabledPlugins: { "serena@claude-plugins-official": false },
-        mcpServers: mcpServers || {}
+        mcpServers: mcpServersConfig
       },
       // Serena 등 허가되지 않은 도구 차단
       canUseTool: async (toolName, _input, opts) => {

@@ -100,6 +100,16 @@ pub fn open(path: &Path) -> Result<Connection, DbError> {
     Ok(conn)
 }
 
+/// Open a DB connection in Read-Only mode without running migrations.
+pub fn open_readonly(path: &Path) -> Result<Connection, DbError> {
+    ensure_vec_extension();
+    // SQLITE_OPEN_READONLY | SQLITE_OPEN_URI
+    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let conn = Connection::open_with_flags(path, flags).map_err(DbError::Sqlite)?;
+    apply_pragmas(&conn).map_err(DbError::Sqlite)?;
+    Ok(conn)
+}
+
 /// Migration SQL tuples: (name, sql).
 /// V4 (sqlite-vec) is skipped here — vec0 requires the extension loaded first.
 static MIGRATIONS: &[(&str, &str)] = &[

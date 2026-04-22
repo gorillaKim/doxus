@@ -152,6 +152,8 @@ pub async fn chat_start_session(
         .map(|p| serde_json::json!({ "doxus": { "type": "stdio", "command": p.to_string_lossy(), "args": [] } }))
         .unwrap_or(serde_json::json!({}));
 
+    let bridge_token = std::env::var("DOXUS_BRIDGE_TOKEN").unwrap_or_default();
+
     let start_req = serde_json::json!({
         "type": "start",
         "sessionId": session_id,
@@ -159,7 +161,8 @@ pub async fn chat_start_session(
         "cliPath": cli_path,
         "model": model,
         "systemPrompt": system_prompt,
-        "mcpServers": mcp_servers
+        "mcpServers": mcp_servers,
+        "bridgeToken": bridge_token
     });
 
     state.sidecar.send_request(&start_req)
