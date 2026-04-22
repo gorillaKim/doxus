@@ -31,8 +31,7 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "sidecar/**/*",
-      "../../../crates/core/models/**/*"
+      "sidecar/**/*"
     ],
     "externalBin": [
       "binaries/doxus-mcp"
