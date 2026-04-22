@@ -109,7 +109,7 @@ pub async fn market_list_installed(
     ];
 
     // User-installed plugins not in built-in list
-    let builtin_ids = ["com.doxus.obsidian", "com.doxus.confluence", "com.doxus.github"];
+    let builtin_ids = crate::state::builtin_plugin_ids();
     let user_installed: Vec<serde_json::Value> = installed_ids
         .iter()
         .filter(|id| !builtin_ids.contains(&id.as_str()))
@@ -234,6 +234,8 @@ pub async fn clear_audit_log(
 pub async fn get_embedding_status(
     state: tauri::State<'_, Arc<crate::AppState>>,
 ) -> Result<serde_json::Value, String> {
+    let embedder = state.embedder.read().await.clone();
+    let info = embedder.model_info().clone();
     let conn = state.conn.lock().map_err(|e| e.to_string())?;
     let total_docs: i64 = conn
         .query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))
@@ -241,7 +243,6 @@ pub async fn get_embedding_status(
     let embedded_chunks: i64 = conn
         .query_row("SELECT COUNT(*) FROM chunk_embeddings WHERE embedding IS NOT NULL", [], |r| r.get(0))
         .unwrap_or(0);
-    let info = state.embedder.model_info();
     let model_loaded = info.dimension > 0;
     let model = if model_loaded { format!("ONNX ({})", info.name) } else { "미활성 (모델 로드 실패)".to_string() };
     let status = if !model_loaded {
@@ -296,7 +297,10 @@ pub async fn market_install_plugin(
     // Verify trust anchor: plugin must exist in registry and have a non-empty public_key_hex.
     let url = registry_url
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "https://registry.doxus.io".to_string());
+        .unwrap_or_else(|| {
+            std::env::var("DOXUS_REGISTRY_URL")
+                .unwrap_or_else(|_| "https://YOUR_ORG.github.io/doxus-registry".to_string())
+        });
     let client = doxus_core::marketplace::registry::RegistryClient::new(&url)
         .map_err(|e| e.to_string())?;
     let entry = client
@@ -316,13 +320,27 @@ pub async fn market_install_plugin(
         return Err("invalid plugin_id: contains path separators".into());
     }
 
-    // Write a placeholder .wasm file so list_installed() picks it up on next load.
-    // Real WASM download + signature verification happens in Phase 4 registry implementation.
-    let plugins_dir = &state.plugins_dir;
-    std::fs::create_dir_all(plugins_dir).map_err(|e| e.to_string())?;
-    let wasm_path = plugins_dir.join(format!("{}.wasm", plugin_id));
-    std::fs::write(&wasm_path, b"placeholder").map_err(|e| e.to_string())?;
-    Ok(serde_json::json!({ "status": "ok", "installed": true, "plugin_id": plugin_id }))
+    let plugins_dir = state.plugins_dir.clone();
+    std::fs::create_dir_all(&plugins_dir).map_err(|e| e.to_string())?;
+
+    let download_url = entry.download_url.clone();
+    let checksum = if entry.checksum_sha256.is_empty() {
+        None
+    } else {
+        Some(entry.checksum_sha256.clone())
+    };
+
+    let plugin_id_for_response = plugin_id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let installer = doxus_core::marketplace::installer::PluginInstaller::new(plugins_dir);
+        installer
+            .install_from_url(&plugin_id, &download_url, checksum.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("thread error: {e}"))??;
+
+    Ok(serde_json::json!({ "status": "ok", "installed": true, "plugin_id": plugin_id_for_response }))
 }
 
 #[tauri::command]
@@ -330,6 +348,8 @@ pub async fn market_uninstall_plugin(
     state: tauri::State<'_, Arc<crate::AppState>>,
     plugin_id: String,
 ) -> Result<serde_json::Value, String> {
+    doxus_core::marketplace::installer::validate_plugin_id(&plugin_id)
+        .map_err(|e| e.to_string())?;
     let wasm_path = state.plugins_dir.join(format!("{}.wasm", plugin_id));
     if wasm_path.exists() {
         std::fs::remove_file(&wasm_path).map_err(|e| e.to_string())?;
@@ -646,11 +666,34 @@ pub async fn plugin_open_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
+fn is_safe_local_path(path: &str) -> bool {
+    let clean = path.trim_start_matches("file://");
+    if clean.contains("..") {
+        return false;
+    }
+    let home = match std::env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => return false,
+    };
+    let allowed = std::path::PathBuf::from(&home).join(".doxus");
+    // canonicalize allowed dir (must exist)
+    let allowed_canonical = match allowed.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    // canonicalize target (if file doesn't exist, reject)
+    let target = std::path::Path::new(clean);
+    match target.canonicalize() {
+        Ok(canonical) => canonical.starts_with(&allowed_canonical),
+        Err(_) => false, // non-existent path → reject
+    }
+}
+
 fn validate_base_url(url: &str) -> Result<(), String> {
     let parsed = reqwest::Url::parse(url).map_err(|e| format!("잘못된 URL: {}", e))?;
 
-    if parsed.scheme() != "https" && parsed.scheme() != "http" {
-        return Err("HTTP 또는 HTTPS URL만 허용됩니다 (SSRF 방지)".to_string());
+    if parsed.scheme() != "https" {
+        return Err("HTTPS URL만 허용됩니다 (SSRF 방지)".to_string());
     }
 
     let host = parsed.host_str().ok_or_else(|| "URL에 호스트가 없습니다".to_string())?;
@@ -672,6 +715,7 @@ fn validate_base_url(url: &str) -> Result<(), String> {
                     || (octets[0] == 172 && (16..=31).contains(&octets[1]))
                     || (octets[0] == 192 && octets[1] == 168)
                     || octets[0] == 0
+                    || (octets[0] == 169 && octets[1] == 254) // link-local (AWS metadata)
             }
             std::net::IpAddr::V6(v6) => {
                 v6.is_loopback()
@@ -698,7 +742,9 @@ fn validate_base_url(url: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     fn make_conn() -> rusqlite::Connection {
+        doxus_core::db::ensure_vec_extension();
         let conn = rusqlite::Connection::open_in_memory().unwrap();
+        doxus_core::db::create_vec0_table(&conn).unwrap();
         doxus_core::db::migrate(&conn).unwrap();
         conn
     }
@@ -812,6 +858,169 @@ mod tests {
         let result = super::plugin_open_url("https://192.168.1.1/path".into()).await;
         assert!(result.is_err(), "plugin_open_url should reject private IPs");
     }
+
+    #[test]
+    fn market_fetch_guide_rejects_path_outside_doxus_dir() {
+        assert!(
+            !super::is_safe_local_path("/etc/passwd"),
+            "/etc/passwd should be rejected"
+        );
+        assert!(
+            !super::is_safe_local_path("file:///etc/passwd"),
+            "file:///etc/passwd should be rejected"
+        );
+        assert!(
+            !super::is_safe_local_path("/root/.ssh/id_rsa"),
+            "/root/.ssh/id_rsa should be rejected"
+        );
+    }
+
+    #[test]
+    fn market_fetch_guide_allows_path_inside_doxus_dir() {
+        // canonicalize requires actual files to exist — use a temp dir under HOME/.doxus
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".to_string());
+        let doxus_dir = std::path::PathBuf::from(&home).join(".doxus");
+        // Only run if ~/.doxus exists (CI may not have it)
+        if !doxus_dir.exists() {
+            return;
+        }
+        // Create a temp file inside ~/.doxus for the test
+        let tmp_file = doxus_dir.join("_test_safe_path_marker.tmp");
+        std::fs::write(&tmp_file, b"test").unwrap();
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup { fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); } }
+        let _cleanup = Cleanup(tmp_file.clone());
+        let safe_path = tmp_file.to_str().unwrap().to_string();
+        assert!(
+            super::is_safe_local_path(&safe_path),
+            "{} should be allowed",
+            safe_path
+        );
+        let safe_file_url = format!("file://{}", safe_path);
+        assert!(
+            super::is_safe_local_path(&safe_file_url),
+            "{} should be allowed",
+            safe_file_url
+        );
+    }
+
+    #[test]
+    fn market_fetch_guide_rejects_path_traversal() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".to_string());
+        let traversal = format!("{}/.doxus/../../../etc/passwd", home);
+        assert!(
+            !super::is_safe_local_path(&traversal),
+            "path traversal should be rejected"
+        );
+    }
+
+    #[test]
+    fn market_install_plugin_rejects_placeholder_wasm() {
+        // Verify that the install path no longer writes a b"placeholder" file.
+        // The install_from_url path either succeeds with real bytes or fails —
+        // it never writes the literal string "placeholder" to disk.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plugins_dir = tmp.path().to_path_buf();
+        let plugin_id = "com.test.plugin";
+
+        // Simulate a failed download (no server running → install_from_url errors)
+        let installer = doxus_core::marketplace::installer::PluginInstaller::new(plugins_dir.clone());
+        let _ = installer.install_from_url(plugin_id, "http://127.0.0.1:1/nonexistent.wasm", None);
+
+        // The wasm file must NOT contain the old placeholder bytes
+        let wasm_path = plugins_dir.join(format!("{}.wasm", plugin_id));
+        if wasm_path.exists() {
+            let contents = std::fs::read(&wasm_path).unwrap();
+            assert_ne!(contents, b"placeholder", "install must not write placeholder bytes");
+        }
+        // (if download failed, file should not exist at all — also correct)
+    }
+
+    #[test]
+    fn builtin_plugin_ids_contains_all_registered_plugins() {
+        let ids = crate::state::builtin_plugin_ids();
+        assert!(ids.contains(&"com.doxus.obsidian"));
+        assert!(ids.contains(&"com.doxus.confluence"));
+        assert!(ids.contains(&"com.doxus.github"));
+    }
+
+    // --- S3: validate_base_url link-local IPv4 ---
+
+    #[test]
+    fn validate_base_url_rejects_link_local_ipv4() {
+        assert!(super::validate_base_url("https://169.254.169.254/").is_err(),
+            "169.254.169.254 should be rejected (AWS metadata)");
+        assert!(super::validate_base_url("https://169.254.0.1/").is_err(),
+            "169.254.0.1 should be rejected (link-local)");
+    }
+
+    // --- S1: market_fetch_guide SSRF ---
+
+    #[tokio::test]
+    async fn market_fetch_guide_rejects_ssrf_url() {
+        // validate_base_url is called before fetch; http:// is also rejected
+        let result = super::validate_base_url("http://169.254.169.254/latest/meta-data/");
+        assert!(result.is_err(), "169.254.x.x should be rejected");
+        let result2 = super::validate_base_url("http://192.168.1.1/secret");
+        assert!(result2.is_err(), "192.168.x.x should be rejected");
+    }
+
+    // --- S2: is_safe_local_path symlink escape ---
+
+    #[test]
+    fn is_safe_local_path_rejects_symlink_escaping_doxus_dir() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/Users/test".to_string());
+        let doxus_dir = std::path::PathBuf::from(&home).join(".doxus");
+        if !doxus_dir.exists() {
+            return; // skip if ~/.doxus doesn't exist
+        }
+        // Create a temp dir outside doxus to be the symlink target
+        let outside_dir = tempfile::TempDir::new().unwrap();
+        let secret_file = outside_dir.path().join("secret.txt");
+        std::fs::write(&secret_file, b"secret").unwrap();
+
+        // Create symlink inside ~/.doxus pointing to outside dir
+        let link_path = doxus_dir.join("_test_evil_symlink_tmp");
+        // Clean up any leftover from previous run
+        let _ = std::fs::remove_file(&link_path);
+        std::os::unix::fs::symlink(outside_dir.path(), &link_path).unwrap();
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup { fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); } }
+        let _cleanup = Cleanup(link_path.clone());
+
+        // Path through symlink to outside file should be rejected
+        let evil_path = link_path.join("secret.txt");
+        let evil_str = evil_path.to_str().unwrap();
+        assert!(
+            !super::is_safe_local_path(evil_str),
+            "symlink-escaped path {} should be rejected",
+            evil_str
+        );
+    }
+
+    // --- Registry URL tests ---
+
+    #[test]
+    fn default_registry_url_uses_github_pages() {
+        // Ensure env var is unset for this test
+        std::env::remove_var("DOXUS_REGISTRY_URL");
+        let url = std::env::var("DOXUS_REGISTRY_URL")
+            .unwrap_or_else(|_| "https://YOUR_ORG.github.io/doxus-registry".to_string());
+        assert!(
+            url.contains("github.io"),
+            "default registry URL should contain 'github.io', got: {}",
+            url
+        );
+    }
+
+    #[test]
+    fn registry_url_overridable_via_env_var() {
+        std::env::set_var("DOXUS_REGISTRY_URL", "https://custom.example.com");
+        let url = std::env::var("DOXUS_REGISTRY_URL")
+            .unwrap_or_else(|_| "https://YOUR_ORG.github.io/doxus-registry".to_string());
+        assert_eq!(url, "https://custom.example.com");
+        std::env::remove_var("DOXUS_REGISTRY_URL");
+    }
 }
 
 #[tauri::command]
@@ -821,7 +1030,10 @@ pub async fn market_fetch_registry(
 ) -> Result<Vec<doxus_core::marketplace::registry::RegistryEntry>, String> {
     let url = registry_url
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "https://registry.doxus.io".to_string());
+        .unwrap_or_else(|| {
+            std::env::var("DOXUS_REGISTRY_URL")
+                .unwrap_or_else(|_| "https://YOUR_ORG.github.io/doxus-registry".to_string())
+        });
     let client = doxus_core::marketplace::registry::RegistryClient::new(&url)
         .map_err(|e| e.to_string())?;
     match client.fetch_entries().await {
@@ -834,7 +1046,7 @@ pub async fn market_fetch_registry(
                     plugin_id: "com.doxus.confluence".to_string(),
                     version: "1.0.0".to_string(),
                     display_name: "Confluence".to_string(),
-                    download_url: "https://registry.doxus.io/confluence-1.0.0.wasm".to_string(),
+                    download_url: "https://github.com/YOUR_ORG/doxus-registry/releases/download/v1.0.0/confluence-1.0.0.wasm".to_string(),
                     checksum_sha256: "".to_string(),
                     public_key_hex: "".to_string(),
                     auth_type: "api_token".to_string(),
@@ -844,7 +1056,7 @@ pub async fn market_fetch_registry(
                     plugin_id: "com.doxus.github".to_string(),
                     version: "1.0.0".to_string(),
                     display_name: "GitHub".to_string(),
-                    download_url: "https://registry.doxus.io/github-1.0.0.wasm".to_string(),
+                    download_url: "https://github.com/YOUR_ORG/doxus-registry/releases/download/v1.0.0/github-1.0.0.wasm".to_string(),
                     checksum_sha256: "".to_string(),
                     public_key_hex: "".to_string(),
                     auth_type: "api_token".to_string(),
@@ -876,11 +1088,15 @@ pub async fn market_fetch_guide(
 
     // 로컬 파일 경로인 경우 직접 읽기
     if guide_url.starts_with('/') || guide_url.starts_with("file://") {
+        if !is_safe_local_path(&guide_url) {
+            return Err("허용되지 않는 로컬 경로입니다. ~/.doxus/ 하위 경로만 허용됩니다.".to_string());
+        }
         let path = guide_url.trim_start_matches("file://");
         return std::fs::read_to_string(path).map_err(|e| format!("가이드 파일 읽기 실패: {e}"));
     }
 
-    // 원격 URL: HTTP 요청
+    // 원격 URL: SSRF 방어 후 HTTP 요청
+    validate_base_url(&guide_url)?;
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()

@@ -178,6 +178,33 @@ impl WasmDocSourceAdapter {
         })
     }
 
+    /// Load a WASM plugin from a `.wasm` file path.
+    ///
+    /// Automatically loads the companion `.manifest.toml` if it exists alongside the
+    /// `.wasm` file.  If no companion manifest is found, a permissive default is used
+    /// with `abi_version` set to `SUPPORTED_ABI_VERSION` so that the ABI check passes.
+    pub fn from_file(path: &std::path::Path) -> Result<Self, WasmError> {
+        let bytes = std::fs::read(path).map_err(|e| WasmError::HostFn(e.to_string()))?;
+
+        // Try to load a companion `.manifest.toml` sitting next to the `.wasm` file.
+        let manifest_path = path.with_extension("manifest.toml");
+        let manifest = if manifest_path.exists() {
+            let toml_str = std::fs::read_to_string(&manifest_path)
+                .map_err(|e| WasmError::HostFn(format!("read manifest: {e}")))?;
+            toml::from_str::<PluginManifest>(&toml_str)
+                .map_err(|e| WasmError::HostFn(format!("parse manifest: {e}")))?
+        } else {
+            // No companion manifest — use a permissive default that passes ABI validation.
+            PluginManifest {
+                abi_version: SUPPORTED_ABI_VERSION,
+                ..PluginManifest::default()
+            }
+        };
+
+        Self::from_bytes(bytes, manifest, None, None)
+            .map_err(|e| WasmError::HostFn(e.to_string()))
+    }
+
     /// Get a value from the plugin KV store (namespace-isolated).
     /// Returns `None` if not found, or `Err` if namespace is not in manifest.
     pub fn kv_get(&self, namespace: &str, key: &str) -> Result<Option<Vec<u8>>, super::kv_store::KvError> {

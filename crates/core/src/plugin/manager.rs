@@ -122,53 +122,60 @@ impl PluginManager {
             return None;
         }
 
-        // 1. Try External WASM Plugin (Prioritized)
-        let wasm_path = self.plugins_dir.join(format!("{}.wasm", normalized_id));
-        let manifest_path = self.plugins_dir.join(format!("{}.manifest.toml", normalized_id));
-        
-
-        if wasm_path.exists() && manifest_path.exists() {
-            let manifest_str = match std::fs::read_to_string(&manifest_path) {
-                Ok(s) => s,
-                Err(_) => {
-                    return None;
-                }
-            };
-            
-            let manifest: PluginManifest = match toml::from_str(&manifest_str) {
-                Ok(m) => m,
-                Err(_) => {
-                    return None;
-                }
-            };
-
-            let bytes = match std::fs::read(&wasm_path) {
-                Ok(b) => b,
-                Err(_) => {
-                    return None;
-                }
-            };
-
-            let adapter = match WasmDocSourceAdapter::from_bytes(bytes, manifest, None, None) {
-                Ok(a) => a,
-                Err(_) => {
-                    return None;
-                }
-            };
-            
-            return Some(Box::new(adapter));
-        } else {
-        }
-
-        // 2. Fallback to Registered Factories (Built-in)
-        // Try original ID, normalized ID, and short name
-        for candidate in &[plugin_id, &normalized_id, "confluence", "obsidian"] {
+        // 1. Registered factories take priority (in-process, fast, trusted)
+        for candidate in &[plugin_id, normalized_id.as_str()] {
             if let Some(factory) = self.factories.get(*candidate) {
                 return Some(factory());
             }
         }
 
+        // 2. Fallback to WASM file on disk
+        if let Some(source) = self.load_wasm_plugin(&normalized_id) {
+            return Some(source);
+        }
+
         None
+    }
+
+    fn load_wasm_plugin(&self, plugin_id: &str) -> Option<Box<dyn DocSource + Send + Sync>> {
+        let wasm_path = self.plugins_dir.join(format!("{plugin_id}.wasm"));
+        let manifest_path = self.plugins_dir.join(format!("{plugin_id}.manifest.toml"));
+
+        if !wasm_path.exists() || !manifest_path.exists() {
+            return None;
+        }
+
+        let manifest_str = match std::fs::read_to_string(&manifest_path) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("failed to read manifest for plugin {plugin_id}: {e}");
+                return None;
+            }
+        };
+
+        let manifest: PluginManifest = match toml::from_str(&manifest_str) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("failed to parse manifest for plugin {plugin_id}: {e}");
+                return None;
+            }
+        };
+
+        let bytes = match std::fs::read(&wasm_path) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!("failed to read WASM for plugin {plugin_id}: {e}");
+                return None;
+            }
+        };
+
+        match WasmDocSourceAdapter::from_bytes(bytes, manifest, None, None) {
+            Ok(adapter) => Some(Box::new(adapter)),
+            Err(e) => {
+                tracing::warn!("failed to load WASM plugin {plugin_id}: {e}");
+                None
+            }
+        }
     }
 
     pub fn list_installed(&self) -> Result<Vec<String>, ManagerError> {
@@ -331,6 +338,78 @@ secrets = []
 "#
         );
         std::fs::write(dir.join(format!("{plugin_id}.manifest.toml")), content).unwrap();
+    }
+
+    #[test]
+    fn get_source_returns_none_for_missing_plugin() {
+        let tmp = TempDir::new().unwrap();
+        let pm = PluginManager::new(tmp.path().to_path_buf());
+        assert!(pm.get_source("com.nonexistent").is_none());
+    }
+
+    #[test]
+    fn get_source_prefers_factory_over_wasm_file() {
+        // Factory registered + .wasm + .manifest.toml both present → factory wins.
+        // We verify this by registering a factory for a plugin_id that also has a
+        // .wasm file present. The factory call increments a counter; if WASM were
+        // loaded instead the counter would stay 0.
+        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+
+        let tmp = TempDir::new().unwrap();
+        let mut pm = PluginManager::new(tmp.path().to_path_buf());
+        let plugin_id = "com.test.factorywasm";
+
+        // Write a manifest and dummy wasm file
+        write_manifest(tmp.path(), plugin_id, SUPPORTED_ABI_VERSION);
+        std::fs::write(tmp.path().join(format!("{plugin_id}.wasm")), b"fake").unwrap();
+
+        // Track factory invocations
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter2 = Arc::clone(&counter);
+
+        // We can't easily build a real DocSource without heavy deps, so we just
+        // verify that get_source returns Some when a factory is registered, and
+        // that registering with a different id does not match.
+        // The key assertion is that with factory registered, the result is Some.
+        // (Without factory, with b"fake" wasm, result would be None.)
+        pm.register_factory(plugin_id, move || {
+            counter2.fetch_add(1, Ordering::SeqCst);
+            // Return a real obsidian plugin since it's available as a workspace dep.
+            // Actually we can't import it here - use the wasm adapter path but
+            // we know from the test that if factory wins, counter > 0 is enough.
+            // Instead we'll panic to distinguish from the WASM path.
+            panic!("factory invoked")
+        });
+
+        // Without factory: b"fake" wasm with valid manifest → load fails → None
+        // With factory: panics (factory invoked). We just need to confirm factory
+        // is checked first. Use a separate pm without factory to confirm None baseline.
+        let pm_no_factory = PluginManager::new(tmp.path().to_path_buf());
+        assert!(
+            pm_no_factory.get_source(plugin_id).is_none(),
+            "without factory, placeholder wasm should return None"
+        );
+
+        // Now verify factory is called (will panic with our sentinel)
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            pm.get_source(plugin_id)
+        }));
+        assert!(result.is_err(), "factory should have been called (sentinel panic)");
+        assert_eq!(counter.load(Ordering::SeqCst), 1, "factory invoked exactly once");
+    }
+
+    #[test]
+    fn get_source_loads_placeholder_wasm_returns_none_gracefully() {
+        // b"placeholder" content → WASM load fails → None (no crash)
+        let tmp = TempDir::new().unwrap();
+        let pm = PluginManager::new(tmp.path().to_path_buf());
+        let plugin_id = "com.test.placeholder";
+
+        write_manifest(tmp.path(), plugin_id, SUPPORTED_ABI_VERSION);
+        std::fs::write(tmp.path().join(format!("{plugin_id}.wasm")), b"placeholder").unwrap();
+
+        // Should return None gracefully, not panic
+        assert!(pm.get_source(plugin_id).is_none());
     }
 
     #[test]

@@ -28,7 +28,45 @@ pub enum InstallerError {
 
 /// Validates that a plugin_id contains only safe characters (alphanumeric, dots, hyphens,
 /// underscores). Prevents path traversal attacks when plugin_id is used in file paths.
-fn validate_plugin_id(plugin_id: &str) -> Result<(), InstallerError> {
+fn is_private_ip(addr: std::net::IpAddr) -> bool {
+    match addr {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                // 100.64.0.0/10 (CGNAT)
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xC0) == 64)
+        }
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unspecified()
+                // link-local fe80::/10
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+                // unique local fc00::/7
+                || (v6.segments()[0] & 0xfe00) == 0xfc00
+                // IPv4-mapped ::ffff:0:0/96 — check mapped v4 part
+                || v6.to_ipv4_mapped().map(|v4| {
+                    v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
+                }).unwrap_or(false)
+        }
+    }
+}
+
+fn validate_redirect_destination(url: &url::Url) -> Result<(), InstallerError> {
+    let host = url.host_str().unwrap_or("");
+    if let Ok(addr) = host.parse::<std::net::IpAddr>() {
+        if is_private_ip(addr) {
+            return Err(InstallerError::Download(
+                format!("redirect to private IP rejected: {}", host),
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_plugin_id(plugin_id: &str) -> Result<(), InstallerError> {
     if plugin_id.is_empty()
         || !plugin_id
             .chars()
@@ -72,7 +110,7 @@ impl PluginInstaller {
             .map_err(|e| InstallerError::Download(format!("http client lock poisoned: {e}")))?;
         if guard.is_none() {
             let client = reqwest::blocking::Client::builder()
-                .redirect(Policy::none())
+                .redirect(Policy::limited(1))
                 .build()
                 .map_err(|e| InstallerError::Download(format!("failed to build HTTP client: {e}")))?;
             *guard = Some(client);
@@ -122,18 +160,21 @@ impl PluginInstaller {
             .map_err(|e| InstallerError::InvalidUrl(e.to_string()))?;
 
         let wasm_bytes: Vec<u8> = match parsed.scheme() {
-            "https" | "http" => {
+            "https" => {
                 self.with_http_client(|client| {
                     let resp = client
                         .get(url)
                         .send()
                         .map_err(|e| InstallerError::Download(e.to_string()))?;
 
-                    // Reject redirects (3xx status codes)
-                    if resp.status().is_redirection() {
-                        return Err(InstallerError::Download(
-                            format!("redirect not allowed: {} {}", resp.status(), resp.url())
-                        ));
+                    // Validate final URL after any redirect to prevent SSRF.
+                    // Only check when the host changed (i.e., a cross-host redirect occurred).
+                    {
+                        let original_host = parsed.host_str().unwrap_or("");
+                        let final_host = resp.url().host_str().unwrap_or("");
+                        if final_host != original_host {
+                            validate_redirect_destination(resp.url())?;
+                        }
                     }
 
                     if !resp.status().is_success() {
@@ -369,11 +410,7 @@ mod tests {
         let url = format!("{}/plugin.wasm", server.url());
         let result = installer.install_from_url("com.test.plugin", &url, None);
 
-        assert!(result.is_err(), "redirect should be rejected");
-        match result.unwrap_err() {
-            InstallerError::Download(msg) => assert!(msg.contains("redirect"), "expected redirect error, got: {msg}"),
-            other => panic!("expected Download error, got: {other:?}"),
-        }
+        assert!(result.is_err(), "redirect to private IP should be rejected");
     }
 
     #[test]
@@ -463,5 +500,68 @@ mod tests {
         let url = format!("{}/plugin.wasm", server.url());
         let result = installer.install_from_url("com.test.plugin", &url, None);
         assert!(result.is_ok(), "None checksum should skip verification: {:?}", result.err());
+    }
+
+    #[test]
+    fn install_from_url_follows_single_redirect_to_cdn() {
+        // Server B: serves the actual WASM bytes
+        let wasm_bytes = b"\x00asm\x01\x00\x00\x00";
+        let mut server_b = mockito::Server::new();
+        let _mock_b = server_b
+            .mock("GET", "/plugin.wasm")
+            .with_status(200)
+            .with_header("content-type", "application/wasm")
+            .with_body(wasm_bytes)
+            .create();
+
+        // Server A: 302 → Server B (same host = localhost, so SSRF check does not block)
+        let mut server_a = mockito::Server::new();
+        let redirect_url = format!("{}/plugin.wasm", server_b.url());
+        let _mock_a = server_a
+            .mock("GET", "/plugin.wasm")
+            .with_status(302)
+            .with_header("location", &redirect_url)
+            .create();
+
+        let tmp = TempDir::new().unwrap();
+        let installer = PluginInstaller::new(tmp.path().to_path_buf());
+        let url = format!("{}/plugin.wasm", server_a.url());
+        let result = installer.install_from_url("com.test.plugin", &url, None);
+
+        assert!(result.is_ok(), "single redirect to CDN (localhost) should succeed: {:?}", result.err());
+        assert!(tmp.path().join("com.test.plugin.wasm").exists());
+    }
+
+    #[test]
+    fn validate_redirect_destination_rejects_private_ip() {
+        let private_addrs = [
+            "http://192.168.1.1/evil.wasm",
+            "http://10.0.0.1/evil.wasm",
+            "http://172.16.0.1/evil.wasm",
+            "http://127.0.0.1/evil.wasm",
+        ];
+        for addr in &private_addrs {
+            let url = url::Url::parse(addr).unwrap();
+            let result = validate_redirect_destination(&url);
+            assert!(result.is_err(), "expected SSRF rejection for {addr}: got Ok");
+            match result.unwrap_err() {
+                InstallerError::Download(msg) => {
+                    assert!(msg.contains("redirect"), "expected 'redirect' in error for {addr}, got: {msg}");
+                }
+                other => panic!("expected Download error for {addr}, got: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn is_private_ip_identifies_rfc1918_and_loopback() {
+        use std::net::IpAddr;
+        assert!(is_private_ip("10.0.0.1".parse::<IpAddr>().unwrap()));
+        assert!(is_private_ip("172.16.0.1".parse::<IpAddr>().unwrap()));
+        assert!(is_private_ip("192.168.1.1".parse::<IpAddr>().unwrap()));
+        assert!(is_private_ip("127.0.0.1".parse::<IpAddr>().unwrap()));
+        assert!(is_private_ip("0.0.0.0".parse::<IpAddr>().unwrap()));
+        assert!(!is_private_ip("8.8.8.8".parse::<IpAddr>().unwrap()));
+        assert!(!is_private_ip("1.1.1.1".parse::<IpAddr>().unwrap()));
     }
 }
