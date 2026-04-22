@@ -6,6 +6,7 @@ pub mod secrets;
 pub mod db;
 pub mod document;
 pub mod embedding;
+pub mod model_downloader;
 pub mod marketplace;
 pub mod observability;
 pub mod plugin;

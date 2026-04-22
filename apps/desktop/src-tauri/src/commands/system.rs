@@ -1,6 +1,8 @@
 use serde::Serialize;
 use std::path::PathBuf;
+use std::sync::Arc;
 use sysinfo::{Pid, System, Disks};
+use tauri::Emitter;
 use walkdir::WalkDir;
 
 #[derive(Debug, Serialize)]
@@ -77,4 +79,80 @@ pub async fn get_resource_usage() -> Result<ResourceUsage, String> {
         total_disk,
         available_disk,
     })
+}
+
+// ── Model download commands ─────────────────────────────────────────────────
+
+fn default_model_dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    PathBuf::from(home).join(".doxus/models")
+}
+
+/// Check whether the ONNX model + tokenizer are already present on disk.
+///
+/// Returns `{ "exists": bool, "path": Option<String> }`.
+#[tauri::command]
+pub async fn check_model_status() -> Result<serde_json::Value, String> {
+    let path = doxus_core::embedding::resolve_model_path();
+    let exists = path.is_some();
+    Ok(serde_json::json!({
+        "exists": exists,
+        "path": path.map(|p| p.to_string_lossy().to_string()),
+    }))
+}
+
+/// Download the default ONNX model and tokenizer into `~/.doxus/models/`,
+/// emitting progress events and atomically swapping the running embedder on success.
+///
+/// Events:
+/// - `model:download-progress` — `{ file, percent, bytes_downloaded, total_bytes, status: "downloading" }`
+/// - `model:download-complete` — `{}` after the new embedder has been loaded
+///
+/// Errors are returned as `Err(String)`; partial files are removed by the
+/// downloader's cleanup contract.
+#[tauri::command]
+pub async fn download_onnx_model(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, Arc<crate::AppState>>,
+) -> Result<serde_json::Value, String> {
+    let target_dir = default_model_dir();
+    tokio::fs::create_dir_all(&target_dir)
+        .await
+        .map_err(|e| format!("failed to create model directory: {e}"))?;
+
+    let handle = app_handle.clone();
+    let result = doxus_core::model_downloader::download_model(&target_dir, move |p| {
+        let _ = handle.emit(
+            "model:download-progress",
+            serde_json::json!({
+                "file": p.file,
+                "percent": p.percent,
+                "bytes_downloaded": p.bytes_downloaded,
+                "total_bytes": p.total_bytes,
+                "status": "downloading",
+            }),
+        );
+    })
+    .await;
+
+    if let Err(e) = result {
+        return Err(format!("download failed: {e}"));
+    }
+
+    // Load the new embedder and swap it in-place.
+    let new_embedder = tokio::task::spawn_blocking(doxus_core::embedding::OnnxEmbedder::from_default_path)
+        .await
+        .map_err(|e| format!("embedder load task failed: {e}"))?
+        .map_err(|e| format!("failed to load ONNX model after download: {e}"))?;
+
+    {
+        let mut guard = state.embedder.write().await;
+        *guard = Arc::new(new_embedder);
+    }
+
+    app_handle
+        .emit("model:download-complete", serde_json::json!({}))
+        .map_err(|e| e.to_string())?;
+
+    Ok(serde_json::json!({ "status": "ok" }))
 }

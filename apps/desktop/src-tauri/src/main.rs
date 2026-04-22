@@ -225,6 +225,8 @@ fn main() {
             doxus_desktop_lib::commands::agent::generate_global_claude_md,
             doxus_desktop_lib::commands::settings::load_settings,
             doxus_desktop_lib::commands::system::get_resource_usage,
+            doxus_desktop_lib::commands::system::check_model_status,
+            doxus_desktop_lib::commands::system::download_onnx_model,
             doxus_desktop_lib::commands::graph::get_graph_data,
         ])
         .run(tauri::generate_context!())

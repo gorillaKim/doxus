@@ -9,7 +9,27 @@ use doxus_core::secrets::UnifiedKeychainStore;
 use doxus_agent::sync_sidecar::SyncSidecarManager;
 use doxus_agent::prompt::PromptLoader;
 use doxus_core::sync_manager::{SyncManager, SyncTrigger};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
+
+/// Shared, swappable embedder. The inner `Arc<dyn ...>` can be replaced at runtime
+/// (e.g. after the user downloads the ONNX model on first launch) while existing
+/// Arc clones returned by `current()` remain valid for any in-flight work.
+pub type SharedEmbedder = Arc<RwLock<Arc<dyn EmbeddingProvider + Send + Sync>>>;
+
+pub fn builtin_plugin_ids() -> &'static [&'static str] {
+    &["com.doxus.obsidian", "com.doxus.confluence", "com.doxus.github"]
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn builtin_plugin_ids_contains_all_registered_plugins() {
+        let ids = super::builtin_plugin_ids();
+        assert!(ids.contains(&"com.doxus.obsidian"));
+        assert!(ids.contains(&"com.doxus.confluence"));
+        assert!(ids.contains(&"com.doxus.github"));
+    }
+}
 
 pub struct OAuthPending {
     pub code_verifier: String,
@@ -25,7 +45,7 @@ pub struct AppState {
     pub plugin_manager: Arc<PluginManager>,
     pub plugins_dir: PathBuf,
     pub oauth_pending: Mutex<HashMap<String, OAuthPending>>,
-    pub embedder: Arc<dyn EmbeddingProvider + Send + Sync>,
+    pub embedder: SharedEmbedder,
     // Agent sidecar
     pub sidecar: Arc<SyncSidecarManager>,
     pub sidecar_script: PathBuf,
@@ -46,7 +66,7 @@ impl AppState {
     ) -> (Self, mpsc::Receiver<SyncTrigger>) {
         let prompt_loader = PromptLoader::new().expect("PromptLoader init failed");
         prompt_loader.ensure_defaults().ok();
-        
+
         // App-start: clean up any expired cache entries from previous sessions
         {
             let cache = doxus_core::cache::ContentCache::new(&conn);
@@ -57,8 +77,9 @@ impl AppState {
             }
         }
 
+        let shared_embedder: SharedEmbedder = Arc::new(RwLock::new(embedder.clone()));
         let conn_arc = Arc::new(Mutex::new(conn));
-        let search_engine = Arc::new(doxus_core::search::SearchEngine::with_embedder(conn_arc.clone(), embedder.clone()));
+        let search_engine = Arc::new(doxus_core::search::SearchEngine::with_embedder(conn_arc.clone(), embedder));
         let indexing_service = Arc::new(doxus_core::indexing::IndexingService::new(conn_arc.clone(), Arc::new(PluginManager::new(plugins_dir.clone())), search_engine.clone()));
         let (sync_manager, rx) = SyncManager::new(indexing_service);
         let sync_manager = Arc::new(sync_manager);
@@ -94,7 +115,7 @@ impl AppState {
                 plugin_manager,
                 plugins_dir,
                 oauth_pending: Mutex::new(HashMap::new()),
-                embedder,
+                embedder: shared_embedder,
                 sidecar: Arc::new(SyncSidecarManager::new()),
                 sidecar_script,
                 prompt_loader,
