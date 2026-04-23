@@ -50,8 +50,7 @@ fn ensure_plugins(target_dir: &std::path::Path) {
                         visit_dirs(&path, target_dir)?;
                     } else {
                         let ext = path.extension().and_then(|e| e.to_str());
-                        let filename = path.file_name().and_then(|f| f.to_str()).unwrap_or("");
-                        
+
                         if ext == Some("wasm") {
                             // 1. WASM 파일 복사
                             let target_wasm = target_dir.join(path.file_name().unwrap());
