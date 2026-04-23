@@ -54,11 +54,12 @@ impl IndexingService {
         // 2. 인덱싱 루프
         let mut total = 0;
         let mut cursor = None;
+        let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         loop {
             let stream = plugin.fetch_all(FetchAllOpts { cursor, page_size: 50 }).await
                 .map_err(|e| format!("문서 수집 실패: {e}"))?;
-            
+
             let docs = stream.documents;
             crate::log_d!("indexer", "[Core-Indexer] Received {} documents from plugin", docs.len());
             if docs.is_empty() { break; }
@@ -68,6 +69,8 @@ impl IndexingService {
 
             for doc in docs {
                 let source_doc_id = doc.id.0.clone();
+                seen_ids.insert(source_doc_id.clone());
+
                 let title = doc.title.as_deref()
                     .map(|s| s.to_string())
                     .filter(|s| !s.trim().is_empty())
@@ -85,12 +88,12 @@ impl IndexingService {
                 // 업데이트 시간 및 제목 상태 비교를 통한 스킵 로직
                 if let Some((old_ts, old_title)) = existing_meta.get(&source_doc_id) {
                     let needs_repair = old_title == "Untitled" || old_title.is_empty();
-                    
+
                     if doc.updated_at == Some(*old_ts) && !needs_repair {
                         crate::log_d!("indexer", "[Core-Indexer] Skipping unchanged document: {} (ID: {})", title, source_doc_id);
                         continue;
                     }
-                    
+
                     if needs_repair {
                         crate::log_d!("indexer", "[Core-Indexer] Healing 'Untitled' document: {} (ID: {})", title, source_doc_id);
                     }
@@ -107,7 +110,13 @@ impl IndexingService {
             if cursor.is_none() { break; }
         }
 
-        // 3. 링크 해결 수행 (target_raw -> target_id)
+        // 3. 소스에서 사라진 문서 제거
+        let removed = self.remove_deleted_documents(project_id, &seen_ids).await?;
+        if removed > 0 {
+            crate::log_d!("indexer", "[Core-Indexer] Removed {} deleted documents from index", removed);
+        }
+
+        // 4. 링크 해결 수행 (target_raw -> target_id)
         {
             let conn = self.conn.lock().map_err(|_| "db lock poisoned".to_string())?;
             if let Err(e) = LinkResolver::resolve_all_unresolved_links(&conn) {
@@ -275,6 +284,37 @@ impl IndexingService {
             .collect();
         
         Ok(projects)
+    }
+
+    /// 소스에서 사라진 문서를 DB에서 제거합니다. chunks/FTS/벡터는 CASCADE 트리거로 자동 정리됩니다.
+    async fn remove_deleted_documents(
+        &self,
+        project_id: i64,
+        seen_ids: &std::collections::HashSet<String>,
+    ) -> Result<usize, String> {
+        let conn = self.conn.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT source_doc_id FROM documents WHERE project_id = ?1"
+        ).map_err(|e| e.to_string())?;
+
+        let db_ids: Vec<String> = stmt
+            .query_map(params![project_id], |r| r.get(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let mut removed = 0;
+        for id in db_ids {
+            if !seen_ids.contains(&id) {
+                crate::log_d!("indexer", "[Core-Indexer] Removing deleted document from index: {}", id);
+                conn.execute(
+                    "DELETE FROM documents WHERE project_id = ?1 AND source_doc_id = ?2",
+                    params![project_id, id],
+                ).map_err(|e| e.to_string())?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
     }
 
     async fn get_existing_metadata(&self, project_id: i64) -> Result<HashMap<String, (i64, String)>, String> {
