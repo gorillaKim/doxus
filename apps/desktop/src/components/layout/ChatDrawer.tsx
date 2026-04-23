@@ -221,14 +221,31 @@ export function ChatDrawer() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length, isLoading]);
 
-  const handleSend = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
+  const [messageInput, setMessageInput] = useState('');
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const autoResize = (el: HTMLTextAreaElement) => {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+  };
+
+  const handleSend = async (e?: React.FormEvent<HTMLFormElement>) => {
+    e?.preventDefault();
     if (!activeSession || isLoading) return;
-    const fd = new FormData(e.currentTarget);
-    const content = (fd.get('message') as string).trim();
+    const content = messageInput.trim();
     if (!content) return;
-    e.currentTarget.reset();
+    setMessageInput('');
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+    }
     await sendMessage(content);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
   };
 
   if (!isOpen) return null;
@@ -350,32 +367,42 @@ export function ChatDrawer() {
       {/* 입력 */}
       <form
         onSubmit={handleSend}
-        className="p-3 border-t border-gray-800 flex gap-2 shrink-0"
+        className="p-3 border-t border-gray-800 flex flex-col gap-2 shrink-0"
       >
-        <input
+        <textarea
+          ref={textareaRef}
           name="message"
-          placeholder={activeSession ? '문서에 대해 질문하세요…' : '먼저 세션을 시작하세요'}
+          rows={1}
+          value={messageInput}
+          onChange={(e) => {
+            setMessageInput(e.target.value);
+            autoResize(e.target);
+          }}
+          onKeyDown={handleKeyDown}
+          placeholder={activeSession ? '문서에 대해 질문하세요… (Shift+Enter로 줄바꿈)' : '먼저 세션을 시작하세요'}
           disabled={!activeSession || isLoading}
-          className="flex-1 px-3 py-2 text-sm bg-gray-800 border border-gray-700 text-gray-200 placeholder-gray-600 rounded-md focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:opacity-40"
+          className="w-full px-3 py-2 text-sm bg-gray-800 border border-gray-700 text-gray-200 placeholder-gray-600 rounded-md focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:opacity-40 resize-none overflow-hidden"
         />
+        <div className="flex justify-end">
         {isLoading ? (
           <button
             type="button"
             onClick={() => cancelMessage()}
-            className="px-3 py-2 bg-red-700 hover:bg-red-600 text-white text-sm rounded-md transition-colors"
+            className="px-3 py-1.5 bg-red-700 hover:bg-red-600 text-white text-sm rounded-md transition-colors"
             title="답변 중지"
           >
-            ■
+            ■ 중지
           </button>
         ) : (
           <button
             type="submit"
             disabled={!activeSession}
-            className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-sm rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             전송
           </button>
         )}
+        </div>
       </form>
     </div>
   );
