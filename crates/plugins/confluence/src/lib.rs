@@ -819,26 +819,58 @@ fn auth_header(state: &PluginState) -> FnResult<String> {
     Err(Error::msg("No authentication credentials (OAuth or API Token)").into())
 }
 
+/// 429 응답 시 exponential backoff으로 최대 3회 재시도합니다.
+/// __doxus_get_time (초 단위)을 이용한 busy-wait 딜레이를 사용합니다.
 fn request_with_auth(state: &PluginState, method: &str, url: &str, body: Option<Vec<u8>>) -> FnResult<HttpResponse> {
+    const MAX_RETRIES: u32 = 3;
+    const BACKOFF_SECS: [i64; 3] = [2, 4, 8];
+
     let auth = auth_header(state)?;
-    
-    let mut req = HttpRequest::new(url);
-    req.method = Some(method.to_string());
-    req.headers.insert("Authorization".to_string(), auth);
-    req.headers.insert("Accept".to_string(), "application/json".to_string());
-    if body.is_some() {
-        req.headers.insert("Content-Type".to_string(), "application/json".to_string());
+
+    for attempt in 0..=MAX_RETRIES {
+        let mut req = HttpRequest::new(url);
+        req.method = Some(method.to_string());
+        req.headers.insert("Authorization".to_string(), auth.clone());
+        req.headers.insert("Accept".to_string(), "application/json".to_string());
+        if body.is_some() {
+            req.headers.insert("Content-Type".to_string(), "application/json".to_string());
+        }
+
+        let resp = http::request(&req, body.clone()).map_err(|e| {
+            log_d!("confluence", "[Confluence-Debug] HTTP REQUEST FAILED: {} -> {}", url, e);
+            e
+        })?;
+
+        if resp.status_code() == 429 {
+            if attempt < MAX_RETRIES {
+                let wait = BACKOFF_SECS[attempt as usize];
+                log_d!("confluence", "[Confluence-RateLimit] 429 received, waiting {}s before retry {}/{}", wait, attempt + 1, MAX_RETRIES);
+                busy_wait_secs(wait);
+                continue;
+            }
+            return Err(Error::msg(format!("HTTP 429: rate limited after {} retries", MAX_RETRIES)).into());
+        }
+
+        if resp.status_code() >= 400 {
+            let msg = format!("HTTP {}: {}", resp.status_code(), String::from_utf8_lossy(&resp.body()));
+            return Err(Error::msg(msg).into());
+        }
+
+        return Ok(resp);
     }
-    
-    let resp = http::request(&req, body).map_err(|e| {
-        log_d!("confluence", "[Confluence-Debug] HTTP REQUEST FAILED: {} -> {}", url, e);
-        e
-    })?;
-    if resp.status_code() >= 400 {
-        let msg = format!("HTTP {}: {}", resp.status_code(), String::from_utf8_lossy(&resp.body()));
-        return Err(Error::msg(msg).into());
+
+    unreachable!()
+}
+
+/// __doxus_get_time(초 단위)을 이용한 busy-wait 딜레이
+fn busy_wait_secs(secs: i64) {
+    let start = unsafe { __doxus_get_time().unwrap_or(0) };
+    loop {
+        let now = unsafe { __doxus_get_time().unwrap_or(0) };
+        if now >= start + secs {
+            break;
+        }
     }
-    Ok(resp)
 }
 
 fn ensure_valid_token(state: &mut PluginState) -> FnResult<()> {
