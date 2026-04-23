@@ -750,6 +750,7 @@ pub async fn search_engine_status(
 #[tauri::command]
 pub async fn index_project(
     state: tauri::State<'_, Arc<crate::AppState>>,
+    app_handle: tauri::AppHandle,
     name: String,
 ) -> Result<serde_json::Value, String> {
     let embedder = state.embedder.read().await.clone();
@@ -770,6 +771,12 @@ pub async fn index_project(
     } else {
         format!("{total}개 문서 인덱싱 완료")
     };
+
+    use tauri::Emitter;
+    let _ = app_handle.emit("project-indexed", serde_json::json!({
+        "project_name": name,
+        "indexed": total,
+    }));
 
     Ok(serde_json::json!({
         "status": "ok",

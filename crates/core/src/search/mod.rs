@@ -523,7 +523,7 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
 
     let sql = format!(
         "SELECT d.id, d.source_doc_id, c.id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path,
-                '' AS snippet, bm25(chunks_fts, 1.0, 3.0) AS score,
+                '' AS snippet, bm25(chunks_fts, 1.0, 3.0, 10.0) AS score,
                 d.url, d.metadata_json, d.last_indexed,
                 c.start_byte, c.end_byte, c.content
          FROM chunks_fts

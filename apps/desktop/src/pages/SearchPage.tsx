@@ -712,6 +712,22 @@ export function SearchPage() {
     };
   }, [updateDocumentMetadata]);
 
+  useEffect(() => {
+    const unlisten = listen<{ project_name: string; indexed: number }>(
+      'project-indexed',
+      (event) => {
+        console.log('[SearchPage] Received project-indexed event:', event.payload);
+        if (event.payload.indexed > 0) {
+          listAllDocuments();
+        }
+      }
+    );
+
+    return () => {
+      unlisten.then(f => f());
+    };
+  }, [listAllDocuments]);
+
   useEffect(() => { listAllDocuments(); }, [listAllDocuments]);
 
   // 1. 초기 로드 시 또는 데이터 준비 시 URL 기반 자동 선택
