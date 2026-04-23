@@ -142,6 +142,9 @@ static MIGRATIONS: &[(&str, &str)] = &[
     ("V28__hybrid_storage_repair", include_str!("migrations/V28__hybrid_storage_repair.sql")),
     ("V29__add_source_project_id", include_str!("migrations/V29__add_source_project_id.sql")),
     ("V30__add_sync_config", include_str!("migrations/V30__add_sync_config.sql")),
+    ("V31__add_title_to_fts", include_str!("migrations/V31__add_title_to_fts.sql")),
+    ("V32__date_indexes", include_str!("migrations/V32__date_indexes.sql")),
+    ("V33__reindex_history", include_str!("migrations/V33__reindex_history.sql")),
 ];
 
 // ── Test helper ──────────────────────────────────────────────────────────────
@@ -452,12 +455,98 @@ mod tests {
              VALUES ('policy-test', 'Policy Test', '/tmp', '{\"type\":\"manual\"}', unixepoch(), unixepoch())",
             [],
         ).expect("sync_policy_json column should exist in projects table");
-        
+
         let policy: String = db.conn.query_row(
             "SELECT sync_policy_json FROM projects WHERE name='policy-test'",
             [],
             |r| r.get(0)
         ).unwrap();
         assert_eq!(policy, "{\"type\":\"manual\"}");
+    }
+
+    // ── V32: 날짜 인덱스 ──────────────────────────────────────────────────
+
+    #[test]
+    fn v32_created_at_index_exists() {
+        let db = TestDb::new();
+        let count: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_documents_created_at'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 1, "idx_documents_created_at 인덱스가 존재해야 함");
+    }
+
+    #[test]
+    fn v32_updated_at_index_exists() {
+        let db = TestDb::new();
+        let count: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_documents_updated_at'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 1, "idx_documents_updated_at 인덱스가 존재해야 함");
+    }
+
+    // ── V33: reindex_history 테이블 ────────────────────────────────────────
+
+    #[test]
+    fn v33_reindex_history_table_exists() {
+        let db = TestDb::new();
+        let count: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='reindex_history'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 1, "reindex_history 테이블이 존재해야 함");
+    }
+
+    #[test]
+    fn v33_reindex_history_accepts_basic_insert() {
+        let db = TestDb::new();
+        db.conn.execute(
+            "INSERT INTO projects(name, display_name, path, created_at, updated_at)
+             VALUES ('rh-test', 'RH Test', '/tmp', unixepoch(), unixepoch())",
+            [],
+        ).unwrap();
+        let pid: i64 = db.conn.query_row(
+            "SELECT id FROM projects WHERE name='rh-test'", [], |r| r.get(0),
+        ).unwrap();
+
+        db.conn.execute(
+            "INSERT INTO reindex_history(project_id, scope, started_at) VALUES (?1, 'all', unixepoch())",
+            [pid],
+        ).expect("reindex_history 기본 INSERT 성공해야 함");
+
+        let status: String = db.conn.query_row(
+            "SELECT status FROM reindex_history WHERE project_id=?1",
+            [pid],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(status, "pending", "status 기본값은 'pending'");
+    }
+
+    #[test]
+    fn v33_reindex_history_cascade_delete() {
+        let db = TestDb::new();
+        db.conn.execute(
+            "INSERT INTO projects(name, display_name, path, created_at, updated_at)
+             VALUES ('rh-cascade', 'RH Cascade', '/tmp', unixepoch(), unixepoch())",
+            [],
+        ).unwrap();
+        let pid: i64 = db.conn.query_row(
+            "SELECT id FROM projects WHERE name='rh-cascade'", [], |r| r.get(0),
+        ).unwrap();
+
+        db.conn.execute(
+            "INSERT INTO reindex_history(project_id, scope, started_at) VALUES (?1, 'all', unixepoch())",
+            [pid],
+        ).unwrap();
+
+        db.conn.execute("DELETE FROM projects WHERE id=?1", [pid]).unwrap();
+        let count: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM reindex_history WHERE project_id=?1", [pid], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 0, "프로젝트 삭제 시 reindex_history도 CASCADE 삭제");
     }
 }

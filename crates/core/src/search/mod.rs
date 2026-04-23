@@ -41,6 +41,10 @@ pub struct SearchQuery {
     pub limit: usize,
     pub offset: usize,
     pub mode: SearchMode,
+    pub created_after: Option<i64>,
+    pub created_before: Option<i64>,
+    pub updated_after: Option<i64>,
+    pub updated_before: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -59,6 +63,10 @@ impl SearchQuery {
             limit: 20,
             offset: 0,
             mode: SearchMode::Hybrid,
+            created_after: None,
+            created_before: None,
+            updated_after: None,
+            updated_before: None,
         }
     }
 
@@ -193,6 +201,8 @@ impl From<SearchHit> for Hit {
             metadata_json: sh.metadata_json,
             last_indexed: sh.last_indexed,
             score: sh.score,
+            created_at: sh.created_at,
+            updated_at: sh.updated_at,
         }
     }
 }
@@ -515,24 +525,46 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
     let fts_query = build_fts_query(&query.text);
     if fts_query.is_empty() { return Ok(vec![]); }
 
-    let (project_filter, _) = if query.project_ids.is_empty() {
-        ("AND p.status = 'active'".to_string(), 3usize)
+    let mut extra_filters = String::new();
+    if query.created_after.is_some()  { extra_filters.push_str(" AND d.created_at >= ?__ca"); }
+    if query.created_before.is_some() { extra_filters.push_str(" AND d.created_at <= ?__cb"); }
+    if query.updated_after.is_some()  { extra_filters.push_str(" AND d.updated_at >= ?__ua"); }
+    if query.updated_before.is_some() { extra_filters.push_str(" AND d.updated_at <= ?__ub"); }
+
+    // ?1=fts_query, ?2=limit, ?3=offset, ?4..=project_ids, then date params
+    let base_param_count = 3usize;
+    let project_param_start = base_param_count + 1;
+    let (project_filter, date_param_start) = if query.project_ids.is_empty() {
+        ("AND p.status = 'active'".to_string(), project_param_start)
     } else {
-        let placeholders: Vec<String> = (0..query.project_ids.len()).map(|i| format!("?{}", i + 4)).collect();
-        (format!("AND d.project_id IN ({})", placeholders.join(", ")), 3 + query.project_ids.len())
+        let placeholders: Vec<String> = (0..query.project_ids.len())
+            .map(|i| format!("?{}", project_param_start + i))
+            .collect();
+        let next = project_param_start + query.project_ids.len();
+        (format!("AND d.project_id IN ({})", placeholders.join(", ")), next)
     };
+
+    // replace placeholder names with actual param indices
+    let mut date_idx = date_param_start;
+    let date_filter = extra_filters
+        .replace("?__ca", &format!("?{}", { let i = date_idx; if query.created_after.is_some()  { date_idx += 1; } i }))
+        .replace("?__cb", &format!("?{}", { let i = date_idx; if query.created_before.is_some() { date_idx += 1; } i }))
+        .replace("?__ua", &format!("?{}", { let i = date_idx; if query.updated_after.is_some()  { date_idx += 1; } i }))
+        .replace("?__ub", &format!("?{}", { let i = date_idx; if query.updated_before.is_some() { date_idx += 1; } i }));
 
     let sql = format!(
         "SELECT d.id, d.source_doc_id, c.id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path,
                 '' AS snippet, bm25(chunks_fts, 1.0, 3.0, 10.0) AS score,
                 d.url, d.metadata_json, d.last_indexed,
-                c.start_byte, c.end_byte, c.content
+                c.start_byte, c.end_byte, c.content,
+                d.created_at, d.updated_at
          FROM chunks_fts
          JOIN chunks c ON c.id = chunks_fts.rowid
          JOIN documents d ON d.id = c.document_id
          JOIN projects p ON p.id = d.project_id
          WHERE chunks_fts MATCH ?1
          {project_filter}
+         {date_filter}
          ORDER BY score
          LIMIT ?2 OFFSET ?3"
     );
@@ -547,8 +579,12 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
         Box::new(0i64),
     ];
     for id in &query.project_ids { params.push(Box::new(*id)); }
+    if let Some(v) = query.created_after  { params.push(Box::new(v)); }
+    if let Some(v) = query.created_before { params.push(Box::new(v)); }
+    if let Some(v) = query.updated_after  { params.push(Box::new(v)); }
+    if let Some(v) = query.updated_before { params.push(Box::new(v)); }
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-    
+
     let hits = stmt.query_map(param_refs.as_slice(), |row| {
         let mut hit = SearchHit {
             document_id: row.get(0)?,
@@ -566,6 +602,8 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
             end_byte: row.get(12)?,
             raw_content: row.get(13)?,
             context_content: None,
+            created_at: row.get(14)?,
+            updated_at: row.get(15)?,
         };
 
         if let Some(ref path_str) = hit.file_path {
@@ -604,7 +642,7 @@ fn vector_search_sync(
     };
 
     let sql = format!(
-        "SELECT c.id, c.document_id, d.source_doc_id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path, c.content, knn.distance, d.url, d.metadata_json, d.last_indexed, c.start_byte, c.end_byte
+        "SELECT c.id, c.document_id, d.source_doc_id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path, c.content, knn.distance, d.url, d.metadata_json, d.last_indexed, c.start_byte, c.end_byte, d.created_at, d.updated_at
          FROM (
              SELECT chunk_id, distance FROM chunk_embeddings
              WHERE vector MATCH vec_int8(?1) AND k = ?2
@@ -642,6 +680,8 @@ fn vector_search_sync(
             end_byte: row.get(12)?,
             raw_content: row.get(6)?,
             context_content: None,
+            created_at: row.get(13)?,
+            updated_at: row.get(14)?,
         };
 
         if let Some(ref path_str) = hit.file_path {
@@ -745,6 +785,86 @@ mod tests {
         let hits = engine.search(&query).unwrap();
         assert!(!hits.is_empty(), "should find Rust document");
         assert_eq!(hits[0].title.as_deref(), Some("Rust Programming"));
+    }
+
+    // ── 날짜 필터 TDD 테스트 ──────────────────────────────────────────────
+
+    fn insert_project_and_doc_with_dates(db: &TestDb, pid: i64, sid: &str, title: &str, created_at: i64, updated_at: i64) {
+        let engine = SyncSearchEngine::from_conn(&db.conn);
+        let meta = DocMeta {
+            created_at: Some(created_at),
+            updated_at: Some(updated_at),
+            ..Default::default()
+        };
+        engine.index_document_with_meta(pid, sid, title, title, &meta, "full").unwrap();
+    }
+
+    #[test]
+    fn test_search_date_filter_created_after() {
+        let db = TestDb::new();
+        let pid = insert_project(&db, "date-vault", "/date-vault");
+        insert_project_and_doc_with_dates(&db, pid, "old-doc", "Old Document", 1000, 1000);
+        insert_project_and_doc_with_dates(&db, pid, "new-doc", "New Document", 2000, 2000);
+
+        let mut query = SearchQuery::new("Document");
+        query.created_after = Some(1500);
+        let hits = SyncSearchEngine::from_conn(&db.conn).search(&query).unwrap();
+        assert_eq!(hits.len(), 1, "created_after=1500이면 created_at=2000 문서만 반환");
+        assert_eq!(hits[0].title.as_deref(), Some("New Document"));
+    }
+
+    #[test]
+    fn test_search_date_filter_no_filter() {
+        let db = TestDb::new();
+        let pid = insert_project(&db, "nofilter-vault", "/nofilter-vault");
+        insert_project_and_doc_with_dates(&db, pid, "doc-a", "Alpha Document", 1000, 1000);
+        insert_project_and_doc_with_dates(&db, pid, "doc-b", "Beta Document", 2000, 2000);
+
+        let query = SearchQuery::new("Document");
+        let hits = SyncSearchEngine::from_conn(&db.conn).search(&query).unwrap();
+        assert_eq!(hits.len(), 2, "날짜 필터 없으면 두 문서 모두 반환");
+    }
+
+    #[test]
+    fn test_search_hit_includes_dates() {
+        let db = TestDb::new();
+        let pid = insert_project(&db, "hit-dates-vault", "/hit-dates-vault");
+        insert_project_and_doc_with_dates(&db, pid, "dated-doc", "Dated Document", 1234, 5678);
+
+        let query = SearchQuery::new("Dated Document");
+        let hits = SyncSearchEngine::from_conn(&db.conn).search(&query).unwrap();
+        assert!(!hits.is_empty(), "결과가 있어야 함");
+        let hit = &hits[0];
+        assert_eq!(hit.created_at, Some(1234), "hit에 created_at 포함");
+        assert_eq!(hit.updated_at, Some(5678), "hit에 updated_at 포함");
+    }
+
+    #[test]
+    fn test_search_date_filter_created_before() {
+        let db = TestDb::new();
+        let pid = insert_project(&db, "before-vault", "/before-vault");
+        insert_project_and_doc_with_dates(&db, pid, "old-doc", "Old Document", 1000, 1000);
+        insert_project_and_doc_with_dates(&db, pid, "new-doc", "New Document", 2000, 2000);
+
+        let mut query = SearchQuery::new("Document");
+        query.created_before = Some(1500);
+        let hits = SyncSearchEngine::from_conn(&db.conn).search(&query).unwrap();
+        assert_eq!(hits.len(), 1, "created_before=1500이면 created_at=1000 문서만 반환");
+        assert_eq!(hits[0].title.as_deref(), Some("Old Document"));
+    }
+
+    #[test]
+    fn test_search_date_filter_updated_after() {
+        let db = TestDb::new();
+        let pid = insert_project(&db, "updated-vault", "/updated-vault");
+        insert_project_and_doc_with_dates(&db, pid, "stale-doc", "Stale Document", 1000, 1000);
+        insert_project_and_doc_with_dates(&db, pid, "fresh-doc", "Fresh Document", 1000, 3000);
+
+        let mut query = SearchQuery::new("Document");
+        query.updated_after = Some(2000);
+        let hits = SyncSearchEngine::from_conn(&db.conn).search(&query).unwrap();
+        assert_eq!(hits.len(), 1, "updated_after=2000이면 updated_at=3000 문서만 반환");
+        assert_eq!(hits[0].title.as_deref(), Some("Fresh Document"));
     }
 
     #[test]

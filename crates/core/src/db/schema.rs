@@ -82,6 +82,8 @@ pub struct SearchHit {
     pub metadata_json: Option<String>,
     pub last_indexed: Option<i64>,
     pub score: f64,
+    pub created_at: Option<i64>,
+    pub updated_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
@@ -99,6 +101,8 @@ pub struct Hit {
     pub metadata_json: Option<String>,
     pub last_indexed: Option<i64>,
     pub score: f64,
+    pub created_at: Option<i64>,
+    pub updated_at: Option<i64>,
 }
 
 #[derive(Debug, Default, Clone)]
