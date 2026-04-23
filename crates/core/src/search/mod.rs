@@ -525,32 +525,23 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
     let fts_query = build_fts_query(&query.text);
     if fts_query.is_empty() { return Ok(vec![]); }
 
-    let mut extra_filters = String::new();
-    if query.created_after.is_some()  { extra_filters.push_str(" AND d.created_at >= ?__ca"); }
-    if query.created_before.is_some() { extra_filters.push_str(" AND d.created_at <= ?__cb"); }
-    if query.updated_after.is_some()  { extra_filters.push_str(" AND d.updated_at >= ?__ua"); }
-    if query.updated_before.is_some() { extra_filters.push_str(" AND d.updated_at <= ?__ub"); }
-
     // ?1=fts_query, ?2=limit, ?3=offset, ?4..=project_ids, then date params
-    let base_param_count = 3usize;
-    let project_param_start = base_param_count + 1;
-    let (project_filter, date_param_start) = if query.project_ids.is_empty() {
+    let project_param_start = 4usize;
+    let (project_filter, mut next_param) = if query.project_ids.is_empty() {
         ("AND p.status = 'active'".to_string(), project_param_start)
     } else {
         let placeholders: Vec<String> = (0..query.project_ids.len())
             .map(|i| format!("?{}", project_param_start + i))
             .collect();
-        let next = project_param_start + query.project_ids.len();
-        (format!("AND d.project_id IN ({})", placeholders.join(", ")), next)
+        (format!("AND d.project_id IN ({})", placeholders.join(", ")), project_param_start + query.project_ids.len())
     };
 
-    // replace placeholder names with actual param indices
-    let mut date_idx = date_param_start;
-    let date_filter = extra_filters
-        .replace("?__ca", &format!("?{}", { let i = date_idx; if query.created_after.is_some()  { date_idx += 1; } i }))
-        .replace("?__cb", &format!("?{}", { let i = date_idx; if query.created_before.is_some() { date_idx += 1; } i }))
-        .replace("?__ua", &format!("?{}", { let i = date_idx; if query.updated_after.is_some()  { date_idx += 1; } i }))
-        .replace("?__ub", &format!("?{}", { let i = date_idx; if query.updated_before.is_some() { date_idx += 1; } i }));
+    let mut date_filter = String::new();
+    if query.created_after.is_some()  { date_filter.push_str(&format!(" AND d.created_at >= ?{next_param}")); next_param += 1; }
+    if query.created_before.is_some() { date_filter.push_str(&format!(" AND d.created_at <= ?{next_param}")); next_param += 1; }
+    if query.updated_after.is_some()  { date_filter.push_str(&format!(" AND d.updated_at >= ?{next_param}")); next_param += 1; }
+    if query.updated_before.is_some() { date_filter.push_str(&format!(" AND d.updated_at <= ?{next_param}")); next_param += 1; }
+    let _ = next_param;
 
     let sql = format!(
         "SELECT d.id, d.source_doc_id, c.id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path,
