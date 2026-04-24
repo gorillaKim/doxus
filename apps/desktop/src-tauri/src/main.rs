@@ -154,6 +154,28 @@ fn ensure_bridge_token() -> String {
     token
 }
 
+fn get_macos_idle_seconds() -> Result<f64, String> {
+    use std::process::Command;
+    let output = Command::new("ioreg")
+        .args(["-c", "IOHIDSystem"])
+        .output()
+        .map_err(|e| e.to_string())?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if line.contains("HIDIdleTime") {
+            let parts: Vec<&str> = line.split('=').collect();
+            if parts.len() >= 2 {
+                let ns_str = parts[1].trim();
+                if let Ok(ns) = ns_str.parse::<u64>() {
+                    return Ok(ns as f64 / 1_000_000_000.0);
+                }
+            }
+        }
+    }
+    Err("HIDIdleTime not found in ioreg output".into())
+}
+
 fn main() {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     let config_path = std::path::PathBuf::from(&home).join(".doxus/config.toml");
@@ -257,8 +279,16 @@ fn main() {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
                 loop {
                     interval.tick().await;
-                    // TODO: 연동할 OS 레벨 유휴 상태 체크 로직 (현재는 임시로 false)
-                    let is_idle = false;
+
+                    // OS 레벨 유휴 상태 체크 (macOS 전용)
+                    let is_idle = match get_macos_idle_seconds() {
+                        Ok(seconds) => {
+                            // 5분(300초) 이상 입력이 없으면 유휴 상태로 판단
+                            seconds > 300.0
+                        },
+                        Err(_) => false,
+                    };
+
                     scheduler.tick(is_idle).await;
                 }
             });
