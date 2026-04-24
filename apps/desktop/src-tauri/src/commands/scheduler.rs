@@ -111,6 +111,7 @@ pub async fn get_job_history(
 pub async fn update_scheduled_job(
     state: tauri::State<'_, Arc<crate::AppState>>,
     job_id: i64,
+    project_id: Option<i64>,
     job_name: String,
     executor: String,
     action: String,
@@ -126,7 +127,7 @@ pub async fn update_scheduled_job(
 
     let job = ScheduledJob {
         id: job_id,
-        project_id: None,
+        project_id,
         job_name,
         description: None,
         executor: exec,

@@ -293,6 +293,7 @@ function CreateScheduleModal({ projects, editingJob, onClose, onCreated }: { pro
             if (isEdit) {
                 await invoke("update_scheduled_job", {
                     jobId: editingJob.id,
+                    projectId: null,
                     jobName: name,
                     executor,
                     action: executor === 'agent' ? 'ai_agent_report' : action,
@@ -302,6 +303,7 @@ function CreateScheduleModal({ projects, editingJob, onClose, onCreated }: { pro
                 });
             } else {
                 await invoke("create_scheduled_job", {
+                    projectId: null,
                     jobName: name,
                     executor,
                     action: executor === 'agent' ? 'ai_agent_report' : action,
