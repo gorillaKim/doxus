@@ -15,7 +15,8 @@ impl<'a> SchedulerDb<'a> {
     pub fn due_jobs(&self, now: i64, is_idle: bool) -> Result<Vec<ScheduledJob>, Error> {
         let mut stmt = self.conn.prepare(
             "SELECT id, project_id, job_name, executor, action, action_config, 
-                    schedule_json, enabled, run_on_idle, last_run_at, next_run_at, created_by 
+                    schedule_json, enabled, run_on_idle, last_run_at, next_run_at, created_by,
+                    description, is_immutable 
              FROM scheduled_jobs 
              WHERE enabled = 1 
                AND next_run_at <= ?1 
@@ -43,6 +44,8 @@ impl<'a> SchedulerDb<'a> {
                 last_run_at: row.get(9)?,
                 next_run_at: row.get(10)?,
                 created_by: row.get(11)?,
+                description: row.get(12)?,
+                is_immutable: row.get::<_, i64>(13)? == 1,
             })
         })?;
 
@@ -64,8 +67,9 @@ impl<'a> SchedulerDb<'a> {
         
         self.conn.execute(
             "INSERT INTO scheduled_jobs (project_id, job_name, executor, action, action_config, 
-                                       schedule_json, enabled, run_on_idle, next_run_at, created_at, created_by)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, unixepoch(), ?10)",
+                                       schedule_json, enabled, run_on_idle, next_run_at, created_at, created_by,
+                                       description, is_immutable)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, unixepoch(), ?10, ?11, ?12)",
             rusqlite::params![
                 job.project_id,
                 job.job_name,
@@ -77,6 +81,8 @@ impl<'a> SchedulerDb<'a> {
                 if job.run_on_idle { 1 } else { 0 },
                 job.next_run_at,
                 job.created_by,
+                job.description,
+                if job.is_immutable { 1 } else { 0 },
             ]
         )?;
         
@@ -142,8 +148,9 @@ impl<'a> SchedulerDb<'a> {
 
     pub fn list_jobs(&self, project_id: Option<i64>) -> Result<Vec<ScheduledJob>, Error> {
         let mut sql = "SELECT id, project_id, job_name, executor, action, action_config, 
-                              schedule_json, enabled, run_on_idle, last_run_at, next_run_at, created_by 
-                       FROM scheduled_jobs".to_string();
+                               schedule_json, enabled, run_on_idle, last_run_at, next_run_at, created_by,
+                               description, is_immutable 
+                        FROM scheduled_jobs".to_string();
         let mut args: Vec<rusqlite::types::Value> = Vec::new();
         
         if let Some(pid) = project_id {
@@ -171,6 +178,8 @@ impl<'a> SchedulerDb<'a> {
                 last_run_at: row.get(9)?,
                 next_run_at: row.get(10)?,
                 created_by: row.get(11)?,
+                description: row.get(12)?,
+                is_immutable: row.get::<_, i64>(13)? == 1,
             })
         })?;
 
@@ -207,12 +216,14 @@ mod tests {
             id: 0,
             project_id: None,
             job_name: "test job".to_string(),
+            description: None,
             executor: Executor::System,
             action: "echo".to_string(),
             action_config: json!({ "msg": "hello" }),
             schedule: Schedule::Interval { seconds: 120 },
             enabled: true,
             run_on_idle: false,
+            is_immutable: false,
             last_run_at: None,
             next_run_at: 1000,
             created_by: "user".to_string(),
@@ -236,12 +247,14 @@ mod tests {
             id: 0,
             project_id: None,
             job_name: "due now".to_string(),
+            description: None,
             executor: Executor::System,
             action: "echo".to_string(),
             action_config: json!({}),
             schedule: Schedule::Interval { seconds: 60 },
             enabled: true,
             run_on_idle: false,
+            is_immutable: false,
             last_run_at: None,
             next_run_at: 1000,
             created_by: "user".to_string(),
@@ -252,12 +265,14 @@ mod tests {
             id: 0,
             project_id: None,
             job_name: "future".to_string(),
+            description: None,
             executor: Executor::System,
             action: "echo".to_string(),
             action_config: json!({}),
             schedule: Schedule::Interval { seconds: 60 },
             enabled: true,
             run_on_idle: false,
+            is_immutable: false,
             last_run_at: None,
             next_run_at: 2000,
             created_by: "user".to_string(),

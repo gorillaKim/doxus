@@ -148,6 +148,8 @@ static MIGRATIONS: &[(&str, &str)] = &[
     ("V34__scheduler", include_str!("migrations/V34__scheduler.sql")),
     ("V35__document_freshness", include_str!("migrations/V35__document_freshness.sql")),
     ("V36__freshness_config", include_str!("migrations/V36__freshness_config.sql")),
+    ("V37__link_optimization", include_str!("migrations/V37__link_optimization.sql")),
+    ("V38__scheduler_details", include_str!("migrations/V38__scheduler_details.sql")),
 ];
 
 // ── Test helper ──────────────────────────────────────────────────────────────

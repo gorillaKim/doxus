@@ -88,14 +88,16 @@ impl SchedulerManager {
                 id: 0,
                 project_id: None,
                 job_name: "Freshness Refresh".to_string(),
+                description: Some("문서의 신선도 점수를 주기적으로 업데이트합니다.".to_string()),
                 executor: Executor::System,
                 action: "freshness_batch".to_string(),
                 action_config: serde_json::json!({}),
                 schedule: Schedule::Daily { hour: 3, minute: 0 },
                 enabled: true,
-                run_on_idle: true,
+                run_on_idle: false,
+                is_immutable: true,
                 last_run_at: None,
-                next_run_at: chrono::Utc::now().timestamp() + 3600, // Roughly an hour later or calculate proper next_run
+                next_run_at: chrono::Utc::now().timestamp() + 3600,
                 created_by: "system".to_string(),
             };
             let _ = sdb.insert_job(&default_job);

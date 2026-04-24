@@ -23,6 +23,7 @@ pub async fn create_scheduled_job(
     action: String,
     action_config: serde_json::Value,
     schedule_json: serde_json::Value,
+    run_on_idle: bool,
 ) -> Result<serde_json::Value, String> {
     let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
     let sdb = SchedulerDb::new(&conn);
@@ -37,12 +38,14 @@ pub async fn create_scheduled_job(
         id: 0,
         project_id,
         job_name,
+        description: None,
         executor: exec,
         action,
         action_config,
         schedule: sched,
         enabled: true,
-        run_on_idle: false,
+        run_on_idle,
+        is_immutable: false,
         last_run_at: None,
         next_run_at: next_run,
         created_by: "user".to_string(),
