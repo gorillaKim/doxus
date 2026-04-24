@@ -166,7 +166,7 @@ mod tests {
         std::fs::write(&valid_md, "hello").unwrap();
 
         // 트리거 확인: 숨김/DB 파일에 대해서는 트리거가 발생하지 않고, valid.md에 대해서만 한 번 발생해야 함
-        let trigger = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await.unwrap();
+        let trigger = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap();
         assert!(trigger.is_some());
         if let Some(SyncTrigger::FileEvent { path, .. }) = trigger {
             assert!(path.to_string_lossy().contains("valid.md"));

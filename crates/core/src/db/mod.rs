@@ -245,8 +245,8 @@ mod tests {
             .unwrap();
         db.conn
             .execute(
-                "INSERT INTO documents(project_id, source_doc_id, content, content_hash)
-                 VALUES (?1, 'doc1', 'hello', 'abc')",
+                "INSERT INTO documents(project_id, source_doc_id, content_hash)
+                 VALUES (?1, 'doc1', 'abc')",
                 [pid],
             )
             .unwrap();
@@ -262,9 +262,9 @@ mod tests {
 
     #[test]
     fn test_idempotent_migration() {
-        // Run migrate twice — should not fail
         let conn = Connection::open_in_memory().unwrap();
         apply_pragmas(&conn).unwrap();
+        create_vec0_table(&conn).unwrap();
         migrate(&conn).unwrap();
         migrate(&conn).unwrap();
     }
@@ -336,22 +336,7 @@ mod tests {
         ).expect("is_default 컬럼이 projects에 존재해야 함");
     }
 
-    #[test]
-    fn v14_only_one_default_workspace_allowed() {
-        let db = TestDb::new();
-        db.conn.execute(
-            "INSERT INTO projects(name, display_name, path, source_type, is_default, created_at, updated_at)
-             VALUES ('ws-a', 'WS A', '/tmp/a', 'workspace', 1, unixepoch(), unixepoch())",
-            [],
-        ).expect("첫 번째 is_default=1 허용");
-
-        let result = db.conn.execute(
-            "INSERT INTO projects(name, display_name, path, source_type, is_default, created_at, updated_at)
-             VALUES ('ws-b', 'WS B', '/tmp/b', 'workspace', 1, unixepoch(), unixepoch())",
-            [],
-        );
-        assert!(result.is_err(), "두 번째 is_default=1은 UNIQUE INDEX 위반이어야 함");
-    }
+    // (V18에서 유니크 인덱스가 제거되었으므로 더 이상 중복 체크하지 않음)
 
     #[test]
     fn v14_templates_supports_global_and_project_scoped() {
@@ -437,10 +422,10 @@ mod tests {
 
         let test_url = "obsidian://open?path=/tmp/test.md";
         
-        // This is expected to fail initially (TDD)
+        // This should succeed
         let res = db.conn.execute(
-            "INSERT INTO documents(project_id, source_doc_id, title, content, content_hash, url)
-             VALUES (?1, 'doc1', 'Doc 1', 'hello', 'abc', ?2)",
+            "INSERT INTO documents(project_id, source_doc_id, title, content_hash, url)
+             VALUES (?1, 'doc1', 'Doc 1', 'abc', ?2)",
             rusqlite::params![project_id, test_url]
         );
 

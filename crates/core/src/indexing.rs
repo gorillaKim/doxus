@@ -357,10 +357,17 @@ mod tests {
             [],
         ).unwrap();
 
-        // 테스트용 문서 삽입 (updated_at = 100)
+        // 테스트용 문서 삽입 (updated_at = 100, last_indexed = 100)
         conn.lock().unwrap().execute(
-            "INSERT INTO documents (project_id, source_doc_id, title, content, content_hash, updated_at) \
-             VALUES (1, 'doc1', 'Doc1', 'content', 'hash', 100)",
+            "INSERT INTO documents (project_id, source_doc_id, title, content_hash, updated_at, last_indexed) \
+             VALUES (1, 'doc1', 'Doc1', 'hash', 100, 100)",
+            [],
+        ).unwrap();
+
+        // chunk_count > 0 이어야 needs_reindexing이 타임스탬프 비교로 진행됨
+        conn.lock().unwrap().execute(
+            "INSERT INTO chunks (document_id, content, chunk_index) \
+             SELECT id, 'content', 0 FROM documents WHERE source_doc_id = 'doc1'",
             [],
         ).unwrap();
 

@@ -4,7 +4,7 @@
 /// 실제 ~/.doxus/db/nexus.db 에는 아무런 영향을 주지 않습니다.
 use doxus_core::{
     db::TestDb,
-    search::{SearchEngine, SearchOpts, SearchQuery},
+    search::{SearchEngine, SearchQuery},
 };
 use rusqlite;
 
@@ -41,13 +41,13 @@ fn register_project_index_document_and_search() {
 
     // 2. 문서 등록 (인덱싱)
     engine
-        .index_document(pid, "doc-rust", "Rust 언어 소개", "Rust 는 메모리 안전성을 보장하는 시스템 프로그래밍 언어입니다.")
+        .index_document(pid, "doc-rust", "Rust 언어 소개", "Rust 는 메모리 안전성을 보장하는 시스템 프로그래밍 언어입니다.", "full")
         .expect("index_document should succeed");
 
     // 3. 검색 (FTS5 unicode61은 공백 기준 토큰화 — 단어 경계에 공백이 있어야 매칭됨)
     let hits = engine
-        .search_simple("Rust", &SearchOpts::default())
-        .expect("search_simple should succeed");
+        .search(&SearchQuery::new("Rust"))
+        .expect("search should succeed");
 
     assert!(!hits.is_empty(), "검색 결과가 있어야 합니다");
     assert_eq!(hits[0].source_doc_id, "doc-rust");
@@ -66,18 +66,17 @@ fn search_scoped_to_single_project() {
     let p_personal = add_project(&db, "personal", "Personal", "/personal");
 
     engine
-        .index_document(p_work, "arch", "Architecture Decision", "microservice 아키텍처 결정 기록")
+        .index_document(p_work, "arch", "Architecture Decision", "microservice 아키텍처 결정 기록", "full")
         .unwrap();
     engine
-        .index_document(p_personal, "diary", "오늘의 일기", "microservice 관련 공부를 했다")
+        .index_document(p_personal, "diary", "오늘의 일기", "microservice 관련 공부를 했다", "full")
         .unwrap();
 
     // work-wiki 프로젝트만 검색
-    let opts = SearchOpts {
-        project_ids: Some(vec![p_work]),
-        limit: Some(10),
-    };
-    let hits = engine.search_simple("microservice", &opts).unwrap();
+    let query = SearchQuery::new("microservice")
+        .with_projects(vec![p_work])
+        .with_limit(10);
+    let hits = engine.search(&query).unwrap();
 
     assert_eq!(hits.len(), 1, "work-wiki 문서 1건만 나와야 합니다");
     assert_eq!(hits[0].source_doc_id, "arch");
@@ -94,17 +93,17 @@ fn multiple_documents_ranked_by_relevance() {
     let pid = add_project(&db, "kb", "Knowledge Base", "/kb");
 
     engine
-        .index_document(pid, "d1", "Rust 완전 정복", "Rust 소유권, Rust 빌림, Rust 라이프타임 — Rust의 핵심 개념")
+        .index_document(pid, "d1", "Rust 완전 정복", "Rust 소유권, Rust 빌림, Rust 라이프타임 — Rust의 핵심 개념", "full")
         .unwrap();
     engine
-        .index_document(pid, "d2", "Python 입문", "Python은 배우기 쉬운 프로그래밍 언어입니다")
+        .index_document(pid, "d2", "Python 입문", "Python은 배우기 쉬운 프로그래밍 언어입니다", "full")
         .unwrap();
     engine
-        .index_document(pid, "d3", "시스템 프로그래밍", "C와 Rust로 OS 커널 구현하기")
+        .index_document(pid, "d3", "시스템 프로그래밍", "C와 Rust로 OS 커널 구현하기", "full")
         .unwrap();
 
     let hits = engine
-        .search_simple("Rust", &SearchOpts { limit: Some(10), ..Default::default() })
+        .search(&SearchQuery::new("Rust").with_limit(10))
         .unwrap();
 
     assert!(!hits.is_empty());
@@ -126,17 +125,17 @@ fn reindex_document_updates_content() {
 
     // 초기 등록
     engine
-        .index_document(pid, "post-1", "첫 번째 포스트", "초기 내용입니다")
+        .index_document(pid, "post-1", "첫 번째 포스트", "초기 내용입니다", "full")
         .unwrap();
 
     // 내용 변경 후 재등록
     engine
-        .index_document(pid, "post-1", "첫 번째 포스트 (개정판)", "Rust로 WebAssembly 컴파일하기")
+        .index_document(pid, "post-1", "첫 번째 포스트 (개정판)", "Rust로 WebAssembly 컴파일하기", "full")
         .unwrap();
 
     // 업데이트된 내용으로 검색
     let hits = engine
-        .search_simple("WebAssembly", &SearchOpts::default())
+        .search(&SearchQuery::new("WebAssembly"))
         .unwrap();
     assert!(!hits.is_empty(), "업데이트된 내용으로 검색되어야 합니다");
     assert_eq!(hits[0].source_doc_id, "post-1");
@@ -164,19 +163,19 @@ fn disabled_project_excluded_from_search() {
     let pid = add_project(&db, "archived", "Archived", "/archived");
 
     engine
-        .index_document(pid, "old-doc", "오래된 문서", "검색에서 제외되어야 할 고유한 내용 xyzzy42")
+        .index_document(pid, "old-doc", "오래된 문서", "검색에서 제외되어야 할 고유한 내용 xyzzy42", "full")
         .unwrap();
 
     // 프로젝트를 disabled 로 변경
     db.conn
         .execute(
             "UPDATE projects SET status = 'disabled' WHERE id = ?1",
-            [pid],
+            rusqlite::params![pid],
         )
         .unwrap();
 
     let hits = engine
-        .search_simple("xyzzy42", &SearchOpts::default())
+        .search(&SearchQuery::new("xyzzy42"))
         .unwrap();
     assert!(hits.is_empty(), "disabled 프로젝트 문서는 검색되지 않아야 합니다");
 }
@@ -190,11 +189,11 @@ fn search_nonexistent_query_returns_empty() {
 
     let pid = add_project(&db, "sample", "Sample", "/sample");
     engine
-        .index_document(pid, "s1", "샘플 문서", "일반적인 내용")
+        .index_document(pid, "s1", "샘플 문서", "일반적인 내용", "full")
         .unwrap();
 
     let hits = engine
-        .search_simple("존재하지않는단어zzz9999", &SearchOpts::default())
+        .search(&SearchQuery::new("존재하지않는단어zzz9999"))
         .unwrap();
     assert!(hits.is_empty());
 }

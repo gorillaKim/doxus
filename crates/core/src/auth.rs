@@ -511,13 +511,13 @@ mod tests {
         std::fs::write(&token_path, test_token).unwrap();
 
         // 4. 주입 실행
-        let mut config = PluginConfig { fields: HashMap::new() };
-        let mut secrets = PluginSecrets { fields: HashMap::new() };
-        let store = MemorySecretStore::new();
+        let mut _config = PluginConfig { fields: HashMap::new() };
+        let mut _secrets = PluginSecrets { fields: HashMap::new() };
+        let _store = MemorySecretStore::new();
 
         // 브릿지 포트 오버라이드를 위해 직접 injection 호출 (테스트 환경)
         let bridge = AuthBridge { port: server.address().port(), token: None };
-        let mut token = bridge.get_secret("com.doxus.confluence", "api_token").await;
+        let token = bridge.get_secret("com.doxus.confluence", "api_token").await;
         
         // 결과 확인
         assert_eq!(token.unwrap(), test_secret);
@@ -530,11 +530,19 @@ mod tests {
 // ── Keychain Auth Injection ──────────────────────────────────────────────────
 
 /// 시스템 키체인, 환경 변수, 또는 데스크탑 앱 브릿지에서 인증 정보를 로드하여 플러그인 설정과 시크릿에 주입합니다.
+/// 테스트 환경에서는 `DOXUS_SKIP_KEYCHAIN=1`을 설정하여 keychain 접근을 건너뛸 수 있습니다.
 pub async fn inject_keychain_auth(
     plugin_id: &str,
     config: &mut doxus_plugin_sdk::PluginConfig,
     secrets: &mut doxus_plugin_sdk::PluginSecrets,
 ) {
+    // 테스트 환경에서 keychain hang 방지
+    if std::env::var("DOXUS_SKIP_KEYCHAIN").unwrap_or_default() == "1" {
+        let store = crate::secrets::MemorySecretStore::new();
+        inject_auth_impl(plugin_id, config, secrets, &store).await;
+        return;
+    }
+
     let store = crate::secrets::UnifiedKeychainStore::new("doxus", "com.doxus.secrets.v1");
     let _ = store.load_from_keychain();
     

@@ -43,7 +43,7 @@ mod tests {
         doxus_core::db::create_vec0_table(&conn).expect("vec0 table");
         doxus_core::db::migrate(&conn).expect("migrate");
         let pm = Arc::new(doxus_core::plugin::PluginManager::new(std::path::PathBuf::from("/tmp/doxus-pm")));
-        McpServer::new(Arc::new(Mutex::new(conn)), None, pm, std::path::PathBuf::from("/tmp/doxus-test-plugins"))
+        McpServer::new(Arc::new(Mutex::new(conn)), std::path::PathBuf::from(":memory:"), None, pm, std::path::PathBuf::from("/tmp/doxus-test-plugins"))
     }
 
     fn insert_project(server: &McpServer, name: &str, path: &str) {

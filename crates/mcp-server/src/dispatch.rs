@@ -61,6 +61,7 @@ pub async fn dispatch_tool(server: &McpServer, name: &str, id: Value, args: &Val
         "doxus_get_toc" => tools::search::get_toc(server, id, args).await,
         "doxus_get_ranking" => tools::search::get_ranking(server, id, args),
         "doxus_inspect_document" => tools::search::inspect_document(server, id, args),
+        "doxus_create_document" => tools::search::create_document(server, id, args).await,
 
         // ── Graph ─────────────────────────────────────────────────────────
         "doxus_get_backlinks" => tools::graph::get_backlinks(server, id, args),
@@ -78,6 +79,10 @@ pub async fn dispatch_tool(server: &McpServer, name: &str, id: Value, args: &Val
         "doxus_plugin_logs" => tools::plugin::logs(server, id, args),
         "doxus_plugin_info" => tools::plugin::info(server, id, args),
 
+
+        // ── Reindex ───────────────────────────────────────────────────────
+        "doxus_reindex_documents" => tools::reindex::reindex_documents(server, id, args).await,
+        "doxus_reindex_status" => tools::reindex::reindex_status(server, id, args),
 
         // ── Diagnostics ───────────────────────────────────────────────────
         "doxus_diagnose" => tools::core::diagnose(server, id),
@@ -161,6 +166,13 @@ pub fn tool_list() -> Value {
             tool("doxus_inspect_document", "Inspect document indexing state", &[
                 param("project", "string", "Project name"),
                 param("id", "string", "Document ID (Source ID or Database ID)"),
+            ]),
+            tool("doxus_create_document", "Create a new document in the target project", &[
+                param("project", "string", "Target project name"),
+                param("title", "string", "Document title"),
+                param("content", "string", "Document content (Markdown/Plain)"),
+                param_opt("folder", "string", "Optional target folder/path in project"),
+                param_opt("metadata", "object", "Optional JSON metadata object for the document"),
             ]),
             tool("doxus_status", "Get server status and health", &[]),
             tool("doxus_agent_summary", "Get a comprehensive summary of the knowledge base for orientation", &[]),

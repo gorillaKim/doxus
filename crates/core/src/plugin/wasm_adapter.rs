@@ -68,6 +68,10 @@ impl WasmDocSourceAdapter {
 
         // Define host functions
         let secret_store_inner = secret_store.unwrap_or_else(|| {
+            // 테스트 환경에서 keychain hang 방지
+            if std::env::var("DOXUS_SKIP_KEYCHAIN").unwrap_or_default() == "1" {
+                return Arc::new(crate::secrets::MemorySecretStore::new());
+            }
             let store = crate::secrets::UnifiedKeychainStore::new("doxus", "com.doxus.secrets.v1");
             let _ = store.load_from_keychain();
             Arc::new(crate::secrets::CachedSecretStore::new(store))

@@ -157,7 +157,8 @@ mod tests {
     fn test_extract_markdown_links() {
         let content = "Read [this](https://example.com) or [that](internal-doc.md).";
         let links = LinkExtractor::extract_links(content);
-        assert!(links.contains(&"https://example.com".to_string()));
+        // External links (http/https) are intentionally filtered out
+        assert!(!links.contains(&"https://example.com".to_string()));
         assert!(links.contains(&"internal-doc.md".to_string()));
     }
 

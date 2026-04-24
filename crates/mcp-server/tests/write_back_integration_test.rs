@@ -1,4 +1,4 @@
-use rusqlite::Connection;
+// use rusqlite::Connection;
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 use doxus_mcp::McpServer;
@@ -52,13 +52,21 @@ impl DocSource for MockWriteSource {
 }
 
 fn setup_server() -> McpServer {
-    let conn = Connection::open_in_memory().unwrap();
+    let db_path = std::path::PathBuf::from("/tmp/doxus-test-writeback.sqlite");
+    if db_path.exists() {
+        let _ = std::fs::remove_file(&db_path);
+    }
+    
+    // Create connection and migrate
+    doxus_core::db::ensure_vec_extension();
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
     doxus_core::db::apply_pragmas(&conn).unwrap();
+    doxus_core::db::create_vec0_table(&conn).unwrap();
     doxus_core::db::migrate(&conn).unwrap();
     
     // Seed project with 'mock-source'
     conn.execute(
-        "INSERT INTO projects (name, display_name, path, source_type, source_project_id, status, config_json, is_default, created_at, updated_at) VALUES ('test-proj', 'Test Project', '/tmp', 'external', 'test-proj', 'active', '{\"fields\":{}}', 1, 0, 0)",
+        "INSERT INTO projects (name, display_name, path, source_type, source_project_id, status, config_json, is_default, created_at, updated_at) VALUES ('test-proj', 'Test Project', '/tmp', 'mock-plugin', 'test-proj', 'active', '{\"fields\":{}}', 1, 0, 0)",
         []
     ).unwrap();
     let project_id: i64 = conn.last_insert_rowid();
@@ -86,7 +94,7 @@ fn setup_server() -> McpServer {
         })
     });
     
-    McpServer::new(Arc::new(Mutex::new(conn)), None, Arc::new(pm), std::path::PathBuf::from("/tmp/plugins"))
+    McpServer::new(Arc::new(Mutex::new(conn)), db_path, None, Arc::new(pm), std::path::PathBuf::from("/tmp/plugins"))
 }
 
 #[tokio::test]

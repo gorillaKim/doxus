@@ -260,7 +260,7 @@ mod tests {
         ).unwrap();
 
         let pm = Arc::new(doxus_core::plugin::PluginManager::new(std::path::PathBuf::from("/tmp/doxus-pm-test")));
-        McpServer::new(Arc::new(Mutex::new(conn)), None, pm, std::path::PathBuf::from("/tmp/doxus-plugins-test"))
+        McpServer::new(Arc::new(Mutex::new(conn)), std::path::PathBuf::from(":memory:"), None, pm, std::path::PathBuf::from("/tmp/doxus-plugins-test"))
     }
 
     #[test]

@@ -307,6 +307,60 @@ impl DocumentService {
         
         self.fetch_full_content(project_name, source_doc_id).await
     }
+
+    /// Creates a new document in the target project via its plugin
+    pub async fn create_document(
+        &self,
+        project_name: &str,
+        title: &str,
+        content: &str,
+        folder: Option<&str>,
+        metadata: Option<std::collections::HashMap<String, serde_json::Value>>,
+    ) -> Result<doxus_plugin_sdk::SourceDocId, ServiceError> {
+        let (source_type, config_json) = {
+            if let Some(path) = &self.db_path {
+                let conn = crate::db::open_readonly(path).map_err(ServiceError::Db)?;
+                conn.query_row(
+                    "SELECT source_type, config_json FROM projects WHERE name = ?1",
+                    params![project_name],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                ).map_err(|_| ServiceError::NotFound(format!("Project '{}' not found", project_name)))?
+            } else {
+                let conn = self.conn.lock().map_err(|_| ServiceError::Sqlite(rusqlite::Error::QueryReturnedNoRows))?;
+                conn.query_row(
+                    "SELECT source_type, config_json FROM projects WHERE name = ?1",
+                    params![project_name],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                ).map_err(|_| ServiceError::NotFound(format!("Project '{}' not found", project_name)))?
+            }
+        };
+
+        let plugin_id = PluginManager::normalize_id(&source_type);
+        let pm = self.plugin_manager.as_ref().ok_or_else(|| ServiceError::Plugin("Plugin manager not available".into()))?;
+        let mut source = pm.get_source(&plugin_id).ok_or_else(|| ServiceError::Plugin(format!("Source plugin {} not found", plugin_id)))?;
+
+        // Config preparation (same as fetch_full_content)
+        let mut config_fields: std::collections::HashMap<String, serde_json::Value> =
+            serde_json::from_str(&config_json).unwrap_or_default();
+        if let Some(inner) = config_fields.get("fields").and_then(|v| v.as_object()) {
+            config_fields = inner.clone().into_iter().collect();
+        }
+
+        let mut plugin_config = doxus_plugin_sdk::PluginConfig { fields: config_fields };
+        let mut plugin_secrets = doxus_plugin_sdk::PluginSecrets::default();
+        inject_keychain_auth(&plugin_id, &mut plugin_config, &mut plugin_secrets).await;
+
+        source.initialize(plugin_config, plugin_secrets).await
+            .map_err(|e| ServiceError::Plugin(format!("Failed to initialize plugin {}: {}", plugin_id, e)))?;
+
+        if !source.supports_write() {
+            return Err(ServiceError::Plugin(format!("Plugin {} does not support write operations", plugin_id)));
+        }
+
+        source.create_document(title, content, folder, metadata.as_ref())
+            .await
+            .map_err(|e| ServiceError::Plugin(e.to_string()))
+    }
 }
 
 #[cfg(test)]
@@ -382,8 +436,8 @@ mod tests {
     async fn test_fetch_full_content_initializes_plugin() {
         let db = TestDb::new();
         // Setup data
-        db.conn.execute("INSERT INTO projects (name, source_type, config_json) VALUES ('p1', 'mock', '{\"base_url\":\"http://test\"}')", []).unwrap();
-        db.conn.execute("INSERT INTO documents (project_id, source_doc_id, title) VALUES (1, 'd1', 't1')", []).unwrap();
+        db.conn.execute("INSERT INTO projects (name, display_name, path, source_type, config_json, created_at, updated_at) VALUES ('p1', 'P1', '/tmp', 'mock', '{\"base_url\":\"http://test\"}', 0, 0)", []).unwrap();
+        db.conn.execute("INSERT INTO documents (project_id, source_doc_id, title, content_hash) VALUES (1, 'd1', 't1', 'h1')", []).unwrap();
 
         let initialized = Arc::new(AtomicBool::new(false));
         let config_capture = Arc::new(std::sync::Mutex::new(None));
@@ -391,7 +445,7 @@ mod tests {
         let mut pm = PluginManager::new(std::path::PathBuf::from("/tmp"));
         let init_clone = initialized.clone();
         let config_clone = config_capture.clone();
-        pm.register_factory("com.doxus.mock", move || {
+        pm.register_factory("mock", move || {
             Box::new(MockSource { 
                 initialized: init_clone.clone(),
                 config_capture: config_clone.clone(),

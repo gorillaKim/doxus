@@ -30,12 +30,12 @@ fn setup_db() -> (Connection, TempDir) {
 
 fn make_server(conn: Connection, plugins_dir: PathBuf) -> McpServer {
     let pm = Arc::new(doxus_core::plugin::PluginManager::new(plugins_dir.clone()));
-    McpServer::new(Arc::new(Mutex::new(conn)), None, pm, plugins_dir)
+    McpServer::new(Arc::new(Mutex::new(conn)), plugins_dir.clone(), None, pm, plugins_dir)
 }
 
 fn make_server_with_file_scheme(conn: Connection, plugins_dir: PathBuf) -> McpServer {
     let pm = Arc::new(doxus_core::plugin::PluginManager::new(plugins_dir.clone()));
-    McpServer::new_with_file_scheme(Arc::new(Mutex::new(conn)), None, pm, plugins_dir)
+    McpServer::new_with_file_scheme(Arc::new(Mutex::new(conn)), plugins_dir.clone(), None, pm, plugins_dir)
 }
 
 // --- test 1: url 파라미터 없으면 DB-only 등록 성공 ---

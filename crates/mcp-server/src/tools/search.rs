@@ -38,6 +38,12 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
         }
     }
 
+    // 날짜 필터 파라미터
+    if let Some(v) = args["created_after"].as_i64()  { q.created_after  = Some(v); }
+    if let Some(v) = args["created_before"].as_i64() { q.created_before = Some(v); }
+    if let Some(v) = args["updated_after"].as_i64()  { q.updated_after  = Some(v); }
+    if let Some(v) = args["updated_before"].as_i64() { q.updated_before = Some(v); }
+
     q.mode = match args["mode"].as_str() {
         Some("fts") => SearchMode::Fts,
         Some("vector") => SearchMode::Vector,
@@ -65,6 +71,8 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
                             "snippet": h.snippet,
                             "context": h.context_content,
                             "score": h.score,
+                            "created_at": h.created_at,
+                            "updated_at": h.updated_at,
                         })
                     })
                     .collect();
@@ -105,6 +113,8 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
                             "title": h.title,
                             "snippet": h.snippet,
                             "score": h.score,
+                            "created_at": h.created_at,
+                            "updated_at": h.updated_at,
                         })
                     })
                     .collect();
@@ -310,27 +320,56 @@ pub fn list_documents(server: &McpServer, id: Value, args: &Value) -> McpRespons
     let limit = args["limit"].as_u64().unwrap_or(50) as i64;
     let cursor_offset = args["cursor"].as_str().and_then(|c| c.parse::<i64>().ok()).unwrap_or(0);
 
+    // sort_by: "title" | "created_at" | "updated_at" | "last_indexed" (기본: source_doc_id)
+    let order_col = match args["sort_by"].as_str() {
+        Some("title") => "d.title",
+        Some("created_at") => "d.created_at",
+        Some("updated_at") => "d.updated_at",
+        Some("last_indexed") => "d.last_indexed",
+        _ => "d.source_doc_id",
+    };
+    // sort_order: "asc" | "desc" (기본: "asc")
+    let order_dir = match args["sort_order"].as_str() {
+        Some("desc") => "DESC",
+        _ => "ASC",
+    };
+
     let conn = server.conn();
     let conn_lock = match conn.lock() {
         Ok(l) => l,
         Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
     };
-    let mut stmt = match conn_lock.prepare(
-        "SELECT d.source_doc_id, d.title FROM documents d JOIN projects p ON d.project_id = p.id WHERE p.name = ?1 ORDER BY d.source_doc_id LIMIT ?2 OFFSET ?3",
-    ) {
+    let sql = format!(
+        "SELECT d.source_doc_id, d.title, d.created_at, d.updated_at \
+         FROM documents d JOIN projects p ON d.project_id = p.id \
+         WHERE p.name = ?1 ORDER BY {order_col} {order_dir} LIMIT ?2 OFFSET ?3"
+    );
+    let mut stmt = match conn_lock.prepare(&sql) {
         Ok(s) => s,
         Err(e) => return McpResponse::err(id, -32603, e.to_string()),
     };
 
     let rows: Result<Vec<_>, _> = stmt.query_map(params![project, limit, cursor_offset], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, Option<String>>(1)?,
+            r.get::<_, Option<i64>>(2)?,
+            r.get::<_, Option<i64>>(3)?,
+        ))
     }).and_then(|it| it.collect());
 
     match rows {
         Err(e) => McpResponse::err(id, -32603, e.to_string()),
         Ok(rows) => {
             let next_cursor = if rows.len() as i64 == limit { Some(cursor_offset + limit) } else { None };
-            let items: Vec<Value> = rows.iter().map(|(doc_id, title)| json!({ "id": doc_id, "title": title })).collect();
+            let items: Vec<Value> = rows.iter().map(|(doc_id, title, created_at, updated_at)| {
+                json!({
+                    "id": doc_id,
+                    "title": title,
+                    "created_at": created_at,
+                    "updated_at": updated_at,
+                })
+            }).collect();
             McpResponse::ok(id, json!({ "content": [{"type": "text", "text": serde_json::to_string_pretty(&json!({ "documents": items, "next_cursor": next_cursor })).unwrap_or_default()}] }))
         }
     }
@@ -446,6 +485,50 @@ pub fn inspect_document(server: &McpServer, id: Value, args: &Value) -> McpRespo
     }
 }
 
+pub async fn create_document(server: &McpServer, id: Value, args: &Value) -> McpResponse {
+    let project = match args["project"].as_str() {
+        Some(p) => p,
+        None => return McpResponse::err(id, -32602, "missing required arg: project"),
+    };
+    let title = match args["title"].as_str() {
+        Some(t) => t,
+        None => return McpResponse::err(id, -32602, "missing required arg: title"),
+    };
+    let content = args["content"].as_str().unwrap_or("");
+    let folder = args["folder"].as_str();
+    let metadata = args["metadata"].as_object().map(|obj| {
+        obj.iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect::<std::collections::HashMap<String, Value>>()
+    });
+
+    let pm = server.plugin_manager();
+    let service = doxus_core::document::DocumentService::new_with_path(server.db_path(), Some(pm.clone()));
+
+    match service.create_document(project, title, content, folder, metadata).await {
+        Ok(new_id) => {
+            // Immediate Sync
+            if let Ok(doc) = service.fetch_full_content(project, &new_id.0).await {
+                let indexer = server.indexer();
+                let conn = indexer.conn();
+                let project_info = {
+                    let conn_lock = conn.lock().unwrap();
+                    conn_lock.query_row(
+                        "SELECT id, storage_strategy FROM projects WHERE name = ?1",
+                        params![project],
+                        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+                    )
+                };
+                if let Ok((pid, strategy)) = project_info {
+                    let _ = indexer.index_single_document(pid, doc, &strategy).await;
+                }
+            }
+            McpResponse::text(id, format!("Successfully created document '{}' in project '{}'", new_id.0, project))
+        },
+        Err(e) => McpResponse::err(id, -32603, format!("Failed to create document: {}", e)),
+    }
+}
+
 static RE_HEADER: OnceLock<Regex> = OnceLock::new();
 fn header_regex() -> &'static Regex { RE_HEADER.get_or_init(|| Regex::new(r"^\s{0,3}(#{1,6})(?:\s+(.*)|$)").unwrap()) }
 
@@ -483,4 +566,139 @@ pub fn extract_toc(content: &str) -> String {
         }
     }
     toc.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::server::McpServer;
+    use doxus_core::search::{DocMeta, SyncSearchEngine};
+    use serde_json::json;
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    fn make_test_conn() -> rusqlite::Connection {
+        doxus_core::db::ensure_vec_extension();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        doxus_core::db::apply_pragmas(&conn).unwrap();
+        doxus_core::db::create_vec0_table(&conn).unwrap();
+        doxus_core::db::migrate(&conn).unwrap();
+        conn
+    }
+
+    fn setup_server() -> (McpServer, i64) {
+        let conn = Arc::new(Mutex::new(make_test_conn()));
+        {
+            let c = conn.lock().unwrap();
+            c.execute(
+                "INSERT INTO projects(name, display_name, path, status, created_at, updated_at) \
+                 VALUES ('tp', 'Test', '/tmp', 'active', unixepoch(), unixepoch())",
+                [],
+            ).unwrap();
+        }
+        let pid: i64 = conn.lock().unwrap()
+            .query_row("SELECT id FROM projects WHERE name='tp'", [], |r| r.get::<_, i64>(0))
+            .unwrap();
+        let pm = Arc::new(doxus_core::plugin::PluginManager::new(PathBuf::from("/tmp")));
+        let server = McpServer::new(conn, PathBuf::from(":memory:"), None, pm, PathBuf::from("/tmp"));
+        (server, pid)
+    }
+
+    fn insert_doc(server: &McpServer, pid: i64, sid: &str, title: &str, content: &str, created_at: i64, updated_at: i64) {
+        let conn = server.conn();
+        let c = conn.lock().unwrap();
+        let engine = SyncSearchEngine::from_conn(&c);
+        let meta = DocMeta { created_at: Some(created_at), updated_at: Some(updated_at), ..Default::default() };
+        engine.index_document_with_meta(pid, sid, title, content, &meta, "full").unwrap();
+    }
+
+    fn parse_docs(text: &str) -> Vec<serde_json::Value> {
+        let v: serde_json::Value = serde_json::from_str(text).unwrap();
+        v["documents"].as_array().cloned().unwrap_or_default()
+    }
+
+    fn get_text(resp: &McpResponse) -> String {
+        let v = serde_json::to_value(resp).unwrap();
+        v["result"]["content"][0]["text"].as_str().unwrap_or_default().to_string()
+    }
+
+    // ── Step 3 TDD 테스트 ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_list_documents_includes_created_updated_at() {
+        let (server, pid) = setup_server();
+        insert_doc(&server, pid, "doc1", "Doc 1", "content", 1234, 5678);
+
+        let resp = list_documents(&server, json!(1), &json!({ "project": "tp" }));
+        let text = get_text(&resp);
+        let docs = parse_docs(&text);
+        assert!(!docs.is_empty(), "문서 목록이 비어 있음");
+        assert_eq!(docs[0]["created_at"].as_i64(), Some(1234), "created_at 포함");
+        assert_eq!(docs[0]["updated_at"].as_i64(), Some(5678), "updated_at 포함");
+    }
+
+    #[test]
+    fn test_list_documents_sort_by_created_at_desc() {
+        let (server, pid) = setup_server();
+        insert_doc(&server, pid, "old", "Old Doc", "old", 1000, 1000);
+        insert_doc(&server, pid, "new", "New Doc", "new", 5000, 5000);
+
+        let resp = list_documents(
+            &server, json!(1),
+            &json!({ "project": "tp", "sort_by": "created_at", "sort_order": "desc" }),
+        );
+        let text = get_text(&resp);
+        let docs = parse_docs(&text);
+        assert!(docs.len() >= 2, "두 문서 이상 있어야 함");
+        assert_eq!(docs[0]["id"].as_str(), Some("new"), "최신 문서(created_at=5000)가 먼저");
+        assert_eq!(docs[1]["id"].as_str(), Some("old"));
+    }
+
+    #[test]
+    fn test_list_documents_sort_by_created_at_asc() {
+        let (server, pid) = setup_server();
+        insert_doc(&server, pid, "old", "Old Doc", "old", 1000, 1000);
+        insert_doc(&server, pid, "new", "New Doc", "new", 5000, 5000);
+
+        let resp = list_documents(
+            &server, json!(1),
+            &json!({ "project": "tp", "sort_by": "created_at", "sort_order": "asc" }),
+        );
+        let text = get_text(&resp);
+        let docs = parse_docs(&text);
+        assert!(docs.len() >= 2);
+        assert_eq!(docs[0]["id"].as_str(), Some("old"), "오래된 문서(created_at=1000)가 먼저");
+    }
+
+    #[test]
+    fn test_search_response_includes_date_fields() {
+        let (server, pid) = setup_server();
+        insert_doc(&server, pid, "d1", "Unique Keyword Title", "lorem", 1111, 2222);
+
+        // SyncSearchEngine으로 직접 검색해 날짜가 DB에 저장됐는지 확인
+        let conn = server.conn();
+        let c = conn.lock().unwrap();
+        let engine = SyncSearchEngine::from_conn(&c);
+        let q = doxus_core::search::SearchQuery::new("Unique Keyword");
+        let hits = engine.search(&q).unwrap();
+        assert!(!hits.is_empty(), "FTS 결과가 있어야 함");
+        assert_eq!(hits[0].created_at, Some(1111));
+        assert_eq!(hits[0].updated_at, Some(2222));
+    }
+
+    #[test]
+    fn test_search_created_after_filter_via_engine() {
+        let (server, pid) = setup_server();
+        insert_doc(&server, pid, "old", "Knowledge Base Old", "content", 1000, 1000);
+        insert_doc(&server, pid, "new", "Knowledge Base New", "content", 5000, 5000);
+
+        let conn = server.conn();
+        let c = conn.lock().unwrap();
+        let engine = SyncSearchEngine::from_conn(&c);
+        let mut q = doxus_core::search::SearchQuery::new("Knowledge Base");
+        q.created_after = Some(2000);
+        let hits = engine.search(&q).unwrap();
+        assert_eq!(hits.len(), 1, "created_after=2000 이면 created_at=5000 문서만 반환");
+        assert_eq!(hits[0].title.as_deref(), Some("Knowledge Base New"));
+    }
 }

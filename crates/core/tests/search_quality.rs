@@ -15,7 +15,7 @@
 ///   - score_gap  : 1위-2위 score 차이
 use doxus_core::{
     db::TestDb,
-    search::{SearchEngine, SearchOpts, SyncSearchEngine},
+    search::{SearchEngine, SyncSearchEngine},
 };
 use rusqlite;
 
@@ -149,11 +149,11 @@ impl QualityResult {
     fn pass_top3(&self) -> &'static str { if self.top3_match { "PASS" } else { "FAIL" } }
 }
 
-fn rank_of(hits: &[doxus_core::search::Hit], id: &str) -> usize {
+fn rank_of(hits: &[doxus_core::db::schema::SearchHit], id: &str) -> usize {
     hits.iter().position(|h| h.source_doc_id == id).map(|i| i + 1).unwrap_or(usize::MAX)
 }
 
-fn score_gap(hits: &[doxus_core::search::Hit]) -> f64 {
+fn score_gap(hits: &[doxus_core::db::schema::SearchHit]) -> f64 {
     if hits.len() < 2 { 0.0 } else { hits[0].score - hits[1].score }
 }
 
@@ -178,7 +178,7 @@ fn setup() -> (TestDb, i64) {
     let engine = SearchEngine::new(&db.conn);
     for doc in CORPUS {
         engine
-            .index_document(pid, doc.id, doc.title, doc.content)
+            .index_document(pid, doc.id, doc.title, doc.content, "full")
             .unwrap_or_else(|e| panic!("index '{}' failed: {e}", doc.id));
     }
     (db, pid)
@@ -191,8 +191,10 @@ fn measure(
     query: &'static str,
     expected_id: &'static str,
 ) -> QualityResult {
-    let opts = SearchOpts { project_ids: Some(vec![pid]), limit: Some(10) };
-    let hits = engine.search_simple(query, &opts).unwrap();
+    let query_obj = doxus_core::search::SearchQuery::new(query)
+        .with_projects(vec![pid])
+        .with_limit(10);
+    let hits = engine.search(&query_obj).unwrap();
     let rank = rank_of(&hits, expected_id);
     QualityResult {
         scenario: label.to_string(),
@@ -316,8 +318,10 @@ fn quality_s3_ranking_clarity() {
     ];
 
     for (query, expected_id) in cases {
-        let opts = SearchOpts { project_ids: Some(vec![pid]), limit: Some(10) };
-        let hits = engine.search_simple(query, &opts).unwrap();
+        let query_obj = doxus_core::search::SearchQuery::new(*query)
+            .with_projects(vec![pid])
+            .with_limit(10);
+        let hits = engine.search(&query_obj).unwrap();
         let rank = rank_of(&hits, expected_id);
         let gap = score_gap(&hits);
 
@@ -334,12 +338,11 @@ fn quality_s4_document_discrimination() {
     let (db, pid) = setup();
     let engine = SearchEngine::new(&db.conn);
 
-    let opts = |pid: i64| SearchOpts { project_ids: Some(vec![pid]), limit: Some(10) };
-
-    // "sqlite vec KNN float32" → sqlite-vec 이 hybrid-search 보다 상위
-    // ('-' 는 FTS5 NOT 연산자이므로 공백으로 대체)
     {
-        let hits = engine.search_simple("sqlite vec KNN float32", &opts(pid)).unwrap();
+        let query_obj = doxus_core::search::SearchQuery::new("sqlite vec KNN float32")
+            .with_projects(vec![pid])
+            .with_limit(10);
+        let hits = engine.search(&query_obj).unwrap();
         let r_vec = rank_of(&hits, "sqlite-vec");
         let r_hyb = rank_of(&hits, "hybrid-search");
         println!("  [구분] sqlite-vec rank={}, hybrid-search rank={}", r_vec, r_hyb);
@@ -349,7 +352,10 @@ fn quality_s4_document_discrimination() {
 
     // "RRF Reciprocal Rank Fusion" → rrf-ranking 이 hybrid-search 보다 상위
     {
-        let hits = engine.search_simple("RRF Reciprocal Rank Fusion", &opts(pid)).unwrap();
+        let query_obj = doxus_core::search::SearchQuery::new("RRF Reciprocal Rank Fusion")
+            .with_projects(vec![pid])
+            .with_limit(10);
+        let hits = engine.search(&query_obj).unwrap();
         let r_rrf = rank_of(&hits, "rrf-ranking");
         let r_hyb = rank_of(&hits, "hybrid-search");
         println!("  [구분] rrf-ranking rank={}, hybrid-search rank={}", r_rrf, r_hyb);
@@ -359,7 +365,10 @@ fn quality_s4_document_discrimination() {
 
     // "Tauri IPC command invoke" → tauri-ipc 가 react-zustand 보다 상위
     {
-        let hits = engine.search_simple("Tauri IPC command invoke", &opts(pid)).unwrap();
+        let query_obj = doxus_core::search::SearchQuery::new("Tauri IPC command invoke")
+            .with_projects(vec![pid])
+            .with_limit(10);
+        let hits = engine.search(&query_obj).unwrap();
         let r_tauri = rank_of(&hits, "tauri-ipc");
         let r_react = rank_of(&hits, "react-zustand");
         println!("  [구분] tauri-ipc rank={}, react-zustand rank={}", r_tauri, r_react);
@@ -382,8 +391,10 @@ fn quality_s5_no_result_for_unrelated() {
     ];
 
     for query in &unrelated {
-        let opts = SearchOpts { project_ids: Some(vec![pid]), limit: Some(5) };
-        let hits = engine.search_simple(query, &opts).unwrap();
+        let query_obj = doxus_core::search::SearchQuery::new(*query)
+            .with_projects(vec![pid])
+            .with_limit(5);
+        let hits = engine.search(&query_obj).unwrap();
         assert!(hits.is_empty(), "query='{}' — 관련 없는 쿼리는 빈 결과여야 함 (got {}건)", query, hits.len());
         println!("  [OK] query='{}' → 0건", query);
     }

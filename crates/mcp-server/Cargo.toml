@@ -13,12 +13,13 @@ tempfile = { workspace = true }
 mockito = "1"
 sha2 = "0.10"
 tokio = { version = "1", features = ["full", "test-util"] }
+doxus-core = { path = "../core", features = ["test-helpers"] }
 
 [dependencies]
 doxus-core = { path = "../core" }
 doxus-plugin-sdk = { path = "../plugin-sdk" }
 doxus-plugin-obsidian = { path = "../plugins/obsidian" }
-confluence = { path = "../plugins/confluence" }
+doxus-plugin-confluence = { path = "../plugins/confluence" }
 doxus-plugin-github = { path = "../plugins/github" }
 rusqlite = { workspace = true }
 tokio = { workspace = true }

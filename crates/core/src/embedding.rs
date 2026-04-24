@@ -51,7 +51,7 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 pub fn quantize_to_i8(v: &[f32]) -> Vec<i8> {
     v.iter()
         .map(|&x| {
-            let scaled = (x * 127.0).round();
+            let scaled = (x * 128.0).round();
             scaled.clamp(-128.0, 127.0) as i8
         })
         .collect()

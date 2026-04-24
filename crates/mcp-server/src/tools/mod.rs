@@ -2,6 +2,7 @@ pub mod core;
 pub mod graph;
 pub mod plugin;
 pub mod project;
+pub mod reindex;
 pub mod search;
 
 use rusqlite::params;

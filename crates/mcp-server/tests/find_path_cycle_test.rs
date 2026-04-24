@@ -85,7 +85,7 @@ async fn find_path_no_false_positive_on_prefix_ids() {
     insert_link(&conn, id10, id100);
  
     let pm = Arc::new(doxus_core::plugin::PluginManager::new(tmp.path().to_path_buf()));
-    let server = McpServer::new(Arc::new(Mutex::new(conn)), None, pm, tmp.path().to_path_buf());
+    let server = McpServer::new(Arc::new(Mutex::new(conn)), std::path::PathBuf::from(":memory:"), None, pm, tmp.path().to_path_buf());
     let resp = server.dispatch_tool(
         "doxus_find_path",
         json!(1),
@@ -119,7 +119,7 @@ async fn find_path_detects_real_cycle_and_avoids_infinite_loop() {
     insert_link(&conn, idb, ida);
  
     let pm = Arc::new(doxus_core::plugin::PluginManager::new(tmp.path().to_path_buf()));
-    let server = McpServer::new(Arc::new(Mutex::new(conn)), None, pm, tmp.path().to_path_buf());
+    let server = McpServer::new(Arc::new(Mutex::new(conn)), std::path::PathBuf::from(":memory:"), None, pm, tmp.path().to_path_buf());
     let resp = server.dispatch_tool(
         "doxus_find_path",
         json!(1),

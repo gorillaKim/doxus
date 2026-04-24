@@ -292,7 +292,6 @@ mod tests {
     use crate::db::TestDb;
     use crate::plugin::PluginManager;
     use crate::search::SearchEngine;
-    use doxus_plugin_sdk::SyncPolicy;
 
     async fn setup_manager() -> (Arc<SyncManager>, Arc<std::sync::Mutex<rusqlite::Connection>>) {
         let db = TestDb::new();

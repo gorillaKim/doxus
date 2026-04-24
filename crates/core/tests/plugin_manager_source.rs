@@ -37,6 +37,7 @@ impl DocSource for MockPlugin {
             incremental_sync: false,
             oauth: false,
             native_search: false,
+            sync_policy: doxus_plugin_sdk::SyncPolicy::Manual,
         }
     }
 

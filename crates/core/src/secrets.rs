@@ -115,7 +115,12 @@ impl UnifiedKeychainStore {
     }
 
     /// Load the entire JSON blob from keychain and populate the cache.
+    /// 테스트 환경에서는 `DOXUS_SKIP_KEYCHAIN=1`를 설정하여 keychain 접근을 건너뛸 수 있습니다.
     pub fn load_from_keychain(&self) -> Result<(), SecretsError> {
+        if std::env::var("DOXUS_SKIP_KEYCHAIN").unwrap_or_default() == "1" {
+            return Ok(());
+        }
+
         let entry = keyring::Entry::new(&self.service, &self.account)
             .map_err(|e| SecretsError::Keychain(e.to_string()))?;
         
@@ -144,6 +149,9 @@ impl UnifiedKeychainStore {
 
     /// Persist the current cache to the keychain as a JSON blob.
     fn save_to_keychain(&self) -> Result<(), SecretsError> {
+        if std::env::var("DOXUS_SKIP_KEYCHAIN").unwrap_or_default() == "1" {
+            return Ok(());
+        }
         self.ensure_loaded()?;
         let entry = keyring::Entry::new(&self.service, &self.account)
             .map_err(|e| SecretsError::Keychain(e.to_string()))?;

@@ -160,7 +160,7 @@ impl PluginInstaller {
             .map_err(|e| InstallerError::InvalidUrl(e.to_string()))?;
 
         let wasm_bytes: Vec<u8> = match parsed.scheme() {
-            "https" => {
+            "http" | "https" => {
                 self.with_http_client(|client| {
                     let resp = client
                         .get(url)

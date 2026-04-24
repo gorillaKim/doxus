@@ -69,6 +69,7 @@ pub struct Chunk {
 pub struct SearchHit {
     pub document_id: i64,
     pub source_doc_id: String,
+    pub project_id: i64,
     pub chunk_id: i64,
     pub title: Option<String>,
     pub file_path: Option<String>,

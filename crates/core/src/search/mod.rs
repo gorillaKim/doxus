@@ -544,7 +544,7 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
     let _ = next_param;
 
     let sql = format!(
-        "SELECT d.id, d.source_doc_id, c.id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path,
+        "SELECT d.id, d.source_doc_id, d.project_id, c.id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path,
                 '' AS snippet, bm25(chunks_fts, 1.0, 3.0, 10.0) AS score,
                 d.url, d.metadata_json, d.last_indexed,
                 c.start_byte, c.end_byte, c.content,
@@ -580,21 +580,22 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
         let mut hit = SearchHit {
             document_id: row.get(0)?,
             source_doc_id: row.get(1)?,
-            chunk_id: row.get(2)?,
-            title: row.get(3)?,
-            file_path: row.get(4)?,
-            heading_path: row.get(5)?,
-            snippet: row.get(6)?,
-            score: row.get::<_, f64>(7).unwrap_or(0.0).abs(),
-            url: row.get(8)?,
-            metadata_json: row.get(9)?,
-            last_indexed: row.get(10)?,
-            start_byte: row.get(11)?,
-            end_byte: row.get(12)?,
-            raw_content: row.get(13)?,
+            project_id: row.get(2)?,
+            chunk_id: row.get(3)?,
+            title: row.get(4)?,
+            file_path: row.get(5)?,
+            heading_path: row.get(6)?,
+            snippet: row.get(7)?,
+            score: row.get::<_, f64>(8).unwrap_or(0.0).abs(),
+            url: row.get(9)?,
+            metadata_json: row.get(10)?,
+            last_indexed: row.get(11)?,
+            start_byte: row.get(12)?,
+            end_byte: row.get(13)?,
+            raw_content: row.get(14)?,
             context_content: None,
-            created_at: row.get(14)?,
-            updated_at: row.get(15)?,
+            created_at: row.get(15)?,
+            updated_at: row.get(16)?,
         };
 
         if let Some(ref path_str) = hit.file_path {
@@ -633,7 +634,7 @@ fn vector_search_sync(
     };
 
     let sql = format!(
-        "SELECT c.id, c.document_id, d.source_doc_id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path, c.content, knn.distance, d.url, d.metadata_json, d.last_indexed, c.start_byte, c.end_byte, d.created_at, d.updated_at
+        "SELECT c.id, c.document_id, d.project_id, d.source_doc_id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path, c.content, knn.distance, d.url, d.metadata_json, d.last_indexed, c.start_byte, c.end_byte, d.created_at, d.updated_at
          FROM (
              SELECT chunk_id, distance FROM chunk_embeddings
              WHERE vector MATCH vec_int8(?1) AND k = ?2
@@ -654,25 +655,26 @@ fn vector_search_sync(
     let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
     
     let hits = stmt.query_map(param_refs.as_slice(), |row| {
-        let distance: f64 = row.get(7)?;
+        let distance: f64 = row.get(8)?;
         let mut hit = SearchHit {
             chunk_id: row.get(0)?,
             document_id: row.get(1)?,
-            source_doc_id: row.get(2)?,
-            title: row.get(3)?,
-            file_path: row.get(4)?,
-            heading_path: row.get(5)?,
-            url: row.get(8)?,
+            project_id: row.get(2)?,
+            source_doc_id: row.get(3)?,
+            title: row.get(4)?,
+            file_path: row.get(5)?,
+            heading_path: row.get(6)?,
+            url: row.get(9)?,
             snippet: String::new(),
             score: 1.0 / (RRF_K as f64 + distance),
-            metadata_json: row.get(9)?,
-            last_indexed: row.get(10)?,
-            start_byte: row.get(11)?,
-            end_byte: row.get(12)?,
-            raw_content: row.get(6)?,
+            metadata_json: row.get(10)?,
+            last_indexed: row.get(11)?,
+            start_byte: row.get(12)?,
+            end_byte: row.get(13)?,
+            raw_content: row.get(7)?,
             context_content: None,
-            created_at: row.get(13)?,
-            updated_at: row.get(14)?,
+            created_at: row.get(14)?,
+            updated_at: row.get(15)?,
         };
 
         if let Some(ref path_str) = hit.file_path {

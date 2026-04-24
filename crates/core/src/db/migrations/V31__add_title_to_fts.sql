@@ -32,15 +32,13 @@ BEGIN
 END;
 
 CREATE TRIGGER chunks_fts_delete AFTER DELETE ON chunks BEGIN
-    INSERT INTO chunks_fts(chunks_fts, rowid, content, heading_path, title)
-    VALUES ('delete', old.id, old.content, old.heading_path, '');
+    DELETE FROM chunks_fts WHERE rowid = old.id;
 END;
 
 CREATE TRIGGER chunks_fts_update AFTER UPDATE ON chunks
 WHEN (new.content IS NOT NULL)
 BEGIN
-    INSERT INTO chunks_fts(chunks_fts, rowid, content, heading_path, title)
-    VALUES ('delete', old.id, old.content, old.heading_path, '');
+    DELETE FROM chunks_fts WHERE rowid = old.id;
     INSERT INTO chunks_fts(rowid, content, heading_path, title)
     SELECT new.id, new.content, new.heading_path, d.title
     FROM documents d WHERE d.id = new.document_id;
