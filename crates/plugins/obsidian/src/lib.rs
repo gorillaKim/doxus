@@ -213,6 +213,7 @@ fn parse_frontmatter_tags(fm: &str) -> Vec<String> {
 pub struct ObsidianPlugin {
     meta: PluginMetadata,
     vault_path: Option<PathBuf>,
+    cached_paths: std::sync::Mutex<Option<(std::time::Instant, Vec<PathBuf>)>>,
 }
 
 impl ObsidianPlugin {
@@ -225,6 +226,7 @@ impl ObsidianPlugin {
                 kind: PluginKind::Builtin,
             },
             vault_path: None,
+            cached_paths: std::sync::Mutex::new(None),
         }
     }
 
@@ -403,10 +405,26 @@ impl DocSource for ObsidianPlugin {
     async fn fetch_all(&self, opts: FetchAllOpts) -> Result<DocumentStream, PluginError> {
         let vault = self.vault()?;
 
-        // Collect only file paths — no content reads yet
-        let all_paths = self.collect_markdown_paths(vault);
+        let all_paths = {
+            let mut cache = self.cached_paths.lock().map_err(|_| PluginError::Internal("cache lock failed".into()))?;
+            let now = std::time::Instant::now();
+            
+            if let Some((ts, ref paths)) = *cache {
+                if now.duration_since(ts) < std::time::Duration::from_secs(300) {
+                    paths.clone()
+                } else {
+                    let paths = self.collect_markdown_paths(vault);
+                    *cache = Some((now, paths.clone()));
+                    paths
+                }
+            } else {
+                let paths = self.collect_markdown_paths(vault);
+                *cache = Some((now, paths.clone()));
+                paths
+            }
+        };
+        
         let total = all_paths.len();
-
         let page_size = opts.page_size;
         let offset: usize = opts
             .cursor
@@ -414,12 +432,40 @@ impl DocSource for ObsidianPlugin {
             .and_then(|c| c.parse().ok())
             .unwrap_or(0usize);
 
-        // Read only the files in the requested page
         let page_paths = all_paths.into_iter().skip(offset).take(page_size);
-        let documents: Result<Vec<_>, _> =
-            page_paths.map(|p| self.read_markdown_file(vault, &p)).collect();
-        let documents =
-            documents.map_err(|e| PluginError::Internal(e.to_string()))?;
+        let mut documents = Vec::new();
+        for file_path in page_paths {
+            let rel_path = file_path
+                .strip_prefix(vault)
+                .unwrap_or(&file_path)
+                .to_string_lossy()
+                .to_string();
+
+            let file_meta = file_path.metadata().ok();
+            let updated_at = file_meta
+                .as_ref()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs() as i64));
+            
+            // For listing, we use filename as title to avoid reading file body
+            let title = file_path.file_stem()
+                .map(|s| s.to_string_lossy().to_string());
+
+            documents.push(RawDocument {
+                id: SourceDocId(rel_path.clone()),
+                title,
+                content: String::new(), // Lightweight
+                content_type: ContentType::Markdown,
+                url: Some(format!("obsidian://open?path={rel_path}")),
+                metadata: HashMap::new(),
+                tags: vec![],
+                aliases: vec![],
+                links: vec![],
+                created_at: None,
+                updated_at,
+                relative_path: Some(rel_path),
+            });
+        }
 
         let next_cursor = if offset + page_size < total {
             Some((offset + page_size).to_string())
@@ -437,8 +483,12 @@ impl DocSource for ObsidianPlugin {
     async fn fetch_document(&self, id: &SourceDocId) -> Result<RawDocument, PluginError> {
         let vault = self.vault()?;
         let path = vault.join(&id.0);
-        let content = std::fs::read_to_string(&path)
+        
+        let file_meta = path.metadata()
             .map_err(|e| PluginError::NotFound(format!("{}: {e}", id.0)))?;
+        
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| PluginError::Internal(format!("{}: {e}", id.0)))?;
 
         // 1. Try to find title in frontmatter
         // 2. Try to find first markdown header (any level)
@@ -462,6 +512,9 @@ impl DocSource for ObsidianPlugin {
             .filter(|l| l != &id.0)
             .collect();
 
+        let updated_at = file_meta.modified().ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs() as i64));
+
         Ok(RawDocument {
             id: id.clone(),
             title,
@@ -473,7 +526,7 @@ impl DocSource for ObsidianPlugin {
             aliases,
             links,
             created_at: fm_created_at,
-            updated_at: None,
+            updated_at,
             relative_path: Some(id.0.clone()),
         })
     }

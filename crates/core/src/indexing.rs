@@ -82,9 +82,6 @@ impl IndexingService {
         let mut cursor = None;
         let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-        // [최적화] 기존 메타데이터를 루프 시작 전에 단 한 번만 가져옵니다. (기존 9GB 메모리 이슈의 주원인 해결)
-        let existing_meta = self.get_existing_metadata(project_id).await.unwrap_or_default();
-
         let result = async {
             loop {
                 let stream = plugin.fetch_all(FetchAllOpts { cursor, page_size: 50 }).await.map_err(|e| e.to_string())?;
@@ -108,14 +105,26 @@ impl IndexingService {
                         })
                         .unwrap_or_else(|| "Untitled".to_string());
 
-                    if let Some((old_ts, old_title)) = existing_meta.get(&source_doc_id) {
-                        let needs_repair = old_title == "Untitled" || old_title.is_empty();
-                        if !full && doc.updated_at == Some(*old_ts) && !needs_repair {
-                            continue;
+                    // [최적화] 대규모 프로젝트에서 메모리 보호를 위해 HashMap 대신 
+                    // DB에서 개별적으로 재인덱싱 필요성을 확인합니다.
+                    if !full && !self.needs_reindexing(project_id, &source_doc_id, doc.updated_at).await {
+                        continue;
+                    }
+
+                    // Content is empty (optimization from local plugins like Obsidian)
+                    // Fetch full document content only when we actually decide to index it
+                    let mut final_doc = doc;
+                    if final_doc.content.is_empty() {
+                        match plugin.fetch_document(&final_doc.id).await {
+                            Ok(full_doc) => { final_doc = full_doc; }
+                            Err(e) => {
+                                crate::log_d!("indexer", "[Core-Indexer] Failed to fetch full content for {}: {}", source_doc_id, e);
+                                continue;
+                            }
                         }
                     }
 
-                    match self.index_single_document(project_id, doc, &strategy).await {
+                    match self.index_single_document(project_id, final_doc, &strategy).await {
                         Ok(_) => { total += 1; }
                         Err(e) => {
                             crate::log_d!("indexer", "[Core-Indexer] Error indexing '{}' ({}): {}", title, source_doc_id, e);
@@ -340,23 +349,6 @@ impl IndexingService {
         Ok(removed)
     }
 
-    async fn get_existing_metadata(&self, project_id: i64) -> Result<HashMap<String, (i64, String)>, String> {
-        let conn = self.conn.lock().map_err(|_| "db lock poisoned".to_string())?;
-        let mut stmt = conn.prepare("SELECT source_doc_id, updated_at, title FROM documents WHERE project_id = ?1")
-            .map_err(|e| e.to_string())?;
-        
-        let meta_iter = stmt.query_map(params![project_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, Option<String>>(2)?.unwrap_or_default()))
-        }).map_err(|e| e.to_string())?;
-
-        let mut meta_map = HashMap::new();
-        for item in meta_iter {
-            if let Ok((id, updated_at, title)) = item {
-                meta_map.insert(id, (updated_at, title));
-            }
-        }
-        Ok(meta_map)
-    }
 }
 
 #[cfg(test)]
