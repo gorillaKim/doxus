@@ -347,6 +347,7 @@ fn main() {
             doxus_desktop_lib::commands::search::get_top_documents,
             doxus_desktop_lib::commands::search::get_document_content,
             doxus_desktop_lib::commands::search::list_all_documents,
+            doxus_desktop_lib::commands::search::count_all_documents,
             doxus_desktop_lib::commands::agent::chat_start_session,
             doxus_desktop_lib::commands::agent::chat_send_message,
             doxus_desktop_lib::commands::agent::chat_cancel,

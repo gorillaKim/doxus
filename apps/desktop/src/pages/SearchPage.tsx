@@ -40,8 +40,11 @@ export function SearchPage() {
     const unlistenDoc = listen<{ source_doc_id: string; last_indexed: number }>('document-indexed', (e) => {
       updateDocumentMetadata(e.payload.source_doc_id, { last_indexed: e.payload.last_indexed });
     });
-    const unlistenProj = listen<{ indexed: number }>('project-indexed', (e) => {
-      if (e.payload.indexed > 0) listAllDocuments();
+    const unlistenProj = listen<{ indexed: number; project_name: string }>('project-indexed', (e) => {
+      // 인덱싱 완료 시 전체 로드를 하는 대신, 현재 검색 결과가 있거나 필요하다면 검색을 재실행합니다.
+      if (e.payload.indexed > 0) {
+        // search(); // 필요 시 검색 재실행 (선택 사항)
+      }
     });
     return () => {
       unlistenDoc.then(f => f());
@@ -49,7 +52,9 @@ export function SearchPage() {
     };
   }, [updateDocumentMetadata, listAllDocuments]);
 
-  useEffect(() => { listAllDocuments(); }, [listAllDocuments]);
+  // [Optimization] Do not load all documents into memory at once. 
+  // It causes massive memory usage (7GB+) in large vaults.
+  // useEffect(() => { listAllDocuments(); }, [listAllDocuments]);
 
   // Sync URL state (Read)
   useEffect(() => {
@@ -79,11 +84,25 @@ export function SearchPage() {
 
     if (docId && docId !== processedDocIdRef.current) {
       const numericId = parseInt(docId, 10);
-      const doc = allDocsRef.current.find(d => d.document_id === numericId);
-      if (doc && selectedDoc?.document_id !== numericId) {
-        processedDocIdRef.current = docId;
-        handleSelectDoc(allDocToEntry(doc));
-      }
+      processedDocIdRef.current = docId;
+      
+      // allDocuments에서 찾지 말고 직접 페치하여 처리
+      invoke<any>('get_document_content', { documentId: numericId })
+        .then(doc => {
+          if (doc && selectedDoc?.document_id !== numericId) {
+             const entry = {
+               document_id: doc.document_id,
+               title: doc.title || 'Untitled',
+               file_path: doc.file_path,
+               content_hash: doc.content_hash,
+               source_doc_id: doc.source_doc_id,
+               source_type: doc.source_type,
+               last_indexed: doc.last_indexed,
+             } as any;
+             handleSelectDoc(entry);
+          }
+        })
+        .catch(console.error);
     }
 
     if (shouldSearch) {

@@ -78,9 +78,9 @@ impl IndexingService {
         }
 
         // 2. 인덱싱 루프 및 오류 처리
+        let sync_start_time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
         let mut total = 0;
         let mut cursor = None;
-        let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         let result = async {
             loop {
@@ -90,7 +90,6 @@ impl IndexingService {
 
                 for doc in docs {
                     let source_doc_id = doc.id.0.clone();
-                    seen_ids.insert(source_doc_id.clone());
 
                     let title = doc.title.as_deref()
                         .map(|s| s.to_string())
@@ -105,9 +104,10 @@ impl IndexingService {
                         })
                         .unwrap_or_else(|| "Untitled".to_string());
 
-                    // [최적화] 대규모 프로젝트에서 메모리 보호를 위해 HashMap 대신 
+                    // [최적화] 대규모 프로젝트에서 메모리 보호를 위해 HashSet 대신 
                     // DB에서 개별적으로 재인덱싱 필요성을 확인합니다.
                     if !full && !self.needs_reindexing(project_id, &source_doc_id, doc.updated_at).await {
+                        let _ = self.update_last_indexed(project_id, &source_doc_id, sync_start_time).await;
                         continue;
                     }
 
@@ -144,8 +144,8 @@ impl IndexingService {
             Ok::<(), String>(())
         }.await;
 
-        // 3. 뒷정리 및 링크 해결
-        let _ = self.remove_deleted_documents(project_id, &seen_ids).await;
+        // 3. 뒷정리 및 링크 해결 (이번 세션에서 보지 못한 문서 삭제)
+        let _ = self.remove_deleted_documents(project_id, sync_start_time).await;
         {
             if let Ok(conn) = self.conn.lock() {
                 let _ = LinkResolver::resolve_project_links(&conn, project_id);
@@ -319,36 +319,35 @@ impl IndexingService {
     }
 
     /// 소스에서 사라진 문서를 DB에서 제거합니다. chunks/FTS/벡터는 CASCADE 트리거로 자동 정리됩니다.
+    /// 이번 동기화 세션에서 발견되지 않은(삭제된) 문서를 인덱스에서 제거합니다.
     async fn remove_deleted_documents(
         &self,
         project_id: i64,
-        seen_ids: &std::collections::HashSet<String>,
+        sync_start_time: i64,
     ) -> Result<usize, String> {
         let conn = self.conn.lock().map_err(|_| "db lock poisoned".to_string())?;
-        let mut stmt = conn.prepare(
-            "SELECT source_doc_id FROM documents WHERE project_id = ?1"
-        ).map_err(|e| e.to_string())?;
 
-        let db_ids: Vec<String> = stmt
-            .query_map(params![project_id], |r| r.get(0))
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
+        // sync_start_time보다 이전에 인델싱된 문서는 이번 세션에서 발견되지 않은 것이므로 삭제합니다.
+        let removed = conn.execute(
+            "DELETE FROM documents WHERE project_id = ?1 AND (last_indexed < ?2 OR last_indexed IS NULL)",
+            params![project_id, sync_start_time],
+        ).map_err(|e| format!("삭제된 문서 정리 실패: {e}"))?;
 
-        let mut removed = 0;
-        for id in db_ids {
-            if !seen_ids.contains(&id) {
-                crate::log_d!("indexer", "[Core-Indexer] Removing deleted document from index: {}", id);
-                conn.execute(
-                    "DELETE FROM documents WHERE project_id = ?1 AND source_doc_id = ?2",
-                    params![project_id, id],
-                ).map_err(|e| e.to_string())?;
-                removed += 1;
-            }
+        if removed > 0 {
+            crate::log_d!("indexer", "[Core-Indexer] Cleaned up {} deleted documents from project {}", removed, project_id);
         }
         Ok(removed)
     }
 
+    /// 문서의 인덱싱 시점(last_indexed)만 업데이트합니다. (내용 변경 없이 유지 시 사용)
+    async fn update_last_indexed(&self, project_id: i64, source_doc_id: &str, timestamp: i64) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|_| "db lock poisoned".to_string())?;
+        conn.execute(
+            "UPDATE documents SET last_indexed = ?1 WHERE project_id = ?2 AND source_doc_id = ?3",
+            params![timestamp, project_id, source_doc_id],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

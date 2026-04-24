@@ -404,35 +404,41 @@ impl DocSource for ObsidianPlugin {
 
     async fn fetch_all(&self, opts: FetchAllOpts) -> Result<DocumentStream, PluginError> {
         let vault = self.vault()?;
-
-        let all_paths = {
-            let mut cache = self.cached_paths.lock().map_err(|_| PluginError::Internal("cache lock failed".into()))?;
+        let (page_paths, total, offset, page_size) = {
+            let mut cache = self.cached_paths.lock().unwrap();
             let now = std::time::Instant::now();
             
-            if let Some((ts, ref paths)) = *cache {
+            // Validate or refresh cache
+            let paths = if let Some((ts, ref paths)) = *cache {
                 if now.duration_since(ts) < std::time::Duration::from_secs(300) {
-                    paths.clone()
-                } else {
-                    let paths = self.collect_markdown_paths(vault);
-                    *cache = Some((now, paths.clone()));
                     paths
+                } else {
+                    let new_paths = self.collect_markdown_paths(vault);
+                    *cache = Some((now, new_paths));
+                    cache.as_ref().map(|(_, p)| p).unwrap()
                 }
             } else {
-                let paths = self.collect_markdown_paths(vault);
-                *cache = Some((now, paths.clone()));
-                paths
-            }
+                let new_paths = self.collect_markdown_paths(vault);
+                *cache = Some((now, new_paths));
+                cache.as_ref().map(|(_, p)| p).unwrap()
+            };
+
+            let total = paths.len();
+            let page_size = opts.page_size;
+            let offset: usize = match opts.cursor {
+                Some(ref c) => c.parse().unwrap_or(0),
+                None => 0,
+            };
+
+            let p_paths: Vec<PathBuf> = paths.iter()
+                .skip(offset)
+                .take(page_size)
+                .cloned()
+                .collect();
+                
+            (p_paths, total, offset, page_size)
         };
         
-        let total = all_paths.len();
-        let page_size = opts.page_size;
-        let offset: usize = opts
-            .cursor
-            .as_deref()
-            .and_then(|c| c.parse().ok())
-            .unwrap_or(0usize);
-
-        let page_paths = all_paths.into_iter().skip(offset).take(page_size);
         let mut documents = Vec::new();
         for file_path in page_paths {
             let rel_path = file_path

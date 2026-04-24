@@ -457,11 +457,7 @@ pub(crate) fn index_document_sync(
         "INSERT INTO documents (project_id, source_doc_id, title, url, content_hash, last_indexed, created_at, updated_at, metadata_json, file_path)
          VALUES (?1, ?2, ?3, ?4, ?5, unixepoch(), ?6, ?7, ?8, ?9)
          ON CONFLICT(project_id, source_doc_id) DO UPDATE SET
-            last_indexed = CASE
-                WHEN excluded.content_hash != documents.content_hash OR excluded.title != documents.title OR excluded.url != documents.url
-                THEN excluded.last_indexed
-                ELSE documents.last_indexed
-            END,
+            last_indexed = excluded.last_indexed,
             title = excluded.title, url = excluded.url, content_hash = excluded.content_hash,
             created_at = COALESCE(documents.created_at, excluded.created_at),
             updated_at = COALESCE(excluded.updated_at, documents.updated_at),

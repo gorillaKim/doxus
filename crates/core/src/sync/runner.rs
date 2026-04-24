@@ -37,79 +37,81 @@ impl<S: DocSource + Send + Sync> SyncRunner<S> {
         for instance in due {
             persist_audit(conn, &AuditEvent::SyncStart { source_instance_id: instance.id });
 
-            let opts = FetchChangesOpts {
-                since: 0,
-                cursor: instance.sync_cursor.clone(),
-                page_size: 100,
-                known_ids: vec![],
-            };
+            let mut applied = 0usize;
+            let mut current_cursor = instance.sync_cursor.clone();
+            
+            loop {
+                let opts = FetchChangesOpts {
+                    since: instance.last_synced.unwrap_or(0),
+                    cursor: current_cursor.clone(),
+                    page_size: 100,
+                    known_ids: vec![],
+                };
 
-            match self.source.fetch_changes(opts).await {
-                Ok(changeset) => {
-                    let new_cursor = changeset.next_cursor.clone();
-                    let mut applied = 0usize;
+                let changeset = match self.source.fetch_changes(opts).await {
+                    Ok(cs) => cs,
+                    Err(e) => {
+                        persist_audit(conn, &AuditEvent::PluginError {
+                            plugin_id: instance.plugin_id.clone(),
+                            message: format!("Sync fetch error: {}", e),
+                        });
+                        break; 
+                    }
+                };
 
-                    for doc in &changeset.updated {
-                        // Look up existing content_hash for this document.
-                        let existing_hash: Option<String> = conn
-                            .query_row(
-                                "SELECT content_hash FROM documents \
-                                 WHERE project_id = ?1 AND source_doc_id = ?2",
-                                rusqlite::params![instance.project_id, doc.id.0],
-                                |r| r.get(0),
-                            )
-                            .optional()
-                            .map_err(|e| SyncError::Db(e))?;
+                if changeset.updated.is_empty() && changeset.deleted_ids.is_empty() {
+                    break;
+                }
 
-                        match existing_hash {
-                            Some(ref local_hash) => {
-                                match resolve_conflict(local_hash, &doc.content) {
-                                    ConflictResolution::Skip => {
-                                        // Content unchanged — skip and continue
-                                    }
-                                    ConflictResolution::UseRemote => {
-                                        // Record conflict before overwriting
-                                        record_conflict(conn, instance.project_id, &doc.id.0)
-                                            .map_err(|e| match e {
-                                                crate::db::DbError::Sqlite(inner) => {
-                                                    SyncError::Db(inner)
-                                                }
-                                                crate::db::DbError::Migration { reason, .. } => {
-                                                    SyncError::Plugin(reason)
-                                                }
-                                            })?;
-                                        applied += 1;
-                                    }
+                for doc in &changeset.updated {
+                    let existing_hash: Option<String> = conn
+                        .query_row(
+                            "SELECT content_hash FROM documents \
+                             WHERE project_id = ?1 AND source_doc_id = ?2",
+                            rusqlite::params![instance.project_id, doc.id.0],
+                            |r| r.get(0),
+                        )
+                        .optional()
+                        .map_err(|e| SyncError::Db(e))?;
+
+                    match existing_hash {
+                        Some(ref local_hash) => {
+                            match resolve_conflict(local_hash, &doc.content) {
+                                ConflictResolution::Skip => {}
+                                ConflictResolution::UseRemote => {
+                                    record_conflict(conn, instance.project_id, &doc.id.0)
+                                        .map_err(|e| match e {
+                                            crate::db::DbError::Sqlite(inner) => SyncError::Db(inner),
+                                            crate::db::DbError::Migration { reason, .. } => SyncError::Plugin(reason),
+                                        })?;
+                                    applied += 1;
                                 }
                             }
-                            None => {
-                                // New document — no conflict
-                                applied += 1;
-                            }
+                        }
+                        None => {
+                            applied += 1;
                         }
                     }
-
-                    sync_db
-                        .mark_synced(instance.id, new_cursor.as_deref())
-                        .map_err(SyncError::Db)?;
-                    persist_audit(conn, &AuditEvent::SyncComplete {
-                        source_instance_id: instance.id,
-                        docs_synced: applied,
-                    });
-                    results.push(SyncResult {
-                        instance_id: instance.id,
-                        documents_updated: applied,
-                        new_cursor,
-                    });
                 }
-                Err(e) => {
-                    persist_audit(conn, &AuditEvent::PluginError {
-                        plugin_id: self.source.metadata().id.clone(),
-                        message: e.to_string(),
-                    });
-                    return Err(SyncError::Plugin(e.to_string()));
+
+                current_cursor = changeset.next_cursor;
+                if current_cursor.is_none() {
+                    break;
                 }
             }
+
+            sync_db
+                .mark_synced(instance.id, current_cursor.as_deref())
+                .map_err(SyncError::Db)?;
+            persist_audit(conn, &AuditEvent::SyncComplete {
+                source_instance_id: instance.id,
+                docs_synced: applied,
+            });
+            results.push(SyncResult {
+                instance_id: instance.id,
+                documents_updated: applied,
+                new_cursor: current_cursor,
+            });
         }
 
         Ok(results)

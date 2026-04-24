@@ -101,20 +101,20 @@ impl LinkResolver {
                       WHERE d.project_id = ?1 AND dl.target_id IS NULL")
             .map_err(|e| e.to_string())?;
 
-        let rows: Vec<(i64, String)> = stmt
-            .query_map([project_id], |r| Ok((r.get(0)?, r.get(1)?)))
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
+        let rows = stmt
+            .query_map([project_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?;
 
         let mut resolved_count = 0;
-        for (link_id, target_raw) in rows {
-            if let Some(target_id) = Self::resolve_link(conn, project_id, &target_raw) {
-                let _ = conn.execute(
-                    "UPDATE document_links SET target_id = ?1 WHERE id = ?2",
-                    rusqlite::params![target_id, link_id]
-                );
-                resolved_count += 1;
+        for row in rows {
+            if let Ok((link_id, target_raw)) = row {
+                if let Some(target_id) = Self::resolve_link(conn, project_id, &target_raw) {
+                    let _ = conn.execute(
+                        "UPDATE document_links SET target_id = ?1 WHERE id = ?2",
+                        rusqlite::params![target_id, link_id]
+                    );
+                    resolved_count += 1;
+                }
             }
         }
         Ok(resolved_count)
@@ -126,27 +126,27 @@ impl LinkResolver {
             .prepare("SELECT id, source_id, target_raw FROM document_links WHERE target_id IS NULL")
             .map_err(|e| e.to_string())?;
 
-        let rows: Vec<(i64, i64, String)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-            .map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)))
+            .map_err(|e| e.to_string())?;
 
         let mut resolved_count = 0;
-        for (link_id, source_doc_id, target_raw) in rows {
-            let project_id: Result<i64, _> = conn.query_row(
-                "SELECT project_id FROM documents WHERE id = ?1",
-                [source_doc_id],
-                |r| r.get(0)
-            );
+        for row in rows {
+            if let Ok((link_id, source_doc_id, target_raw)) = row {
+                let project_id: Result<i64, _> = conn.query_row(
+                    "SELECT project_id FROM documents WHERE id = ?1",
+                    [source_doc_id],
+                    |r| r.get(0)
+                );
 
-            if let Ok(pid) = project_id {
-                if let Some(target_id) = Self::resolve_link(conn, pid, &target_raw) {
-                    let _ = conn.execute(
-                        "UPDATE document_links SET target_id = ?1 WHERE id = ?2",
-                        rusqlite::params![target_id, link_id]
-                    );
-                    resolved_count += 1;
+                if let Ok(pid) = project_id {
+                    if let Some(target_id) = Self::resolve_link(conn, pid, &target_raw) {
+                        let _ = conn.execute(
+                            "UPDATE document_links SET target_id = ?1 WHERE id = ?2",
+                            rusqlite::params![target_id, link_id]
+                        );
+                        resolved_count += 1;
+                    }
                 }
             }
         }

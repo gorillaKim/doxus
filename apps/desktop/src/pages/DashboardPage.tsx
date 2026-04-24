@@ -76,8 +76,8 @@ export default function DashboardPage() {
     fetchProjects();
     
     // 문서 총합 및 상위 문서 조회
-    invoke<{ documents: any[] }>('list_all_documents')
-      .then(res => setTotalDocs(res.documents.length))
+    invoke<number>('count_all_documents')
+      .then(setTotalDocs)
       .catch(() => setTotalDocs(0));
 
     invoke<{ documents: any[] }>('get_top_documents', { limit: 5 })

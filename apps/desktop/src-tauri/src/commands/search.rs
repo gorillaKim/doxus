@@ -1096,6 +1096,16 @@ pub async fn list_all_documents(
 }
 
 #[tauri::command]
+pub async fn count_all_documents(
+    state: tauri::State<'_, Arc<crate::AppState>>,
+) -> Result<i64, String> {
+    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    Ok(count)
+}
+
+#[tauri::command]
 pub async fn list_projects(
     state: tauri::State<'_, Arc<crate::AppState>>,
 ) -> Result<serde_json::Value, String> {
