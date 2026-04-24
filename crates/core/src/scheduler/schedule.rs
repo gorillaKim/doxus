@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use chrono::{DateTime, Utc, TimeZone, Datelike, NaiveTime, Duration};
+use chrono::{TimeZone, Datelike, NaiveTime, Duration};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -19,7 +19,8 @@ impl Default for Schedule {
 impl Schedule {
     /// Calculate the next run time after the given epoch time (in seconds).
     pub fn next_run_after(&self, now_epoch: i64) -> i64 {
-        let now = Utc.timestamp_opt(now_epoch, 0).unwrap();
+        use chrono::Local;
+        let now = Local.timestamp_opt(now_epoch, 0).unwrap();
         
         match self {
             Schedule::Interval { seconds } => {
@@ -28,64 +29,63 @@ impl Schedule {
             Schedule::Daily { hour, minute } => {
                 let target_time = NaiveTime::from_hms_opt(*hour, *minute, 0).unwrap();
                 let today_target = now.date_naive().and_time(target_time);
-                let today_target_utc = DateTime::<Utc>::from_naive_utc_and_offset(today_target, Utc);
                 
-                if today_target_utc > now {
-                    today_target_utc.timestamp()
+                if let Some(target_local) = Local.from_local_datetime(&today_target).single() {
+                    if target_local > now {
+                        target_local.timestamp()
+                    } else {
+                        (target_local + Duration::days(1)).timestamp()
+                    }
                 } else {
-                    today_target_utc.timestamp() + 86400 // Add one day
+                    // Fallback for DST transitions or other anomalies
+                    now_epoch + 86400
                 }
             }
             Schedule::Weekly { day_of_week, hour, minute } => {
                 let target_time = NaiveTime::from_hms_opt(*hour, *minute, 0).unwrap();
                 let today_target = now.date_naive().and_time(target_time);
-                let mut target_utc = DateTime::<Utc>::from_naive_utc_and_offset(today_target, Utc);
                 
-                // Adjust day of week
-                let current_dow = now.weekday().num_days_from_sunday();
-                let days_to_add = if *day_of_week > current_dow {
-                    *day_of_week - current_dow
-                } else if *day_of_week == current_dow && target_utc > now {
-                    0
+                if let Some(target_local_orig) = Local.from_local_datetime(&today_target).single() {
+                    let current_dow = now.weekday().num_days_from_sunday();
+                    let days_to_add = if *day_of_week > current_dow {
+                        *day_of_week - current_dow
+                    } else if *day_of_week == current_dow && target_local_orig > now {
+                        0
+                    } else {
+                        7 - (current_dow - *day_of_week)
+                    };
+                    
+                    (target_local_orig + Duration::days(days_to_add as i64)).timestamp()
                 } else {
-                    7 - (current_dow - *day_of_week)
-                };
-                
-                if days_to_add > 0 {
-                    target_utc = target_utc + Duration::days(days_to_add as i64);
+                    now_epoch + 7 * 86400
                 }
-                
-                target_utc.timestamp()
             }
             Schedule::Monthly { day_of_month, hour, minute } => {
                 let target_time = NaiveTime::from_hms_opt(*hour, *minute, 0).unwrap();
-                let mut target_day = *day_of_month;
-                
-                // Adjust for months with fewer days if we pass 28/29/30
-                // For simplicity, naive adjustment: if current month has fewer days than target_day, we cap it or we just use the naive date builder which might panic if overflow. 
-                // A better approach is using exact arithmetic. Let's handle it safely.
                 let mut year = now.year();
                 let mut month = now.month();
                 
-                // clamp day_of_month to valid days in the month
-                target_day = target_day.min(get_days_in_month(year, month));
-                let mut target_date = chrono::NaiveDate::from_ymd_opt(year, month, target_day).unwrap();
-                let mut target_utc = DateTime::<Utc>::from_naive_utc_and_offset(target_date.and_time(target_time), Utc);
+                let target_day = (*day_of_month).min(get_days_in_month(year, month));
+                let target_date = chrono::NaiveDate::from_ymd_opt(year, month, target_day).unwrap();
+                let today_target = target_date.and_time(target_time);
                 
-                if target_utc <= now {
-                    // Next month
-                    if month == 12 {
-                        month = 1;
-                        year += 1;
-                    } else {
-                        month += 1;
+                if let Some(mut target_local) = Local.from_local_datetime(&today_target).single() {
+                    if target_local <= now {
+                        // Next month
+                        if month == 12 {
+                            month = 1;
+                            year += 1;
+                        } else {
+                            month += 1;
+                        }
+                        let next_target_day = (*day_of_month).min(get_days_in_month(year, month));
+                        let next_target_date = chrono::NaiveDate::from_ymd_opt(year, month, next_target_day).unwrap();
+                        target_local = Local.from_local_datetime(&next_target_date.and_time(target_time)).single().unwrap();
                     }
-                    target_day = (*day_of_month).min(get_days_in_month(year, month));
-                    target_date = chrono::NaiveDate::from_ymd_opt(year, month, target_day).unwrap();
-                    target_utc = DateTime::<Utc>::from_naive_utc_and_offset(target_date.and_time(target_time), Utc);
+                    target_local.timestamp()
+                } else {
+                    now_epoch + 30 * 86400
                 }
-                
-                target_utc.timestamp()
             }
         }
     }
@@ -133,7 +133,7 @@ pub struct ScheduledJob {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{TimeZone, Utc};
+    use chrono::{TimeZone, Local};
 
     #[test]
     fn test_interval() {
@@ -145,22 +145,21 @@ mod tests {
     #[test]
     fn test_daily() {
         let sc = Schedule::Daily { hour: 4, minute: 30 };
-        let now = Utc.with_ymd_and_hms(2026, 4, 24, 3, 0, 0).unwrap().timestamp();
-        let expected = Utc.with_ymd_and_hms(2026, 4, 24, 4, 30, 0).unwrap().timestamp();
+        let now = Local.with_ymd_and_hms(2026, 4, 24, 3, 0, 0).unwrap().timestamp();
+        let expected = Local.with_ymd_and_hms(2026, 4, 24, 4, 30, 0).unwrap().timestamp();
         assert_eq!(sc.next_run_after(now), expected);
 
-        let now_past = Utc.with_ymd_and_hms(2026, 4, 24, 5, 0, 0).unwrap().timestamp();
-        let expected_next_day = Utc.with_ymd_and_hms(2026, 4, 25, 4, 30, 0).unwrap().timestamp();
+        let now_past = Local.with_ymd_and_hms(2026, 4, 24, 5, 0, 0).unwrap().timestamp();
+        let expected_next_day = Local.with_ymd_and_hms(2026, 4, 25, 4, 30, 0).unwrap().timestamp();
         assert_eq!(sc.next_run_after(now_past), expected_next_day);
     }
 
     #[test]
     fn test_weekly() {
-        // day_of_week: 0 = Sunday
         // 2026-04-24 is Friday (5)
         let sc = Schedule::Weekly { day_of_week: 0, hour: 10, minute: 0 };
-        let now = Utc.with_ymd_and_hms(2026, 4, 24, 12, 0, 0).unwrap().timestamp();
-        let expected = Utc.with_ymd_and_hms(2026, 4, 26, 10, 0, 0).unwrap().timestamp(); // Sunday 26th
+        let now = Local.with_ymd_and_hms(2026, 4, 24, 12, 0, 0).unwrap().timestamp();
+        let expected = Local.with_ymd_and_hms(2026, 4, 26, 10, 0, 0).unwrap().timestamp(); // Sunday 26th
         assert_eq!(sc.next_run_after(now), expected);
     }
 }
