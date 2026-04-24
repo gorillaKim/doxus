@@ -4,6 +4,7 @@ pub mod plugin;
 pub mod project;
 pub mod reindex;
 pub mod search;
+pub mod freshness;
 
 use rusqlite::params;
 use serde_json::Value;

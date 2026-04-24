@@ -114,6 +114,7 @@ pub fn index_project(server: &McpServer, id: Value, args: &Value) -> McpResponse
         Some(n) => n,
         None => return McpResponse::err(id, -32602, "missing required arg: project"),
     };
+    let full = args["full"].as_bool().unwrap_or(false);
 
     let conn = server.conn().clone();
     let plugin_manager = server.plugin_manager().clone();
@@ -124,7 +125,7 @@ pub fn index_project(server: &McpServer, id: Value, args: &Value) -> McpResponse
     let indexing_service = IndexingService::new(conn, plugin_manager, engine);
 
     let run_indexing = async move {
-        indexing_service.index_project(&name).await
+        indexing_service.index_project(&name, full).await
     };
 
     let result = match tokio::runtime::Handle::try_current() {

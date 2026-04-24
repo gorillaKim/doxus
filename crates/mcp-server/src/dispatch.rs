@@ -63,6 +63,10 @@ pub async fn dispatch_tool(server: &McpServer, name: &str, id: Value, args: &Val
         "doxus_inspect_document" => tools::search::inspect_document(server, id, args),
         "doxus_create_document" => tools::search::create_document(server, id, args).await,
 
+        // ── Freshness ─────────────────────────────────────────────────────
+        "doxus_get_freshness_report" => tools::freshness::get_freshness_report(server, id, args),
+        "doxus_update_freshness_config" => tools::freshness::update_freshness_config(server, id, args),
+
         // ── Graph ─────────────────────────────────────────────────────────
         "doxus_get_backlinks" => tools::graph::get_backlinks(server, id, args),
         "doxus_get_links" => tools::graph::get_links(server, id, args),
@@ -178,6 +182,15 @@ pub fn tool_list() -> Value {
             tool("doxus_agent_summary", "Get a comprehensive summary of the knowledge base for orientation", &[]),
             tool("doxus_help", "Get usage documentation", &[]),
             tool("doxus_onboard", "Interactive setup guide", &[]),
+            // Freshness
+            tool("doxus_get_freshness_report", "Get aggregated freshness and decay stats for documents", &[
+                param_opt("project_name", "string", "Project name (optional)"),
+            ]),
+            tool("doxus_update_freshness_config", "Update retention tier for a document", &[
+                param("project_name", "string", "Project name"),
+                param("source_doc_id", "string", "Source document ID"),
+                param("tier", "string", "Retention tier ('short', 'mid', 'long')"),
+            ]),
             // Graph
             tool("doxus_find_path", "Find shortest path between two documents", &[
                 param("from", "string", "Source document ID"),
@@ -269,6 +282,7 @@ SEARCH:      doxus_search, doxus_get_document, doxus_get_section, doxus_get_meta
 GRAPH:       doxus_get_backlinks, doxus_get_links, doxus_find_path, doxus_get_cluster
 PROJECTS:    doxus_list_projects, doxus_add_project, doxus_remove_project, doxus_index_project, doxus_sync_project
 DOCUMENTS:   doxus_list_documents, doxus_get_documents, doxus_get_toc, doxus_get_ranking, doxus_resolve_alias
+FRESHNESS:   doxus_get_freshness_report, doxus_update_freshness_config
 PLUGINS:     doxus_plugin_list, doxus_plugin_install, doxus_plugin_status
 DIAGNOSTICS: doxus_diagnose, doxus_system_report, doxus_inspect_document
 
