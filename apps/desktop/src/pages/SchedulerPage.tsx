@@ -5,10 +5,22 @@ export default function SchedulerPage() {
   const [jobs, setJobs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [editingJob, setEditingJob] = useState<any | null>(null);
+  const [projects, setProjects] = useState<any[]>([]);
 
   useEffect(() => {
     fetchJobs();
+    fetchProjects();
   }, []);
+
+  async function fetchProjects() {
+    try {
+      const { projects: data } = await invoke<{ projects: any[] }>("list_projects");
+      setProjects(data);
+    } catch (e) {
+      console.error(e);
+    }
+  }
 
   async function fetchJobs() {
     setLoading(true);
@@ -43,7 +55,7 @@ export default function SchedulerPage() {
         </div>
         
         <button 
-          onClick={() => setShowAddModal(true)}
+          onClick={() => { setEditingJob(null); setShowAddModal(true); }}
           className="px-5 py-2.5 bg-gradient-to-r from-indigo-500 to-blue-500 hover:from-indigo-600 hover:to-blue-600 text-white font-semibold rounded-xl transition-all shadow-lg shadow-indigo-500/20 flex items-center gap-2 active:scale-95"
         >
           <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -144,6 +156,7 @@ export default function SchedulerPage() {
                   <div className="flex gap-2 mt-4">
                     <button 
                       disabled={job.is_immutable}
+                      onClick={() => { setEditingJob(job); setShowAddModal(true); }}
                       className={`px-4 py-1.5 rounded-lg text-sm font-semibold transition-all ${
                         job.is_immutable 
                         ? 'border border-white/5 text-gray-600 cursor-not-allowed' 
@@ -170,6 +183,8 @@ export default function SchedulerPage() {
 
       {showAddModal && (
         <CreateScheduleModal 
+          projects={projects}
+          editingJob={editingJob}
           onClose={() => setShowAddModal(false)}
           onCreated={() => {
             setShowAddModal(false);
@@ -200,45 +215,101 @@ function renderScheduleInfo(schedule: any) {
     }
 }
 
-function CreateScheduleModal({ onClose, onCreated }: { onClose: () => void, onCreated: () => void }) {
-    const [name, setName] = useState("");
-    const [action, setAction] = useState("incremental_sync");
-    const [type, setType] = useState<"daily" | "weekly" | "interval">("daily");
+const PERSONA_PRESETS = [
+    { id: 'devlog_specialist', name: '🛠️ 개발 로그 분석가', description: '한 주간의 기술적 결정과 버그 해결 패턴을 분석합니다.' },
+    { id: 'knowledge_curator', name: '📚 지식 큐레이터', description: '수집된 아티클들에서 핵심 인사이트와 트렌드를 추출합니다.' },
+    { id: 'research_assistant', name: '🔍 리서치 어시스턴트', description: '특정 주제에 대해 조사하고 요약 리포트를 생성합니다.' },
+    { id: 'custom', name: '✨ 자유 프롬프트', description: '사용자가 직접 정의한 프롬프트로 작업을 수행합니다.' },
+];
+
+function CreateScheduleModal({ projects, editingJob, onClose, onCreated }: { projects: any[], editingJob?: any | null, onClose: () => void, onCreated: () => void }) {
+    const isEdit = !!editingJob;
+    const [name, setName] = useState(editingJob?.job_name || "");
+    const [executor, setExecutor] = useState<"system" | "agent">(editingJob?.executor || "system");
+    const [action, setAction] = useState(editingJob?.action || "incremental_sync");
+    const [scheduleType, setScheduleType] = useState<"daily" | "weekly" | "interval">(editingJob?.schedule?.type || "daily");
     
-    // Parameters
-    const [hour, setHour] = useState(3);
-    const [minute, setMinute] = useState(0);
-    const [dayOfWeek, setDayOfWeek] = useState(1); // Monday
-    const [intervalSeconds, setIntervalSeconds] = useState(3600); // 1 hour
-    const [runOnIdle, setRunOnIdle] = useState(false);
+    // AI Agent Specific
+    const [model, setModel] = useState(editingJob?.action_config?.model || "claude-3-5-sonnet-latest");
+    const [persona, setPersona] = useState(editingJob?.action_config?.persona || PERSONA_PRESETS[0].id);
+    const [selectedProjects, setSelectedProjects] = useState<string[]>(editingJob?.action_config?.scope?.project_names || []);
+    const [tags, setTags] = useState(editingJob?.action_config?.scope?.tags?.join(", ") || "");
+    const [keywords, setKeywords] = useState(editingJob?.action_config?.scope?.keywords?.join(", ") || "");
+    const [outputProject, setOutputProject] = useState(editingJob?.action_config?.output?.project_name || "");
+    const [outputDir, setOutputDir] = useState(editingJob?.action_config?.output?.sub_dir || "reports");
+    const [summaryStyle, setSummaryStyle] = useState(editingJob?.action_config?.summary_style || "bullet_points");
+
+    // Common Parameters
+    const [hour, setHour] = useState(editingJob?.schedule?.hour ?? 3);
+    const [minute, setMinute] = useState(editingJob?.schedule?.minute ?? 0);
+    const [dayOfWeek, setDayOfWeek] = useState(editingJob?.schedule?.day_of_week ?? 1);
+    const [intervalSeconds, setIntervalSeconds] = useState(editingJob?.schedule?.seconds ?? 3600);
+    const [runOnIdle, setRunOnIdle] = useState(editingJob?.run_on_idle ?? false);
     
     const [loading, setLoading] = useState(false);
 
-    async function handleAdd() {
-        if (!name) return alert("이름을 입력하세요.");
+    useEffect(() => {
+        if (projects.length > 0 && !outputProject) {
+            setOutputProject(projects[0].name);
+        }
+    }, [projects]);
+
+    async function handleSubmit() {
+        if (!name) return alert("스케줄 이름을 입력하세요.");
+        if (executor === 'agent' && selectedProjects.length === 0) return alert("최소 1개 이상의 탐색 프로젝트를 선택하세요.");
+        if (executor === 'agent' && selectedProjects.length > 3) return alert("탐색 프로젝트는 최대 3개까지만 선택 가능합니다.");
+
         setLoading(true);
         
-        let scheduleJson: any = { type };
-        if (type === 'daily') {
+        let scheduleJson: any = { type: scheduleType };
+        if (scheduleType === 'daily') {
             scheduleJson.hour = hour;
             scheduleJson.minute = minute;
-        } else if (type === 'weekly') {
+        } else if (scheduleType === 'weekly') {
             scheduleJson.day_of_week = dayOfWeek;
             scheduleJson.hour = hour;
             scheduleJson.minute = minute;
-        } else if (type === 'interval') {
+        } else if (scheduleType === 'interval') {
             scheduleJson.seconds = intervalSeconds;
         }
 
+        const actionConfig: any = {};
+        if (executor === 'agent') {
+            actionConfig.model = model;
+            actionConfig.persona = persona;
+            actionConfig.scope = {
+                project_names: selectedProjects,
+                tags: tags.split(",").map(t => t.trim()).filter(Boolean),
+                keywords: keywords.split(",").map(k => k.trim()).filter(Boolean),
+            };
+            actionConfig.output = {
+                project_name: outputProject,
+                sub_dir: outputDir,
+            };
+            actionConfig.summary_style = summaryStyle;
+        }
+
         try {
-            await invoke("create_scheduled_job", {
-                jobName: name,
-                executor: "system",
-                action,
-                actionConfig: {},
-                scheduleJson,
-                runOnIdle
-            });
+            if (isEdit) {
+                await invoke("update_scheduled_job", {
+                    jobId: editingJob.id,
+                    jobName: name,
+                    executor,
+                    action: executor === 'agent' ? 'ai_agent_report' : action,
+                    actionConfig,
+                    scheduleJson,
+                    runOnIdle
+                });
+            } else {
+                await invoke("create_scheduled_job", {
+                    jobName: name,
+                    executor,
+                    action: executor === 'agent' ? 'ai_agent_report' : action,
+                    actionConfig,
+                    scheduleJson,
+                    runOnIdle
+                });
+            }
             onCreated();
         } catch (e) {
             alert(e);
@@ -247,144 +318,341 @@ function CreateScheduleModal({ onClose, onCreated }: { onClose: () => void, onCr
         }
     }
 
+    const toggleProject = (pName: string) => {
+        if (selectedProjects.includes(pName)) {
+            setSelectedProjects(selectedProjects.filter(id => id !== pName));
+        } else {
+            if (selectedProjects.length >= 3) return alert("최대 3개까지만 선택 가능합니다.");
+            setSelectedProjects([...selectedProjects, pName]);
+        }
+    };
+
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
-            <div className="bg-[#1e1e2e] border border-white/10 rounded-3xl p-8 w-full max-w-md shadow-2xl animate-in zoom-in-95 duration-200">
-                <h2 className="text-2xl font-bold text-white mb-6">새 스케줄 만들기</h2>
-                
-                <div className="space-y-5">
-                    <div>
-                        <label className="block text-sm font-medium text-gray-400 mb-1.5 font-bold">스케줄 이름</label>
-                        <input 
-                            value={name}
-                            onChange={e => setName(e.target.value)}
-                            placeholder="예: 주간 동기화"
-                            className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/50" 
-                        />
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-300">
+            <div className="bg-[#11111b] border border-white/10 rounded-[2.5rem] w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl animate-in zoom-in-95 duration-300">
+                {/* Header with Tabs */}
+                <div className="p-8 pb-4">
+                    <div className="flex items-center justify-between mb-6">
+                        <h2 className="text-2xl font-bold text-white tracking-tight">
+                            {isEdit ? '스케줄 설정 수정' : '새 스케줄 만들기'}
+                        </h2>
+                        <button onClick={onClose} className="text-gray-500 hover:text-white transition-colors">
+                            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                        </button>
                     </div>
 
-                    <div>
-                        <label className="block text-sm font-medium text-gray-400 mb-1.5 font-bold">작업 타입</label>
-                        <select 
-                            value={action}
-                            onChange={e => setAction(e.target.value)}
-                            className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/50 appearance-none cursor-pointer"
+                    <div className="flex p-1 bg-white/5 rounded-2xl border border-white/5">
+                        <button
+                            disabled={isEdit}
+                            onClick={() => { setExecutor("system"); setAction("incremental_sync"); }}
+                            className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-bold transition-all ${
+                                executor === 'system' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' : 'text-gray-500 hover:text-gray-300'
+                            } ${isEdit ? 'opacity-50 cursor-not-allowed' : ''}`}
                         >
-                            <option value="incremental_sync">증분 동기화 (Incremental Sync)</option>
-                            <option value="full_index">전체 재인덱싱 (Full Reindex)</option>
-                            <option value="freshness_batch">신선도 점수 갱신</option>
-                        </select>
+                            <span>⚙️</span> 시스템 자동화
+                        </button>
+                        <button
+                            disabled={isEdit}
+                            onClick={() => { setExecutor("agent"); setAction("ai_agent_report"); }}
+                            className={`flex-1 flex items-center justify-center gap-2 py-3 rounded-xl text-sm font-bold transition-all ${
+                                executor === 'agent' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20' : 'text-gray-500 hover:text-gray-300'
+                            } ${isEdit ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        >
+                            <span>🤖</span> AI 인사이트 에이전트
+                        </button>
                     </div>
-
-                    <div>
-                        <label className="block text-sm font-medium text-gray-400 mb-1.5 font-bold">실행 주기 방식</label>
-                        <div className="grid grid-cols-3 gap-2">
-                            {['daily', 'weekly', 'interval'].map((t) => (
-                                <button
-                                    key={t}
-                                    onClick={() => setType(t as any)}
-                                    className={`px-3 py-2 rounded-xl text-xs font-bold transition-all border ${
-                                        type === t 
-                                        ? 'bg-indigo-500 border-indigo-400 text-white' 
-                                        : 'bg-white/5 border-white/10 text-gray-400 hover:bg-white/10'
-                                    }`}
-                                >
-                                    {t === 'daily' ? '매일' : t === 'weekly' ? '매주' : '간격'}
-                                </button>
-                            ))}
-                        </div>
-                    </div>
-
-                    <div className="p-4 bg-white/5 border border-white/5 rounded-2xl">
-                        {type === 'daily' && (
-                            <div>
-                                <label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-tight">지정 시간</label>
-                                <div className="flex gap-2 items-center">
-                                    <input 
-                                        type="number" value={hour}
-                                        onChange={e => setHour(Math.min(23, Math.max(0, parseInt(e.target.value) || 0)))}
-                                        className="w-full bg-black/20 border border-white/10 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500" 
-                                    />
-                                    <span className="text-gray-600">:</span>
-                                    <input 
-                                        type="number" value={minute}
-                                        onChange={e => setMinute(Math.min(59, Math.max(0, parseInt(e.target.value) || 0)))}
-                                        className="w-full bg-black/20 border border-white/10 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500" 
-                                    />
-                                </div>
-                                <p className="text-[10px] text-gray-500 mt-2 font-medium">매일 {hour}시 {minute}분에 작업을 실행합니다.</p>
-                            </div>
-                        )}
-
-                        {type === 'weekly' && (
-                            <div className="space-y-3">
-                                <div>
-                                    <label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-tight">요일 선택</label>
-                                    <select 
-                                        value={dayOfWeek}
-                                        onChange={e => setDayOfWeek(parseInt(e.target.value))}
-                                        className="w-full bg-black/20 border border-white/10 rounded-lg px-3 py-2 text-white focus:outline-none"
-                                    >
-                                        {["일", "월", "화", "수", "목", "금", "토"].map((day, d) => (
-                                            <option key={d} value={d}>{day}요일</option>
-                                        ))}
-                                    </select>
-                                </div>
-                                <div className="flex gap-2 items-center">
-                                    <input 
-                                        type="number" value={hour}
-                                        onChange={e => setHour(Math.min(23, Math.max(0, parseInt(e.target.value) || 0)))}
-                                        className="w-full bg-black/20 border border-white/10 rounded-lg px-3 py-2 text-white focus:outline-none" 
-                                    />
-                                    <span className="text-gray-600">:</span>
-                                    <input 
-                                        type="number" value={minute}
-                                        onChange={e => setMinute(Math.min(59, Math.max(0, parseInt(e.target.value) || 0)))}
-                                        className="w-full bg-black/20 border border-white/10 rounded-lg px-3 py-2 text-white focus:outline-none" 
-                                    />
-                                </div>
-                                <p className="text-[10px] text-gray-500 mt-1 font-medium italic">매주 {["일", "월", "화", "수", "목", "금", "토"][dayOfWeek]}요일 {hour}:{minute.toString().padStart(2, '0')}에 실행합니다.</p>
-                            </div>
-                        )}
-
-                        {type === 'interval' && (
-                            <div>
-                                <label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-tight">간격 설정 (분)</label>
+                </div>
+                
+                <div className="flex-1 overflow-y-auto px-8 pb-8 custom-scrollbar">
+                    <div className="space-y-6">
+                        {/* 기본 정보 */}
+                        <div className="grid grid-cols-2 gap-4">
+                            <div className="col-span-2">
+                                <label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-widest pl-1">스케줄 이름</label>
                                 <input 
-                                    type="number"
-                                    value={intervalSeconds / 60}
-                                    onChange={e => setIntervalSeconds(Math.max(1, parseInt(e.target.value) || 1) * 60)}
-                                    className="w-full bg-black/20 border border-white/10 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500" 
+                                    value={name}
+                                    onChange={e => setName(e.target.value)}
+                                    placeholder="예: 주간 개발 리포트"
+                                    className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-3.5 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-all placeholder:text-gray-600" 
                                 />
-                                <p className="text-[10px] text-gray-500 mt-2 font-medium">최신 동기화를 위해 {intervalSeconds / 60}분 마다 작업을 반복합니다.</p>
+                            </div>
+                        </div>
+
+                        {executor === 'system' ? (
+                            <div>
+                                <label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-widest pl-1">작업 유형</label>
+                                <div className="grid grid-cols-1 gap-2">
+                                    {[
+                                        { id: 'incremental_sync', name: '증분 동기화', desc: '변경된 파일만 색인합니다.' },
+                                        { id: 'full_index', name: '전체 인덱싱', desc: '모든 데이터를 처음부터 다시 색인합니다.' },
+                                        { id: 'freshness_batch', name: '신선도 체크', desc: '문서의 상태를 평가하고 점수를 갱신합니다.' },
+                                    ].map(opt => (
+                                        <button
+                                            key={opt.id}
+                                            onClick={() => setAction(opt.id)}
+                                            className={`p-4 rounded-2xl border text-left transition-all ${
+                                                action === opt.id 
+                                                ? 'bg-indigo-500/10 border-indigo-500/50 ring-1 ring-indigo-500/50' 
+                                                : 'bg-white/5 border-white/5 hover:border-white/20'
+                                            }`}
+                                        >
+                                            <div className={`font-bold text-sm ${action === opt.id ? 'text-indigo-400' : 'text-white'}`}>{opt.name}</div>
+                                            <div className="text-[10px] text-gray-500 mt-0.5">{opt.desc}</div>
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="space-y-6 animate-in slide-in-from-bottom-2 duration-300">
+                                {/* AI 모델 & 페르소나 */}
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-widest pl-1">AI 모델</label>
+                                        <select 
+                                            value={model}
+                                            onChange={e => setModel(e.target.value)}
+                                            className="w-full bg-white/5 border border-white/10 rounded-2xl px-4 py-3.5 text-white focus:outline-none"
+                                        >
+                                            <option value="claude-3-5-sonnet-latest">Claude 3.5 Sonnet</option>
+                                            <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
+                                            <option value="gpt-4o">GPT-4o</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-widest pl-1">페르소나</label>
+                                        <select 
+                                            value={persona}
+                                            onChange={e => setPersona(e.target.value)}
+                                            className="w-full bg-white/5 border border-white/10 rounded-2xl px-4 py-3.5 text-white focus:outline-none"
+                                        >
+                                            {PERSONA_PRESETS.map(p => (
+                                                <option key={p.id} value={p.id}>{p.name}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                </div>
+
+                                {/* 탐색 범위 */}
+                                <div className="bg-white/5 border border-white/5 rounded-[2rem] p-6 space-y-4">
+                                    <div>
+                                        <label className="block text-xs font-bold text-gray-400 mb-3 uppercase tracking-widest">탐색 대상 프로젝트 (최대 3개)</label>
+                                        <div className="flex flex-wrap gap-2">
+                                            {projects.map(p => (
+                                                <button
+                                                    key={p.name}
+                                                    onClick={() => toggleProject(p.name)}
+                                                    className={`px-4 py-2 rounded-full text-xs font-bold transition-all border ${
+                                                        selectedProjects.includes(p.name)
+                                                        ? 'bg-indigo-500 border-indigo-400 text-white'
+                                                        : 'bg-black/20 border-white/5 text-gray-500 hover:text-gray-400'
+                                                    }`}
+                                                >
+                                                    {p.display_name}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <label className="block text-[10px] font-bold text-gray-500 mb-1.5 uppercase tracking-widest pl-1">태그 필터</label>
+                                            <input 
+                                                value={tags}
+                                                onChange={e => setTags(e.target.value)}
+                                                placeholder="쉼표로 구분 (예: devlog, idea)"
+                                                className="w-full bg-black/30 border border-white/5 rounded-xl px-4 py-2.5 text-xs text-white focus:outline-none" 
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-[10px] font-bold text-gray-500 mb-1.5 uppercase tracking-widest pl-1">검색 키워드</label>
+                                            <input 
+                                                value={keywords}
+                                                onChange={e => setKeywords(e.target.value)}
+                                                placeholder="예: 신규 기능, 아키텍처"
+                                                className="w-full bg-black/30 border border-white/5 rounded-xl px-4 py-2.5 text-xs text-white focus:outline-none" 
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* 출력 설정 */}
+                                <div className="bg-indigo-500/5 border border-indigo-500/10 rounded-[2rem] p-6 space-y-4">
+                                    <h4 className="text-xs font-bold text-indigo-400 mb-2 uppercase tracking-widest">산출물 저장 경로</h4>
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div>
+                                            <label className="block text-[10px] font-bold text-gray-500 mb-1.5 uppercase tracking-widest pl-1">기준 프로젝트</label>
+                                            <select 
+                                                value={outputProject}
+                                                onChange={e => setOutputProject(e.target.value)}
+                                                className="w-full bg-black/30 border border-white/5 rounded-xl px-4 py-2.5 text-xs text-white focus:outline-none"
+                                            >
+                                                {projects.map(p => (
+                                                    <option key={p.name} value={p.name}>{p.display_name}</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label className="block text-[10px] font-bold text-gray-500 mb-1.5 uppercase tracking-widest pl-1">하위 디렉토리</label>
+                                            <input 
+                                                value={outputDir}
+                                                onChange={e => setOutputDir(e.target.value)}
+                                                placeholder="예: reports/weekly"
+                                                className="w-full bg-black/30 border border-white/5 rounded-xl px-4 py-2.5 text-xs text-white focus:outline-none" 
+                                            />
+                                        </div>
+                                    </div>
+                                    <div className="text-[10px] text-gray-500 flex items-center gap-2">
+                                        <span className="shrink-0">📍 최종 저장:</span>
+                                        <code className="text-indigo-400 truncate">
+                                            {outputProject}/{outputDir}/{new Date().toISOString().split('T')[0]}-{name || 'Report'}.md
+                                        </code>
+                                    </div>
+                                </div>
+
+                                {/* 요약 스타일 */}
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-widest pl-1">결과물 요약 방식</label>
+                                    <div className="grid grid-cols-4 gap-2">
+                                        {[
+                                            { id: 'bullet_points', name: '📌 지표형' },
+                                            { id: 'narrative', name: '📖 서사형' },
+                                            { id: 'actionable', name: '💡 통찰형' },
+                                            { id: 'comparative', name: '🔄 비교형' },
+                                        ].map(s => (
+                                            <button
+                                                key={s.id}
+                                                onClick={() => setSummaryStyle(s.id)}
+                                                className={`py-2 rounded-xl text-[10px] font-bold transition-all border ${
+                                                    summaryStyle === s.id 
+                                                    ? 'bg-white/10 border-white/30 text-white' 
+                                                    : 'bg-white/5 border-white/5 text-gray-500 hover:text-gray-400'
+                                                }`}
+                                            >
+                                                {s.name}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
                             </div>
                         )}
-                    </div>
 
-                    <div className="flex items-center justify-between p-4 bg-white/5 border border-white/5 rounded-2xl cursor-pointer hover:bg-white/10 transition-all" onClick={() => setRunOnIdle(!runOnIdle)}>
-                        <div className="flex-1">
-                            <label className="block text-sm font-bold text-white cursor-pointer">유휴 상태에서만 실행</label>
-                            <p className="text-[10px] text-gray-500 font-medium">사용자가 자리를 비웠을 때만 작업을 수행하여 부하를 최소화합니다.</p>
-                        </div>
-                        <div className={`w-10 h-6 rounded-full p-1 transition-all ${runOnIdle ? 'bg-indigo-500' : 'bg-gray-700'}`}>
-                            <div className={`w-4 h-4 bg-white rounded-full transition-all transform ${runOnIdle ? 'translate-x-4' : 'translate-x-0'}`}></div>
+                        {/* 반복 주기 및 유휴 설정 */}
+                        <div className="pt-4 border-t border-white/5 space-y-4">
+                             <div>
+                                <label className="block text-xs font-bold text-gray-500 mb-3 uppercase tracking-widest pl-1">실행 주기 및 스케줄</label>
+                                <div className="flex gap-2">
+                                    {['daily', 'weekly', 'interval'].map((t) => (
+                                        <button
+                                            key={t}
+                                            onClick={() => setScheduleType(t as any)}
+                                            className={`flex-1 py-2.5 rounded-xl text-xs font-bold transition-all border ${
+                                                scheduleType === t 
+                                                ? 'bg-white/10 border-white/20 text-white' 
+                                                : 'bg-transparent border-white/5 text-gray-500 hover:bg-white/5'
+                                            }`}
+                                        >
+                                            {t === 'daily' ? '매일' : t === 'weekly' ? '매주' : '지정 간격'}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="p-5 bg-black/20 rounded-3xl border border-white/5">
+                                {scheduleType === 'daily' && (
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-xs font-medium text-gray-400">매일 실행 시각</span>
+                                        <div className="flex items-center gap-2">
+                                            <input 
+                                                type="number" value={hour}
+                                                onChange={e => setHour(Math.min(23, Math.max(0, parseInt(e.target.value) || 0)))}
+                                                className="w-16 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-center text-sm text-white" 
+                                            />
+                                            <span className="text-gray-600">:</span>
+                                            <input 
+                                                type="number" value={minute}
+                                                onChange={e => setMinute(Math.min(59, Math.max(0, parseInt(e.target.value) || 0)))}
+                                                className="w-16 bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-center text-sm text-white" 
+                                            />
+                                        </div>
+                                    </div>
+                                )}
+                                {scheduleType === 'weekly' && (
+                                    <div className="space-y-4">
+                                        <div className="flex items-center justify-between">
+                                            <span className="text-xs font-medium text-gray-400">실행 요일</span>
+                                            <select 
+                                                value={dayOfWeek}
+                                                onChange={e => setDayOfWeek(parseInt(e.target.value))}
+                                                className="bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-xs text-white outline-none"
+                                            >
+                                                {["일", "월", "화", "수", "목", "금", "토"].map((day, d) => (
+                                                    <option key={d} value={d}>{day}요일</option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                        <div className="flex items-center justify-between border-t border-white/5 pt-3">
+                                            <span className="text-xs font-medium text-gray-400">실행 시각</span>
+                                            <div className="flex items-center gap-2">
+                                                <input type="number" value={hour} onChange={e => setHour(Math.min(23, Math.max(0, parseInt(e.target.value) || 0)))} className="w-14 bg-white/5 border border-white/10 rounded px-1 py-1 text-center text-white" />
+                                                <span className="text-gray-600">:</span>
+                                                <input type="number" value={minute} onChange={e => setMinute(Math.min(59, Math.max(0, parseInt(e.target.value) || 0)))} className="w-14 bg-white/5 border border-white/10 rounded px-1 py-1 text-center text-white" />
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                                {scheduleType === 'interval' && (
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-xs font-medium text-gray-400">반복 간격 (분 단위)</span>
+                                        <input 
+                                            type="number"
+                                            value={intervalSeconds / 60}
+                                            onChange={e => setIntervalSeconds(Math.max(1, parseInt(e.target.value) || 1) * 60)}
+                                            className="w-24 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-center text-sm text-white" 
+                                        />
+                                    </div>
+                                )}
+                            </div>
+
+                            <button 
+                                onClick={() => setRunOnIdle(!runOnIdle)}
+                                className={`w-full flex items-center justify-between p-4 rounded-3xl border transition-all ${
+                                    runOnIdle ? 'bg-indigo-500/10 border-indigo-500/30' : 'bg-white/5 border-white/5 grayscale opacity-60'
+                                }`}
+                            >
+                                <div className="flex items-center gap-3">
+                                    <div className={`w-10 h-10 rounded-2xl flex items-center justify-center text-lg ${runOnIdle ? 'bg-indigo-500 text-white' : 'bg-gray-800 text-gray-500'}`}>
+                                        ☕
+                                    </div>
+                                    <div className="text-left">
+                                        <div className={`text-sm font-bold ${runOnIdle ? 'text-indigo-300' : 'text-gray-400'}`}>유휴 상태 대기 모드</div>
+                                        <div className="text-[10px] text-gray-500">PC를 사용하지 않을 때만 조용히 실행합니다.</div>
+                                    </div>
+                                </div>
+                                <div className={`w-12 h-6 rounded-full p-1 transition-all ${runOnIdle ? 'bg-indigo-500' : 'bg-gray-800'}`}>
+                                    <div className={`w-4 h-4 bg-white rounded-full transition-all transform ${runOnIdle ? 'translate-x-6' : 'translate-x-0'}`}></div>
+                                </div>
+                            </button>
                         </div>
                     </div>
                 </div>
 
-                <div className="flex gap-3 mt-8">
+                <div className="p-8 bg-black/40 border-t border-white/5 flex gap-4">
                     <button 
                         onClick={onClose}
-                        className="flex-1 px-4 py-2.5 bg-white/5 hover:bg-white/10 text-gray-300 font-semibold rounded-xl transition-all"
+                        className="flex-1 px-6 py-4 bg-white/5 hover:bg-white/10 text-gray-400 font-bold rounded-2xl transition-all"
                     >
                         취소
                     </button>
                     <button 
-                        onClick={handleAdd}
+                        onClick={handleSubmit}
                         disabled={loading}
-                        className="flex-1 px-4 py-2.5 bg-indigo-500 hover:bg-indigo-600 text-white font-semibold rounded-xl shadow-lg shadow-indigo-500/20 transition-all disabled:opacity-50 active:scale-95"
+                        className="flex-[2] px-6 py-4 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-2xl shadow-xl shadow-indigo-500/20 transition-all disabled:opacity-50 active:scale-95"
                     >
-                        {loading ? "생성 중..." : "스케줄 등록"}
+                        {loading 
+                            ? (isEdit ? "스케줄 수정 중..." : "스케줄 생성 중...") 
+                            : (isEdit ? "✅ 설정 변경사항 저장" : "🚀 스케줄 등록하기")}
                     </button>
                 </div>
             </div>

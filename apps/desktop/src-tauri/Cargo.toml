@@ -37,6 +37,9 @@ tracing = { workspace = true }
 toml = "0.8"
 sysinfo = "0.38.4"
 walkdir = "2.5.0"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+async-trait = "0.1"
 
 [dev-dependencies]
 tempfile = { workspace = true }

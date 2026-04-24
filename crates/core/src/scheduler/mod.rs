@@ -4,14 +4,26 @@ pub mod schedule;
 
 pub use schedule::{Schedule, ScheduledJob, Executor};
 pub use db::SchedulerDb;
+pub use executor::JobResult;
 
 use std::sync::{Arc, Mutex};
 use crate::indexing::IndexingService;
+
+#[async_trait::async_trait]
+pub trait AgentHandler: Send + Sync {
+    async fn execute_agent(
+        &self,
+        job_name: &str,
+        action: &str,
+        config: &serde_json::Value,
+    ) -> JobResult;
+}
 
 pub struct SchedulerManager {
     // std::sync::Mutex hold time must be minimized in async contexts
     conn: Arc<Mutex<rusqlite::Connection>>,
     indexer: Arc<IndexingService>,
+    agent_handler: Mutex<Option<Arc<dyn AgentHandler>>>,
 }
 
 impl SchedulerManager {
@@ -19,7 +31,16 @@ impl SchedulerManager {
         conn: Arc<Mutex<rusqlite::Connection>>,
         indexer: Arc<IndexingService>,
     ) -> Self {
-        Self { conn, indexer }
+        Self { 
+            conn, 
+            indexer,
+            agent_handler: Mutex::new(None),
+        }
+    }
+
+    pub fn set_agent_handler(&self, handler: Arc<dyn AgentHandler>) {
+        let mut h = self.agent_handler.lock().unwrap();
+        *h = Some(handler);
     }
 
     /// Executed periodically. Spawns tasks for due jobs.
@@ -40,7 +61,12 @@ impl SchedulerManager {
         for job in due_jobs {
             let indexer_clone = self.indexer.clone();
             let conn_clone = self.conn.clone();
-            let project_name = job.project_id.map(|_| job.job_name.clone());
+
+            // Get a clone of the agent handler if it exists
+            let handler_opt = {
+                let h = self.agent_handler.lock().unwrap();
+                h.clone()
+            };
 
             tokio::spawn(async move {
                 let result = match job.executor {
@@ -52,11 +78,18 @@ impl SchedulerManager {
                         ).await
                     }
                     Executor::Agent => {
-                        executor::execute_agent(
-                            &job.action,
-                            &job.action_config,
-                            project_name.as_deref(),
-                        ).await
+                        if let Some(handler) = handler_opt {
+                            handler.execute_agent(
+                                &job.job_name,
+                                &job.action,
+                                &job.action_config,
+                            ).await
+                        } else {
+                            JobResult { 
+                                success: false, 
+                                message: "Agent handler not initialized in this environment".into() 
+                            }
+                        }
                     }
                 };
 

@@ -199,6 +199,44 @@ impl<'a> SchedulerDb<'a> {
         self.conn.execute("UPDATE scheduled_jobs SET enabled = 0 WHERE id = ?1", [job_id])?;
         Ok(())
     }
+
+    pub fn update_job(&self, job_id: i64, job: &ScheduledJob) -> Result<(), Error> {
+        let exec_str = match job.executor {
+            Executor::System => "system",
+            Executor::Agent => "agent",
+        };
+        let config_str = serde_json::to_string(&job.action_config).unwrap_or_else(|_| "{}".to_string());
+        let schedule_str = serde_json::to_string(&job.schedule).unwrap_or_else(|_| "{}".to_string());
+
+        self.conn.execute(
+            "UPDATE scheduled_jobs 
+             SET job_name = ?1, executor = ?2, action = ?3, action_config = ?4, 
+                 schedule_json = ?5, run_on_idle = ?6, description = ?7
+             WHERE id = ?8 AND is_immutable = 0",
+            rusqlite::params![
+                job.job_name,
+                exec_str,
+                job.action,
+                config_str,
+                schedule_str,
+                if job.run_on_idle { 1 } else { 0 },
+                job.description,
+                job_id,
+            ]
+        )?;
+
+        // If schedule changed, we should probably update next_run_at as well
+        // But for simplicity, we'll let the next tick handle it or just keep current next_run_at
+        // Re-calculating next_run_at
+        let now = chrono::Utc::now().timestamp();
+        let next_run = job.schedule.next_run_after(now);
+        self.conn.execute(
+            "UPDATE scheduled_jobs SET next_run_at = ?1 WHERE id = ?2",
+            rusqlite::params![next_run, job_id]
+        )?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

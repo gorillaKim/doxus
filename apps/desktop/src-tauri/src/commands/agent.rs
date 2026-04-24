@@ -70,6 +70,7 @@ pub fn spawn_background_reader(
     sidecar: std::sync::Arc<doxus_agent::sync_sidecar::SyncSidecarManager>,
     app: tauri::AppHandle,
     pending: crate::state::PendingMessages,
+    collected: Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
 ) {
     use std::io::BufRead;
     use tauri::Emitter;
@@ -97,6 +98,15 @@ pub fn spawn_background_reader(
                     let session_id = resp.session_id.clone();
                     let is_terminal = matches!(resp.msg_type.as_str(), "result" | "error" | "cancelled");
 
+                    // Collect content if this session is marked for collection
+                    if let Some(content) = resp.content.as_deref() {
+                        if let Ok(mut coll) = collected.lock() {
+                            if let Some(buf) = coll.get_mut(&session_id) {
+                                buf.push_str(content);
+                            }
+                        }
+                    }
+
                     let _ = app.emit(&format!("chat-stream:{session_id}"), &resp);
 
                     if is_terminal {
@@ -123,11 +133,9 @@ pub fn spawn_background_reader(
 
 // ── Tauri 커맨드 ─────────────────────────────────────────────────────────────
 
-/// 세션 시작: 사이드카를 구동하고 Claude/Gemini 세션을 등록한다.
-#[tauri::command]
-pub async fn chat_start_session(
+pub async fn chat_start_session_impl(
     app: tauri::AppHandle,
-    state: tauri::State<'_, Arc<crate::AppState>>,
+    state: &crate::AppState,
     session_id: String,
     cli_type: String,  // "claude" | "gemini"
     cli_path: String,
@@ -142,6 +150,7 @@ pub async fn chat_start_session(
             state.sidecar.clone(),
             app,
             state.pending_messages.clone(),
+            state.collected_messages.clone(),
         );
     }
 
@@ -168,10 +177,20 @@ pub async fn chat_start_session(
     state.sidecar.send_request(&start_req)
 }
 
-/// 메시지 전송: 결과가 올 때까지 블로킹.
 #[tauri::command]
-pub async fn chat_send_message(
+pub async fn chat_start_session(
+    app: tauri::AppHandle,
     state: tauri::State<'_, Arc<crate::AppState>>,
+    session_id: String,
+    cli_type: String,
+    cli_path: String,
+    model: String,
+) -> Result<(), String> {
+    chat_start_session_impl(app, state.inner(), session_id, cli_type, cli_path, model).await
+}
+
+pub async fn chat_send_message_impl(
+    state: &crate::AppState,
     session_id: String,
     message: String,
 ) -> Result<(), String> {
@@ -198,6 +217,15 @@ pub async fn chat_send_message(
 
     let _ = rx.await;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn chat_send_message(
+    state: tauri::State<'_, Arc<crate::AppState>>,
+    session_id: String,
+    message: String,
+) -> Result<(), String> {
+    chat_send_message_impl(state.inner(), session_id, message).await
 }
 
 /// 진행 중인 메시지 취소.

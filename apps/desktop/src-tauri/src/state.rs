@@ -56,6 +56,7 @@ pub struct AppState {
     pub secret_store: Arc<UnifiedKeychainStore>,
     pub sync_manager: Arc<SyncManager>,
     pub scheduler_manager: Arc<SchedulerManager>,
+    pub collected_messages: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl AppState {
@@ -136,6 +137,7 @@ impl AppState {
                 secret_store,
                 sync_manager,
                 scheduler_manager,
+                collected_messages: Arc::new(Mutex::new(HashMap::new())),
             },
             rx
         )

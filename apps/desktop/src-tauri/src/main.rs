@@ -206,6 +206,14 @@ fn main() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_oauth::init())
         .setup(move |app| {
+            let state = app.state::<Arc<AppState>>();
+            let scheduler = state.scheduler_manager.clone();
+            let handler = Arc::new(doxus_desktop_lib::scheduler_handler::TauriAgentHandler {
+                state: state.inner().clone(),
+                app_handle: app.handle().clone(),
+            });
+            scheduler.set_agent_handler(handler);
+
             #[cfg(debug_assertions)]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
@@ -333,6 +341,7 @@ fn main() {
             doxus_desktop_lib::commands::scheduler::create_scheduled_job,
             doxus_desktop_lib::commands::scheduler::delete_scheduled_job,
             doxus_desktop_lib::commands::scheduler::get_job_history,
+            doxus_desktop_lib::commands::scheduler::update_scheduled_job,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

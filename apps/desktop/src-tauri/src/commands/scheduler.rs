@@ -106,3 +106,41 @@ pub async fn get_job_history(
 
     Ok(json!({ "history": rows }))
 }
+
+#[tauri::command]
+pub async fn update_scheduled_job(
+    state: tauri::State<'_, Arc<crate::AppState>>,
+    job_id: i64,
+    job_name: String,
+    executor: String,
+    action: String,
+    action_config: serde_json::Value,
+    schedule_json: serde_json::Value,
+    run_on_idle: bool,
+) -> Result<serde_json::Value, String> {
+    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+    let sdb = SchedulerDb::new(&conn);
+    
+    let exec = if executor == "system" { Executor::System } else { Executor::Agent };
+    let sched: Schedule = serde_json::from_value(schedule_json).map_err(|e| e.to_string())?;
+
+    let job = ScheduledJob {
+        id: job_id,
+        project_id: None,
+        job_name,
+        description: None,
+        executor: exec,
+        action,
+        action_config,
+        schedule: sched,
+        enabled: true,
+        run_on_idle,
+        is_immutable: false,
+        last_run_at: None,
+        next_run_at: 0,
+        created_by: "user".to_string(),
+    };
+
+    sdb.update_job(job_id, &job).map_err(|e| e.to_string())?;
+    Ok(json!({ "ok": true }))
+}
