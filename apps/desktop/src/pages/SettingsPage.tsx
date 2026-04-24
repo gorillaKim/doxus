@@ -340,6 +340,7 @@ export default function SettingsPage() {
                   <option value="dark">다크 (어두운 배경)</option>
                 </select>
               </div>
+
               <div className="flex items-center gap-3 pt-4 border-t border-gray-800/50">
                 <button
                   onClick={handleSaveSettings}
@@ -566,13 +567,22 @@ interface PluginLogEntry {
   occurred_at: number;
 }
 
-const EVENT_TYPE_OPTIONS = ['전체', 'index_start', 'index_complete', 'sync_start', 'sync_complete', 'plugin_error'];
+const EVENT_TYPE_OPTIONS = ['전체', 'index_start', 'index_complete', 'sync_start', 'sync_complete', 'plugin_error', 'document_fetch_error', 'system_error'];
 
 function PluginLogModal({ initialLogs, onClose }: { initialLogs: PluginLogEntry[]; onClose: () => void }) {
   const [logs, setLogs] = useState<PluginLogEntry[]>(initialLogs);
   const [filter, setFilter] = useState('전체');
   const [clearing, setClearing] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  const fetchLogs = async () => {
+    try {
+      const res = await invoke<{ logs: PluginLogEntry[] }>('get_plugin_logs');
+      setLogs(res.logs);
+    } catch (e) {
+      console.error('Failed to fetch logs', e);
+    }
+  };
 
   // Tauri event push: audit:new 이벤트 수신 시 목록에 prepend
   useEffect(() => {
@@ -602,7 +612,16 @@ function PluginLogModal({ initialLogs, onClose }: { initialLogs: PluginLogEntry[
       >
         {/* 헤더 */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-gray-800">
-          <span className="text-sm font-semibold text-gray-200">플러그인 로그 ({filtered.length}건)</span>
+          <div className="flex items-center gap-3">
+            <span className="text-sm font-semibold text-gray-200">플러그인 로그 ({filtered.length}건)</span>
+            <button
+              onClick={fetchLogs}
+              className="p-1 text-gray-500 hover:text-gray-300 transition-colors"
+              title="새로고침"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+            </button>
+          </div>
           <div className="flex items-center gap-2">
             <select
               value={filter}
@@ -678,15 +697,30 @@ function DevToolsSection() {
         <p className="text-sm text-gray-400">로컬 개발 환경에서 사용 가능한 도구</p>
         <div className="flex flex-wrap gap-2">
           <button
-            className={btnClass('reindex')}
+            className={btnClass('reindex-inc')}
             disabled={loadingBtn !== null}
-            onClick={() => run('reindex', async () => {
-              const res = await invoke<{ indexed: number; message: string }>('trigger_reindex');
+            onClick={() => run('reindex-inc', async () => {
+              const res = await invoke<{ indexed: number; message: string }>('trigger_reindex', { full: false });
               setDevResult(res.message);
             })}
           >
-            {loadingBtn === 'reindex' && <span className="animate-spin">⟳</span>}
-            DB 재인덱싱
+            {loadingBtn === 'reindex-inc' && <span className="animate-spin">⟳</span>}
+            DB 인덱싱 (증분)
+          </button>
+          <button
+            className={`${btnClass('reindex-full')} border-amber-900/50 hover:border-amber-700/50 text-amber-200/80 hover:bg-amber-950/20`}
+            disabled={loadingBtn !== null}
+            onClick={() => {
+              if (confirm('모든 프로젝트의 모든 문서를 강제로 다시 인덱싱하시겠습니까?\n이 작업은 데이터 양에 따라 시간이 오래 걸릴 수 있습니다.')) {
+                run('reindex-full', async () => {
+                  const res = await invoke<{ indexed: number; message: string }>('trigger_reindex', { full: true });
+                  setDevResult(res.message);
+                });
+              }
+            }}
+          >
+            {loadingBtn === 'reindex-full' && <span className="animate-spin">⟳</span>}
+            전체 강제 재인덱싱
           </button>
           <button
             className={btnClass('status')}
@@ -732,6 +766,21 @@ function DevToolsSection() {
           >
             {loadingBtn === 'sync' && <span className="animate-spin">⟳</span>}
             동기화 강제 실행
+          </button>
+          <button
+            className={`${btnClass('repair')} border-red-900/50 hover:border-red-700/50 text-red-200/80 hover:bg-red-950/20`}
+            disabled={loadingBtn !== null}
+            onClick={() => {
+              if (confirm('벡터 검색 인덱스 테이블을 재생성하시겠습니까?\n기존의 모든 벡터 데이터가 삭제되며, 전체 재인덱싱을 진행해야 검색이 가능해집니다.')) {
+                run('repair', async () => {
+                  await invoke('search_engine_repair_index');
+                  setDevResult('✓ 벡터 테이블 재생성 완료 (전체 재인덱싱을 실행해 주세요)');
+                });
+              }
+            }}
+          >
+            {loadingBtn === 'repair' && <span className="animate-spin">⟳</span>}
+            벡터 인덱스 복구
           </button>
         </div>
         {devResult && <p className="text-xs text-emerald-400 mt-1">{devResult}</p>}

@@ -10,6 +10,8 @@ import DashboardPage from "./pages/DashboardPage";
 import SettingsPage from "./pages/SettingsPage";
 import AgentPage from "./pages/AgentPage";
 import GuidePage from "./pages/GuidePage";
+import FreshnessPage from "./pages/FreshnessPage";
+import SchedulerPage from "./pages/SchedulerPage";
 import { ModelDownloadModal } from "./components/ModelDownloadModal";
 
 export default function App() {
@@ -34,6 +36,8 @@ export default function App() {
           <Route path="/graph" element={<GraphPage />} />
           <Route path="/search" element={<SearchPage />} />
           <Route path="/projects" element={<ProjectsPage />} />
+          <Route path="/freshness" element={<FreshnessPage />} />
+          <Route path="/scheduler" element={<SchedulerPage />} />
           <Route path="/market" element={<MarketPage />} />
           <Route path="/agent" element={<AgentPage />} />
           <Route path="/guide" element={<GuidePage />} />

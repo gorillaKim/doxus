@@ -86,6 +86,21 @@ function IconGuide() {
     </svg>
   );
 }
+function IconFreshness() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5 shrink-0">
+      <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+    </svg>
+  );
+}
+function IconScheduler() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5 shrink-0">
+      <circle cx="12" cy="12" r="10" />
+      <polyline points="12 6 12 12 16 14" />
+    </svg>
+  );
+}
 function IconSidebarCollapse({ collapsed }: { collapsed: boolean }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5 shrink-0">
@@ -104,6 +119,8 @@ const NAV_ITEMS = [
   { to: "/graph", label: "그래프", icon: <IconGraph /> },
   { to: "/search", label: "검색", icon: <IconSearch /> },
   { to: "/projects", label: "프로젝트", icon: <IconProjects /> },
+  { to: "/freshness", label: "신선도", icon: <IconFreshness /> },
+  { to: "/scheduler", label: "스케줄", icon: <IconScheduler /> },
   { to: "/market", label: "마켓", icon: <IconMarket /> },
   { to: "/agent", label: "에이전트", icon: <IconAgent /> },
   { to: "/guide", label: "가이드", icon: <IconGuide /> },

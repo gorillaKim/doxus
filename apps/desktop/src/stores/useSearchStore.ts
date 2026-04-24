@@ -20,6 +20,8 @@ export interface SearchHit {
   metadata: Record<string, any>;
   url: string | null;
   source_project_id: string;
+  freshness_score: number;
+  retention_tier: string;
 }
 
 export interface AllDocument {
@@ -35,6 +37,8 @@ export interface AllDocument {
   last_indexed?: number;
   cache_ttl?: number;
   source_project_id?: string;
+  freshness_score?: number;
+  retention_tier?: string;
 }
 
 export interface SearchFilters {

@@ -242,6 +242,19 @@ fn main() {
                 manager_inner.start_loop(rx).await;
             });
 
+            // Start SchedulerManager tick loop
+            let scheduler = state_arc.scheduler_manager.clone();
+            tauri::async_runtime::spawn(async move {
+                scheduler.ensure_defaults();
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+                loop {
+                    interval.tick().await;
+                    // TODO: 연동할 OS 레벨 유휴 상태 체크 로직 (현재는 임시로 false)
+                    let is_idle = false;
+                    scheduler.tick(is_idle).await;
+                }
+            });
+
             // Start Auth Bridge server (localhost:14201)
             let store = state_arc.secret_store.clone();
             tauri::async_runtime::spawn(async move {
@@ -289,6 +302,7 @@ fn main() {
             doxus_desktop_lib::commands::search::toggle_project_status,
             doxus_desktop_lib::commands::search::remove_project,
             doxus_desktop_lib::commands::search::search_engine_status,
+            doxus_desktop_lib::commands::search::search_engine_repair_index,
             doxus_desktop_lib::commands::search::trigger_reindex,
             doxus_desktop_lib::commands::search::index_project,
             doxus_desktop_lib::commands::search::increment_view_count,
@@ -311,6 +325,14 @@ fn main() {
             doxus_desktop_lib::commands::system::check_model_status,
             doxus_desktop_lib::commands::system::download_onnx_model,
             doxus_desktop_lib::commands::graph::get_graph_data,
+            doxus_desktop_lib::commands::freshness::get_freshness_dashboard,
+            doxus_desktop_lib::commands::freshness::get_stale_documents,
+            doxus_desktop_lib::commands::freshness::update_freshness_mark,
+            doxus_desktop_lib::commands::freshness::update_sensitivity_mode,
+            doxus_desktop_lib::commands::scheduler::list_scheduled_jobs,
+            doxus_desktop_lib::commands::scheduler::create_scheduled_job,
+            doxus_desktop_lib::commands::scheduler::delete_scheduled_job,
+            doxus_desktop_lib::commands::scheduler::get_job_history,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -9,6 +9,7 @@ use doxus_core::secrets::UnifiedKeychainStore;
 use doxus_agent::sync_sidecar::SyncSidecarManager;
 use doxus_agent::prompt::PromptLoader;
 use doxus_core::sync_manager::{SyncManager, SyncTrigger};
+use doxus_core::scheduler::SchedulerManager;
 use tokio::sync::{mpsc, RwLock};
 
 /// Shared, swappable embedder. The inner `Arc<dyn ...>` can be replaced at runtime
@@ -54,6 +55,7 @@ pub struct AppState {
     pub reader_started: Arc<AtomicBool>,
     pub secret_store: Arc<UnifiedKeychainStore>,
     pub sync_manager: Arc<SyncManager>,
+    pub scheduler_manager: Arc<SchedulerManager>,
 }
 
 impl AppState {
@@ -80,10 +82,8 @@ impl AppState {
         let shared_embedder: SharedEmbedder = Arc::new(RwLock::new(embedder.clone()));
         let conn_arc = Arc::new(Mutex::new(conn));
         let search_engine = Arc::new(doxus_core::search::SearchEngine::with_embedder(conn_arc.clone(), embedder));
-        let indexing_service = Arc::new(doxus_core::indexing::IndexingService::new(conn_arc.clone(), Arc::new(PluginManager::new(plugins_dir.clone())), search_engine.clone()));
-        let (sync_manager, rx) = SyncManager::new(indexing_service);
-        let sync_manager = Arc::new(sync_manager);
 
+        // 1. PluginManager를 먼저 생성하고 내장 플러그인 등록
         let mut plugin_manager = PluginManager::new(plugins_dir.clone());
         plugin_manager.register_factory(&PluginManager::normalize_id("obsidian"), || {
             Box::new(doxus_plugin_obsidian::ObsidianPlugin::new())
@@ -94,8 +94,20 @@ impl AppState {
         plugin_manager.register_factory(&PluginManager::normalize_id("github"), || {
             Box::new(doxus_plugin_github::GitHubPlugin::new())
         });
-
         let plugin_manager = Arc::new(plugin_manager);
+
+        // 2. 초기화된 plugin_manager를 IndexingService에 전달
+        let indexing_service = Arc::new(doxus_core::indexing::IndexingService::new(
+            conn_arc.clone(),
+            plugin_manager.clone(),
+            search_engine.clone()
+        ));
+
+        let (sync_manager, rx) = SyncManager::new(indexing_service.clone());
+        let sync_manager = Arc::new(sync_manager);
+        
+        let scheduler_manager = Arc::new(SchedulerManager::new(conn_arc.clone(), indexing_service));
+
         let secret_store = Arc::new(UnifiedKeychainStore::new("doxus", "com.doxus.secrets.v1"));
 
         // Background keychain migration
@@ -123,6 +135,7 @@ impl AppState {
                 reader_started: Arc::new(AtomicBool::new(false)),
                 secret_store,
                 sync_manager,
+                scheduler_manager,
             },
             rx
         )

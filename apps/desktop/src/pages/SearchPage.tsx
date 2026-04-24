@@ -38,6 +38,8 @@ interface DocEntry {
   metadata?: Record<string, any>;
   url?: string | null;
   source_project_id: string;
+  freshness_score?: number;
+  retention_tier?: string;
 }
 
 interface PreviewMeta {
@@ -73,6 +75,8 @@ function hitToEntry(hit: SearchHit): DocEntry {
     metadata: hit.metadata,
     url: hit.url,
     source_project_id: hit.source_project_id,
+    freshness_score: hit.freshness_score,
+    retention_tier: hit.retention_tier,
   };
 }
 
@@ -92,6 +96,8 @@ function allDocToEntry(doc: AllDocument): DocEntry {
     cache_ttl: doc.cache_ttl,
     url: doc.url,
     source_project_id: doc.source_project_id || '',
+    freshness_score: doc.freshness_score,
+    retention_tier: doc.retention_tier,
   };
 }
 
@@ -129,7 +135,14 @@ function DocTooltip({ doc, x, y }: TooltipProps) {
       </div>
       
       <p className="text-white font-bold leading-tight mb-1 text-[13px]">{doc.title}</p>
-      <p className="text-gray-500 font-mono text-[10px] truncate mb-3">{doc.source_doc_id}</p>
+      <div className="flex items-center gap-2 mb-3">
+         <p className="text-gray-500 font-mono text-[10px] truncate">{doc.source_doc_id}</p>
+         {doc.freshness_score != null && (
+           <span className="text-[10px] bg-slate-800/50 text-slate-300 px-1.5 py-0.5 rounded border border-slate-700/50">
+             {doc.retention_tier === 'short' ? '🥛' : doc.retention_tier === 'mid' ? '🍞' : '🥫'} {doc.freshness_score.toFixed(1)}점
+           </span>
+         )}
+      </div>
       
       {doc.context_content && (
         <div className="bg-black/40 rounded-lg p-2.5 mb-3 border border-gray-800/50">
@@ -242,8 +255,12 @@ function FileItem({
         style={{ paddingLeft: depth * 12 + 25 }}
         title=""
       >
-        <span className="mr-1.5 opacity-50">📄</span>
-        {doc.title}
+        <span className="mr-1.5 opacity-50">
+           {doc.retention_tier === 'short' ? '🥛' : doc.retention_tier === 'mid' ? '🍞' : doc.retention_tier === 'long' ? '🥫' : '📄'}
+        </span>
+        <span className={`${doc.freshness_score != null && doc.freshness_score < 40 ? 'text-rose-400 line-through opacity-80' : ''}`}>
+             {doc.title}
+        </span>
         {doc.score != null && (
           <span className="ml-1.5 text-gray-600">{doc.score.toFixed(2)}</span>
         )}
@@ -335,10 +352,10 @@ function TreeNodeView({
             onMouseMove={node.doc ? onMouseMove : undefined}
             className={`flex items-center gap-1 flex-1 min-w-0 ${node.doc ? 'cursor-pointer hover:text-gray-200' : 'cursor-default'}`}
           >
-            <span className={hasChildren ? "text-yellow-600/80 mr-0.5" : "text-gray-600 mr-0.5"}>
-              {hasChildren ? '📁' : '📄'}
+            <span className={hasChildren ? "text-yellow-600/80 mr-0.5" : "text-gray-600 mr-0.5 opacity-50"}>
+              {hasChildren ? '📁' : (node.doc ? (node.doc.retention_tier === 'short' ? '🥛' : node.doc.retention_tier === 'mid' ? '🍞' : node.doc.retention_tier === 'long' ? '🥫' : '📄') : '📄')}
             </span>
-            <span className={`truncate ${node.doc ? 'font-medium' : 'italic opacity-70'}`}>
+            <span className={`truncate ${node.doc ? 'font-medium' : 'italic opacity-70'} ${node.doc && node.doc.freshness_score != null && node.doc.freshness_score < 40 ? 'text-rose-400 line-through opacity-80' : ''}`}>
               {node.doc?.title ?? node.name}
             </span>
           </div>
