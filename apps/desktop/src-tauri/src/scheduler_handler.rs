@@ -31,11 +31,11 @@ impl AgentHandler for TauriAgentHandler {
 
 impl TauriAgentHandler {
     async fn run_ai_report(&self, job_name: &str, config: &serde_json::Value) -> Result<String, String> {
-        let mut model = config["model"].as_str().unwrap_or("claude-3-5-sonnet-20241022").to_string();
+        let mut model = config["model"].as_str().unwrap_or("claude-3-5-sonnet").to_string();
         
         // Sanitize model ID for CLI compatibility
-        if model == "claude-3-5-sonnet-latest" {
-            model = "claude-3-5-sonnet-20241022".to_string();
+        if model.contains("claude-3-5-sonnet") {
+            model = "claude-3-5-sonnet".to_string();
         } else if model == "gemini-1.5-pro" {
             model = "gemini-1.5-pro-002".to_string();
         }
