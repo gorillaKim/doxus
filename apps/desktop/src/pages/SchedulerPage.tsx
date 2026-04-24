@@ -240,7 +240,7 @@ function CreateScheduleModal({ projects, editingJob, onClose, onCreated }: { pro
     const [description, setDescription] = useState(editingJob?.description || "");
     
     // AI Provider & Model handling
-    const initialModel = editingJob?.action_config?.model || "claude-3-5-sonnet";
+    const initialModel = editingJob?.action_config?.model || "claude-sonnet-4-6";
     const initialProvider = initialModel.includes("gemini") ? "gemini" : "claude";
     const [provider, setProvider] = useState(initialProvider);
     const [model, setModel] = useState(initialModel);
@@ -440,8 +440,8 @@ function CreateScheduleModal({ projects, editingJob, onClose, onCreated }: { pro
                                                     onClick={() => {
                                                         setProvider(p.id);
                                                         const defaultModels: any = {
-                                                            claude: 'claude-3-5-sonnet',
-                                                            gemini: 'gemini-1.5-pro-002',
+                                                            claude: 'claude-sonnet-4-6',
+                                                            gemini: 'gemini-2.5-pro',
                                                             openai: 'gpt-4o'
                                                         };
                                                         setModel(defaultModels[p.id]);
@@ -467,15 +467,15 @@ function CreateScheduleModal({ projects, editingJob, onClose, onCreated }: { pro
                                         >
                                             {provider === 'claude' && (
                                                 <>
-                                                    <option value="claude-3-5-sonnet">Claude 3.5 Sonnet</option>
-                                                    <option value="claude-3-opus">Claude 3 Opus</option>
-                                                    <option value="claude-3-5-haiku">Claude 3.5 Haiku</option>
+                                                    <option value="claude-sonnet-4-6">Claude Sonnet 4.6</option>
+                                                    <option value="claude-opus-4-6">Claude Opus 4.6</option>
+                                                    <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5</option>
                                                 </>
                                             )}
                                             {provider === 'gemini' && (
                                                 <>
-                                                    <option value="gemini-1.5-pro-002">Gemini 1.5 Pro</option>
-                                                    <option value="gemini-1.5-flash-002">Gemini 1.5 Flash</option>
+                                                    <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+                                                    <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
                                                 </>
                                             )}
                                             {provider === 'openai' && (
