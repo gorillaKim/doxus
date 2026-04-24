@@ -502,12 +502,24 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
     let mut next_param = 1usize;
     let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
-    let match_clause = if !fts_query.is_empty() {
+    // 1. Core Selection Logic
+    let (from_clause, match_clause, score_expr, order_by) = if !fts_query.is_empty() {
         let q = fts_query.clone();
         params_vec.push(Box::new(q));
-        format!("chunks_fts MATCH ?{}", next_param)
+        (
+            "FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid",
+            format!("chunks_fts MATCH ?{}", next_param),
+            "ABS(bm25(chunks_fts, 1.0, 3.0, 10.0))",
+            "ORDER BY score DESC"
+        )
     } else {
-        "1=1".to_string()
+        (
+            // Metadata-only: Group by document to avoid redundant chunk hits
+            "FROM (SELECT id, document_id, content, heading_path, start_byte, end_byte FROM chunks GROUP BY document_id) c",
+            "1=1".to_string(),
+            "1.0",
+            "ORDER BY d.updated_at DESC" // Stable default order for metadata search
+        )
     };
     if !fts_query.is_empty() { next_param += 1; }
 
@@ -516,11 +528,7 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
     let limit_param_idx = next_param;
     next_param += 1;
 
-    let offset_val = 0i64;
-    params_vec.push(Box::new(offset_val));
-    let offset_param_idx = next_param;
-    next_param += 1;
-
+    // 2. Filter: Projects
     let (project_filter, projects_next_param) = if query.project_ids.is_empty() {
         ("AND p.status = 'active'".to_string(), next_param)
     } else {
@@ -533,6 +541,7 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
     };
     next_param = projects_next_param;
 
+    // 3. Filter: Tags (Stable OR logic with Case-Insensitivity)
     let mut tag_filter = String::new();
     if !query.tags.is_empty() {
         let start = next_param;
@@ -540,44 +549,39 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
             .map(|i| format!("?{}", start + i))
             .collect();
         for tag in &query.tags { params_vec.push(Box::new(tag.to_string())); }
+        
+        // Use a JOIN-based subquery for better SQLite optimization
         tag_filter = format!(
-            "AND d.id IN (SELECT document_id FROM document_tags WHERE tag IN ({}))",
+            "AND d.id IN (SELECT document_id FROM document_tags WHERE tag IN ({}) COLLATE NOCASE)",
             placeholders.join(", ")
         );
         next_param += query.tags.len();
     }
 
+    // 4. Filter: Dates
     let mut date_filter = String::new();
     if let Some(v) = query.created_after  { date_filter.push_str(&format!(" AND d.created_at >= ?{}", next_param)); params_vec.push(Box::new(v)); next_param += 1; }
     if let Some(v) = query.created_before { date_filter.push_str(&format!(" AND d.created_at <= ?{}", next_param)); params_vec.push(Box::new(v)); next_param += 1; }
     if let Some(v) = query.updated_after  { date_filter.push_str(&format!(" AND d.updated_at >= ?{}", next_param)); params_vec.push(Box::new(v)); next_param += 1; }
-    if let Some(v) = query.updated_before { date_filter.push_str(&format!(" AND d.updated_at <= ?{}", next_param)); params_vec.push(Box::new(v)); next_param += 1; }
-    let _ = next_param;
-
-    let score_expr = if fts_query.is_empty() {
-        "1.0".to_string()
-    } else {
-        format!("bm25(chunks_fts, 1.0, 3.0, 10.0)")
-    };
+    if let Some(v) = query.updated_before { date_filter.push_str(&format!(" AND d.updated_at <= ?{}", next_param)); params_vec.push(Box::new(v)); }
 
     let sql = format!(
         "SELECT d.id, d.source_doc_id, d.project_id, c.id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path,
-                '' AS snippet, ABS({}) AS score,
+                '' AS snippet, ({}) AS score,
                 d.url, d.metadata_json, d.last_indexed,
                 c.start_byte, c.end_byte, c.content,
                 d.created_at, d.updated_at,
                 (SELECT GROUP_CONCAT(tag) FROM document_tags WHERE document_id = d.id) as tags
-         FROM chunks_fts
-         JOIN chunks c ON c.id = chunks_fts.rowid
+         {}
          JOIN documents d ON d.id = c.document_id
          JOIN projects p ON p.id = d.project_id
          WHERE {}
          {project_filter}
          {date_filter}
          {tag_filter}
-         ORDER BY score
-         LIMIT ?{} OFFSET ?{}",
-        score_expr, match_clause, limit_param_idx, offset_param_idx
+         {}
+         LIMIT ?{}",
+        score_expr, from_clause, match_clause, order_by, limit_param_idx
     );
 
     let keywords: Vec<String> = query.text.split_whitespace().map(|s| s.to_string()).collect();

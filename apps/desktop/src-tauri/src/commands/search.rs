@@ -934,39 +934,61 @@ pub async fn get_document_content(
         reindex_triggered = true;
     }
 
-    // 3. 프런트엔드 호환 응답 생성
-    // force_refresh 시에도 바로 DB 값을 읽어와서 반환 (가짜 시간 제거)
-    let last_indexed = {
+    // 3. Fetch canonical title and metadata from DB (Source of truth for Doxus UI)
+    let db_meta = {
         let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.query_row(
-            "SELECT last_indexed FROM documents d JOIN projects p ON d.project_id = p.id WHERE (p.name = ?1 OR p.source_project_id = ?1) AND d.source_doc_id = ?2",
+        let row: Option<(Option<String>, Option<i64>, Option<i32>)> = conn.query_row(
+            "SELECT d.title, d.last_indexed, p.cache_ttl \
+             FROM documents d \
+             JOIN projects p ON d.project_id = p.id \
+             WHERE (p.name = ?1 OR p.source_project_id = ?1 OR p.display_name = ?1 OR ?1 IS NULL) \
+             AND (d.source_doc_id = ?2 OR d.file_path = ?2) \
+             LIMIT 1",
             rusqlite::params![project_name, doc.id.0],
-            |r| r.get::<_, Option<i64>>(0)
-        ).ok().flatten()
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        ).optional().unwrap_or(None);
+        row
     };
 
-    // 4. Fetch tags from DB (Source of truth for Doxus UI)
+    let (db_title, last_indexed, cache_ttl) = match db_meta {
+        Some(m) => m,
+        None => (None, None, None),
+    };
+
+    // 4. Fetch tags from DB
     let tags = {
         let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let stmt = conn.prepare(
-            "SELECT tag FROM document_tags dt \
-             JOIN documents d ON dt.document_id = d.id \
-             JOIN projects p ON d.project_id = p.id \
-             WHERE (p.name = ?1 OR p.source_project_id = ?1) AND d.source_doc_id = ?2"
-        ).ok();
+        let mut tags: Vec<String> = Vec::new();
+        let sql = "SELECT dt.tag FROM document_tags dt \
+                   JOIN documents d ON dt.document_id = d.id \
+                   JOIN projects p ON d.project_id = p.id \
+                   WHERE (p.name = ?1 OR p.source_project_id = ?1 OR p.display_name = ?1 OR ?1 IS NULL) \
+                   AND (d.source_doc_id = ?2 OR d.file_path = ?2)";
         
-        if let Some(mut s) = stmt {
-            s.query_map(rusqlite::params![project_name, doc.id.0], |r| r.get::<_, String>(0))
-                .ok()
-                .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
-                .unwrap_or_default()
-        } else {
-            doc.tags.clone()
+        if let Ok(mut stmt) = conn.prepare(sql) {
+            if let Ok(rows) = stmt.query_map(rusqlite::params![project_name, doc.id.0], |r| r.get::<_, String>(0)) {
+                tags = rows.filter_map(|r| r.ok()).collect();
+            }
         }
+        
+        if tags.is_empty() { doc.tags.clone() } else { tags }
     };
 
+    // Determine the most stable title
+    let final_title = db_title
+        .filter(|t| !t.trim().is_empty())
+        .or_else(|| doc.title.clone())
+        .unwrap_or_else(|| {
+            // Last fallback: use filename from source_doc_id
+            let path = std::path::Path::new(&doc.id.0);
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Untitled")
+                .to_string()
+        });
+
     Ok(serde_json::json!({
-        "title": doc.title,
+        "title": final_title,
         "content": doc.content,
         "file_path": file_path,
         "from_cache": false, 
@@ -980,29 +1002,21 @@ pub async fn get_document_content(
         "source_project_id": project_name,
         "source_doc_id": doc.id.0,
         "last_indexed": last_indexed,
-        "cache_ttl": ({
-            let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
-            conn.query_row(
-                "SELECT cache_ttl FROM projects WHERE name = ?1",
-                rusqlite::params![project_name],
-                |r| r.get::<_, i32>(0)
-            ).ok()
-        }),
+        "cache_ttl": cache_ttl,
     }))
 }
 
 pub fn list_all_documents_impl(conn: &rusqlite::Connection) -> Result<serde_json::Value, String> {
     let mut stmt = conn.prepare(
-        "SELECT MIN(d.id), MIN(d.title), MIN(d.source_doc_id), p.name, COALESCE(p.source_type, 'obsidian'), \
-                MIN(d.file_path), p.path, MIN(d.url), MIN(d.updated_at), MIN(d.last_indexed), \
-                (SELECT GROUP_CONCAT(tag) FROM document_tags WHERE document_id = MIN(d.id)), \
-                MIN(COALESCE(f.freshness_score, 100.0)), MIN(COALESCE(f.retention_tier, 'mid'))
+        "SELECT d.id, COALESCE(NULLIF(d.title, ''), d.source_doc_id) as title, d.source_doc_id, p.name, COALESCE(p.source_type, 'obsidian'), \
+                d.file_path, p.path, d.url, d.updated_at, d.last_indexed, \
+                (SELECT GROUP_CONCAT(tag) FROM document_tags WHERE document_id = d.id), \
+                COALESCE(f.freshness_score, 100.0), COALESCE(f.retention_tier, 'mid')
          FROM documents d
          JOIN projects p ON d.project_id = p.id
          LEFT JOIN document_freshness f ON d.id = f.document_id
          WHERE p.status = 'active'
-         GROUP BY d.source_doc_id, d.project_id, p.name, p.source_type, p.path
-         ORDER BY p.name, MIN(d.title)"
+         ORDER BY p.name, title"
     ).map_err(|e| e.to_string())?;
     let docs: Vec<_> = stmt
         .query_map([], |r| {

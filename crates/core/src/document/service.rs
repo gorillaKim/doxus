@@ -124,18 +124,61 @@ impl DocumentService {
                     ds_log(&format!("[DS][{}] Reading file...", log_id));
                     if let Ok(content) = std::fs::read_to_string(path) {
                         ds_log(&format!("[DS][{}] Read SUCCESS (len: {})", log_id, content.len()));
+                        
+                        // Try to supplement with DB metadata
+                        let mut db_title = None;
+                        let mut db_tags = Vec::new();
+                        let mut db_created_at = None;
+                        let mut db_updated_at = None;
+
+                        let meta_query = "SELECT d.title, d.created_at, d.updated_at, \
+                                         (SELECT GROUP_CONCAT(tag) FROM document_tags WHERE document_id = d.id) \
+                                         FROM documents d JOIN projects p ON d.project_id = p.id \
+                                         WHERE p.name = ?1 AND (d.source_doc_id = ?2 OR d.file_path = ?3)";
+                        
+                        let db_result = if let Some(path) = &self.db_path {
+                            crate::db::open_readonly(path).ok().and_then(|c| {
+                                c.query_row(meta_query, params![project_name, source_doc_id, path_str], |r| {
+                                    let title: Option<String> = r.get(0)?;
+                                    let created: Option<i64> = r.get(1)?;
+                                    let updated: Option<i64> = r.get(2)?;
+                                    let tags_str: Option<String> = r.get(3)?;
+                                    Ok((title, created, updated, tags_str))
+                                }).ok()
+                            })
+                        } else {
+                            self.conn.lock().ok().and_then(|c| {
+                                c.query_row(meta_query, params![project_name, source_doc_id, path_str], |r| {
+                                    let title: Option<String> = r.get(0)?;
+                                    let created: Option<i64> = r.get(1)?;
+                                    let updated: Option<i64> = r.get(2)?;
+                                    let tags_str: Option<String> = r.get(3)?;
+                                    Ok((title, created, updated, tags_str))
+                                }).ok()
+                            })
+                        };
+
+                        if let Some((t, c, u, ts)) = db_result {
+                            db_title = t;
+                            db_created_at = c;
+                            db_updated_at = u;
+                            if let Some(s) = ts {
+                                db_tags = s.split(',').map(|s| s.to_string()).collect();
+                            }
+                        }
+
                         return Ok(doxus_plugin_sdk::RawDocument {
                             id: doxus_plugin_sdk::SourceDocId(source_doc_id.to_string()),
-                            title: None,
+                            title: db_title,
                             content,
                             content_type: doxus_plugin_sdk::ContentType::Markdown,
                             url: None,
                             metadata: std::collections::HashMap::new(),
-                            tags: vec![],
+                            tags: db_tags,
                             aliases: vec![],
                             links: vec![],
-                            created_at: None,
-                            updated_at: None,
+                            created_at: db_created_at,
+                            updated_at: db_updated_at,
                             relative_path: Some(path_str),
                         });
                     }
