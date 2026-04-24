@@ -302,6 +302,7 @@ use std::sync::{Arc, Mutex};
 use crate::indexing::IndexingService;
 
 pub struct SchedulerManager {
+    // 주의: std::sync::Mutex를 사용하되 락은 tokio::task::spawn_blocking 내에서만 한정하여 유지
     conn: Arc<Mutex<rusqlite::Connection>>,
     indexer: Arc<IndexingService>,
 }
@@ -321,39 +322,51 @@ impl SchedulerManager {
             .unwrap_or_default()
             .as_secs() as i64;
 
-        let due_jobs = {
-            let conn = self.conn.lock().unwrap();
+        let conn_clone = self.conn.clone();
+
+        // Spawn_blocking을 사용하여 Tokio 비동기 스레드 블로킹 방지
+        let due_jobs = tokio::task::spawn_blocking(move || {
+            let conn = conn_clone.lock().unwrap();
             let sdb = SchedulerDb::new(&conn);
             sdb.due_jobs(now, is_idle).unwrap_or_default()
-        };
+        }).await.unwrap_or_default();
 
+        // 병렬 처리를 위한 Task Spawning
         for job in due_jobs {
-            let result = match job.executor {
-                Executor::System => {
-                    executor::execute_system(
-                        &job.action,
-                        &job.action_config,
-                        &self.indexer,
-                    ).await
-                }
-                Executor::Agent => {
-                    let project_name = job.project_id.map(|_| job.job_name.as_str());
-                    executor::execute_agent(
-                        &job.action,
-                        &job.action_config,
-                        project_name,
-                    ).await
-                }
-            };
+            let indexer_clone = self.indexer.clone();
+            let conn_clone = self.conn.clone();
+            let project_name = job.project_id.map(|_| job.job_name.clone());
 
-            // DB에 결과 기록
-            let conn = self.conn.lock().unwrap();
-            let sdb = SchedulerDb::new(&conn);
-            if result.success {
-                let _ = sdb.mark_completed(job.id, &result.message);
-            } else {
-                let _ = sdb.mark_failed(job.id, &result.message);
-            }
+            // 각 job을 비동기 Task로 병렬 실행하여 병목현상 방지
+            tokio::spawn(async move {
+                let result = match job.executor {
+                    Executor::System => {
+                        executor::execute_system(
+                            &job.action,
+                            &job.action_config,
+                            &indexer_clone,
+                        ).await
+                    }
+                    Executor::Agent => {
+                        executor::execute_agent(
+                            &job.action,
+                            &job.action_config,
+                            project_name.as_deref(),
+                        ).await
+                    }
+                };
+
+                // DB에 결과 기록 (동일하게 spawn_blocking 활용)
+                let _ = tokio::task::spawn_blocking(move || {
+                    let conn = conn_clone.lock().unwrap();
+                    let sdb = SchedulerDb::new(&conn);
+                    if result.success {
+                        let _ = sdb.mark_completed(job.id, &result.message);
+                    } else {
+                        let _ = sdb.mark_failed(job.id, &result.message);
+                    }
+                }).await;
+            });
         }
     }
 
@@ -400,7 +413,8 @@ impl SchedulerManager {
 +    let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
 +    loop {
 +        interval.tick().await;
-+        let is_idle = /* OS idle 감지 */ false; // TODO: Tauri idle detection
++        // TODO: Tauri 기본 기능 외, System OS 레벨의 유휴 시간(Idle) 측정 라이브러리 연동 검토 필요
++        let is_idle = /* OS idle 감지 로직 연동 */ false;
 +        scheduler.tick(is_idle).await;
 +    }
 +});
@@ -770,9 +784,9 @@ tool("doxus_delete_schedule", "Delete or disable a scheduled job", &[
 
 | # | 질문 | 권장안 |
 |---|------|--------|
-| 1 | 점수 갱신: 배치 + lazy 혼합? | ✅ 배치(일 1회) + 검색 시 lazy |
+| 1 | 점수 갱신: 배치 + lazy 혼합? | ✅ 배치(일 1회) + 검색 시 lazy (메모리상에서 getter를 통한 즉시 포맷팅 권장) |
 | 2 | Long-term 자동 승격: 사용자 확인 필수? | ✅ 에이전트가 제안 → 사용자 승인 |
 | 3 | Obsolete 문서: 검색 제외? DB 보존? | ✅ 검색 제외 + DB 보존 |
 | 4 | Agent 타임아웃 | 5분 권장 |
 | 5 | job_runs 보존 기간 | 최근 100건 또는 30일 |
-| 6 | idle 감지 방법 | Tauri window unfocused + 마지막 입력 5분 이상 |
+| 6 | idle 감지 방법 | System-level Idle 감지 라이브러리(예: `mac-system-idle` 크레이트 또는 커스텀 모듈) 사용 검토 |

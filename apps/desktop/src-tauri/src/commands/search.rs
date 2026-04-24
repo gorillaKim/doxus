@@ -1,5 +1,4 @@
 use doxus_core::search::{SearchEngine, SearchQuery};
-use doxus_core::indexing::IndexingService;
 use rusqlite::OptionalExtension;
 use std::sync::Arc;
 
@@ -584,7 +583,7 @@ pub async fn search_documents(
     let doc_ids: Vec<i64> = hits.iter().map(|h| h.document_id).collect();
     
     // 3. Document metadata batch fetching (scoped lock)
-    let mut doc_info: std::collections::HashMap<i64, (String, String, String, Vec<String>, i64, i64, serde_json::Value, String, Option<String>, String)> = std::collections::HashMap::new();
+    let mut doc_info: std::collections::HashMap<i64, (String, String, String, Vec<String>, i64, i64, serde_json::Value, String, Option<String>, String, f64, String)> = std::collections::HashMap::new();
     {
         let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
         for chunk in doc_ids.chunks(50) {
@@ -592,8 +591,12 @@ pub async fn search_documents(
             let sql = format!(
                 "SELECT d.id, p.name, COALESCE(p.source_type, 'obsidian'), d.source_doc_id, \
                         d.updated_at, d.last_indexed, COALESCE(d.metadata_json, '{{}}'), p.path, d.url, \
-                        COALESCE(p.source_project_id, p.name) \
-                 FROM documents d JOIN projects p ON d.project_id = p.id \
+                        COALESCE(p.source_project_id, p.name), \
+                        COALESCE(f.freshness_score, 100.0), \
+                        COALESCE(f.retention_tier, 'mid') \
+                 FROM documents d \
+                 JOIN projects p ON d.project_id = p.id \
+                 LEFT JOIN document_freshness f ON d.id = f.document_id \
                  WHERE d.id IN ({})",
                 placeholders
             );
@@ -611,6 +614,8 @@ pub async fn search_documents(
                     r.get::<_, String>(7).unwrap_or_default(),
                     r.get::<_, Option<String>>(8)?,
                     r.get::<_, String>(9)?,
+                    r.get::<_, f64>(10).unwrap_or(100.0),
+                    r.get::<_, String>(11).unwrap_or_else(|_| "mid".to_string()),
                 ))
             }).map_err(|e| e.to_string())?;
 
@@ -624,15 +629,17 @@ pub async fn search_documents(
                     let last_indexed = row.5;
                     let metadata: serde_json::Value = serde_json::from_str(&row.6).unwrap_or(serde_json::json!({}));
                     let project_path = row.7;
-                    let url = row.8;
-                    let source_project_id = row.9;
+                    let url = row.8.clone();
+                    let source_project_id = row.9.clone();
+                    let freshness_score = row.10;
+                    let retention_tier = row.11.clone();
                     
                     // Tags look up
                     let mut tag_stmt = conn.prepare("SELECT tag FROM document_tags WHERE document_id = ?1").map_err(|e| e.to_string())?;
                     let tags: Vec<String> = tag_stmt.query_map([doc_id], |tr| tr.get(0)).map_err(|e| e.to_string())?
                         .filter_map(|tr| tr.ok()).collect();
 
-                    doc_info.insert(doc_id, (project_name, source_type, source_doc_id, tags, updated_at, last_indexed, metadata, project_path, url, source_project_id));
+                    doc_info.insert(doc_id, (project_name.clone(), source_type.clone(), source_doc_id.clone(), tags, updated_at, last_indexed, metadata.clone(), project_path.clone(), url.clone(), source_project_id.clone(), freshness_score, retention_tier.clone()));
                 }
             }
         }
@@ -663,6 +670,9 @@ pub async fn search_documents(
             let project_path = info.map(|i| i.7.as_str()).unwrap_or("");
             let url = info.and_then(|i| i.8.clone()).or_else(|| h.url.clone());
             let source_project_id = info.map(|i| i.9.clone()).unwrap_or_default();
+            
+            let freshness_score = info.map(|i| i.10).unwrap_or(100.0);
+            let retention_tier = info.map(|i| i.11.clone()).unwrap_or_else(|| "mid".to_string());
             
             let plugin_id = format!("com.doxus.{}", source_type);
             let cache_ttl = plugin_ttls.get(&plugin_id).cloned().unwrap_or(0);
@@ -723,6 +733,8 @@ pub async fn search_documents(
                 "metadata": metadata,
                 "url": url,
                 "source_project_id": source_project_id,
+                "freshness_score": freshness_score,
+                "retention_tier": retention_tier,
             })
         })
         .collect();
@@ -752,6 +764,7 @@ pub async fn index_project(
     state: tauri::State<'_, Arc<crate::AppState>>,
     app_handle: tauri::AppHandle,
     name: String,
+    full: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     let embedder = state.embedder.read().await.clone();
     let engine = std::sync::Arc::new(SearchEngine::with_embedder(
@@ -764,18 +777,27 @@ pub async fn index_project(
         engine,
     );
 
-    let total = indexing_service.index_project(&name).await?;
+    let is_full = full.unwrap_or(false);
+    state.sync_manager.record_external_trigger(
+        "Manual", 
+        Some(name.clone()), 
+        Some(format!("User requested {}indexing", if is_full { "full " } else { "" }))
+    ).await;
+
+    let total = indexing_service.index_project(&name, is_full).await?;
 
     let message = if total == 0 {
-        "이미 최신 상태입니다 (0개 변경)".to_string()
+        if is_full { "문서가 없는 프로젝트이거나 인덱싱에 실패했습니다".to_string() }
+        else { "이미 최신 상태입니다 (0개 변경)".to_string() }
     } else {
-        format!("{total}개 문서 인덱싱 완료")
+        format!("{total}개 문서 {}인덱싱 완료", if is_full { "전체 강제 " } else { "" })
     };
 
     use tauri::Emitter;
     let _ = app_handle.emit("project-indexed", serde_json::json!({
         "project_name": name,
         "indexed": total,
+        "full": is_full,
     }));
 
     Ok(serde_json::json!({
@@ -788,18 +810,18 @@ pub async fn index_project(
 #[tauri::command]
 pub async fn trigger_reindex(
     state: tauri::State<'_, Arc<crate::AppState>>,
+    full: Option<bool>,
 ) -> Result<serde_json::Value, String> {
-    let embedder = state.embedder.read().await.clone();
-    let engine = std::sync::Arc::new(SearchEngine::with_embedder(
-        std::sync::Arc::clone(&state.conn),
-        embedder,
-    ));
-    let indexing_service = IndexingService::new(
-        std::sync::Arc::clone(&state.conn),
-        std::sync::Arc::clone(&state.plugin_manager),
-        engine,
-    );
+    let is_full = full.unwrap_or(false);
 
+    // 1. 트리거 기록 남기기
+    state.sync_manager.record_external_trigger(
+        "Manual", 
+        None, 
+        Some(format!("Manual {}re-index of all projects started", if is_full { "full " } else { "" }))
+    ).await;
+
+    // 2. 모든 활성 프로젝트 이름 가져오기
     let names: Vec<String> = {
         let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare("SELECT name FROM projects WHERE status = 'active'").map_err(|e| e.to_string())?;
@@ -807,23 +829,13 @@ pub async fn trigger_reindex(
         rows.filter_map(|r| r.ok()).collect()
     };
 
-    let mut total = 0usize;
+    // 3. 백그라운드 큐(SyncManager)에 순차적으로 등록
     for name in names {
-        if let Ok(count) = indexing_service.index_project(&name).await {
-            total += count;
-        }
+        let _ = state.sync_manager.trigger_full_indexing_by_name(&name, is_full).await;
     }
 
-    let message = if total == 0 {
-        "모든 프로젝트가 이미 최신 상태입니다".to_string()
-    } else {
-        format!("{total}개 문서 재인덱싱 완료")
-    };
-
-    Ok(serde_json::json!({
-        "status": "ok",
-        "indexed": total,
-        "message": message
+    Ok(serde_json::json!({ 
+        "message": if is_full { "전체 강제 재인덱싱이 백그라운드에서 시작되었습니다" } else { "증분 인덱싱이 시작되었습니다" }
     }))
 }
 
@@ -960,9 +972,11 @@ pub fn list_all_documents_impl(conn: &rusqlite::Connection) -> Result<serde_json
     let mut stmt = conn.prepare(
         "SELECT MIN(d.id), MIN(d.title), MIN(d.source_doc_id), p.name, COALESCE(p.source_type, 'obsidian'), \
                 MIN(d.file_path), p.path, MIN(d.url), MIN(d.updated_at), MIN(d.last_indexed), \
-                (SELECT GROUP_CONCAT(tag) FROM document_tags WHERE document_id = MIN(d.id))
+                (SELECT GROUP_CONCAT(tag) FROM document_tags WHERE document_id = MIN(d.id)), \
+                MIN(COALESCE(f.freshness_score, 100.0)), MIN(COALESCE(f.retention_tier, 'mid'))
          FROM documents d
          JOIN projects p ON d.project_id = p.id
+         LEFT JOIN document_freshness f ON d.id = f.document_id
          WHERE p.status = 'active'
          GROUP BY d.source_doc_id, d.project_id, p.name, p.source_type, p.path
          ORDER BY p.name, MIN(d.title)"
@@ -983,6 +997,8 @@ pub fn list_all_documents_impl(conn: &rusqlite::Connection) -> Result<serde_json
             let tags: Vec<String> = tags_str
                 .map(|s| s.split(',').map(|t| t.to_string()).collect())
                 .unwrap_or_default();
+            let freshness_score: f64 = r.get(11).unwrap_or(100.0);
+            let retention_tier: String = r.get(12).unwrap_or_else(|_| "mid".to_string());
 
             // Normalize file_path for UI tree: strip project_path if it's an absolute path
             // Also strip "virtual root" if it matches name part (e.g. '컨플/테크스펙' -> strip '테크스펙/')
@@ -1024,6 +1040,8 @@ pub fn list_all_documents_impl(conn: &rusqlite::Connection) -> Result<serde_json
                 "updated_at": updated_at,
                 "last_indexed": last_indexed,
                 "tags": tags,
+                "freshness_score": freshness_score,
+                "retention_tier": retention_tier,
             }))
         })
         .map_err(|e| e.to_string())?
@@ -1046,20 +1064,34 @@ pub async fn list_projects(
 ) -> Result<serde_json::Value, String> {
     let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
     let mut stmt = conn
-        .prepare("SELECT name, display_name, path, status, COALESCE(source_type, 'obsidian') FROM projects ORDER BY name")
+        .prepare("SELECT id, name, display_name, path, status, COALESCE(source_type, 'obsidian'), freshness_policy_json FROM projects ORDER BY name")
         .map_err(|e| e.to_string())?;
     let projects: Vec<_> = stmt
         .query_map([], |r| {
             Ok(serde_json::json!({
-                "name": r.get::<_, String>(0)?,
-                "display_name": r.get::<_, String>(1)?,
-                "path": r.get::<_, String>(2)?,
-                "status": r.get::<_, String>(3)?,
-                "source_type": r.get::<_, String>(4)?,
+                "id": r.get::<_, i64>(0)?,
+                "name": r.get::<_, String>(1)?,
+                "display_name": r.get::<_, String>(2)?,
+                "path": r.get::<_, String>(3)?,
+                "status": r.get::<_, String>(4)?,
+                "source_type": r.get::<_, String>(5)?,
+                "freshness_policy_json": r.get::<_, Option<String>>(6)?,
             }))
         })
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
     Ok(serde_json::json!({ "projects": projects }))
+}
+
+#[tauri::command]
+pub async fn search_engine_repair_index(
+    state: tauri::State<'_, Arc<crate::AppState>>,
+) -> Result<(), String> {
+    let engine = doxus_core::search::SearchEngine::with_embedder(
+        state.conn.clone(),
+        state.embedder.read().await.clone(),
+    );
+    engine.rebuild_vector_table().await.map_err(|e| e.to_string())?;
+    Ok(())
 }

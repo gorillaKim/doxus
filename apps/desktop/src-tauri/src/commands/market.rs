@@ -1,4 +1,5 @@
 use doxus_core::secrets::SecretStore;
+use doxus_core::observability::{persist_audit, AuditEvent};
 use std::sync::Arc;
 
 
@@ -331,11 +332,21 @@ pub async fn market_install_plugin(
     };
 
     let plugin_id_for_response = plugin_id.clone();
+    let conn_arc = state.conn.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let installer = doxus_core::marketplace::installer::PluginInstaller::new(plugins_dir);
         installer
             .install_from_url(&plugin_id, &download_url, checksum.as_deref())
-            .map_err(|e| e.to_string())
+            .map_err(|e| {
+                let msg = format!("Plugin installation failed for {}: {}", plugin_id, e);
+                if let Ok(conn) = conn_arc.lock() {
+                    persist_audit(&conn, &AuditEvent::PluginError {
+                        plugin_id: plugin_id.clone(),
+                        message: msg,
+                    });
+                }
+                e.to_string()
+            })
     })
     .await
     .map_err(|e| format!("thread error: {e}"))??;

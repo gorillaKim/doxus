@@ -8,6 +8,7 @@ use crate::search::{SearchEngine, DocMeta};
 use crate::auth::inject_keychain_auth;
 use crate::links::{LinkExtractor, LinkResolver};
 use doxus_plugin_sdk::{FetchAllOpts, PluginConfig, PluginSecrets, SyncPolicy};
+use crate::observability::{persist_audit, AuditEvent};
 
 pub struct IndexingService {
     conn: Arc<Mutex<rusqlite::Connection>>,
@@ -29,12 +30,21 @@ impl IndexingService {
     }
 
     /// 프로젝트의 소스 타입 및 설정을 조회하여 인덱싱을 수행합니다.
-    pub async fn index_project(&self, name: &str) -> Result<usize, String> {
+    pub async fn index_project(&self, name: &str, full: bool) -> Result<usize, String> {
         let (project_id, plugin_id, config_json, project_path, strategy, _policy) = self.get_project_config(name).await?;
         
         // 1. 플러그인 초기화
         let mut plugin = self.plugin_manager.get_source(&plugin_id)
-            .ok_or_else(|| format!("플러그인을 찾을 수 없습니다: {plugin_id}"))?;
+            .ok_or_else(|| {
+                let msg = format!("플러그인을 찾을 수 없습니다: {plugin_id}");
+                if let Ok(conn) = self.conn.lock() {
+                    persist_audit(&conn, &AuditEvent::PluginError {
+                        plugin_id: plugin_id.clone(),
+                        message: msg.clone(),
+                    });
+                }
+                msg
+            })?;
 
         let mut config_fields = self.parse_config(&config_json);
         let mut secrets = PluginSecrets::default();
@@ -49,83 +59,96 @@ impl IndexingService {
         inject_keychain_auth(&plugin_id, &mut final_config, &mut secrets).await;
 
         plugin.initialize(final_config, secrets).await
-            .map_err(|e| format!("플러그인 초기화 실패: {e}"))?;
+            .map_err(|e| {
+                let msg = format!("플러그인 초기화 실패: {e}");
+                if let Ok(conn) = self.conn.lock() {
+                    persist_audit(&conn, &AuditEvent::PluginError {
+                        plugin_id: plugin_id.clone(),
+                        message: msg.clone(),
+                    });
+                }
+                msg
+            })?;
 
-        // 2. 인덱싱 루프
+        // 1. 인덱싱 시작 로그
+        {
+            if let Ok(conn) = self.conn.lock() {
+                persist_audit(&conn, &AuditEvent::IndexStart { project_id });
+            }
+        }
+
+        // 2. 인덱싱 루프 및 오류 처리
         let mut total = 0;
         let mut cursor = None;
         let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-        loop {
-            let stream = plugin.fetch_all(FetchAllOpts { cursor, page_size: 50 }).await
-                .map_err(|e| format!("문서 수집 실패: {e}"))?;
+        // [최적화] 기존 메타데이터를 루프 시작 전에 단 한 번만 가져옵니다. (기존 9GB 메모리 이슈의 주원인 해결)
+        let existing_meta = self.get_existing_metadata(project_id).await.unwrap_or_default();
 
-            let docs = stream.documents;
-            crate::log_d!("indexer", "[Core-Indexer] Received {} documents from plugin", docs.len());
-            if docs.is_empty() { break; }
+        let result = async {
+            loop {
+                let stream = plugin.fetch_all(FetchAllOpts { cursor, page_size: 50 }).await.map_err(|e| e.to_string())?;
+                let docs = stream.documents;
+                if docs.is_empty() { break; }
 
-            // 기존 문서 메타데이터 조회 (업데이트 시간 비교용)
-            let existing_meta = self.get_existing_metadata(project_id).await?;
+                for doc in docs {
+                    let source_doc_id = doc.id.0.clone();
+                    seen_ids.insert(source_doc_id.clone());
 
-            for doc in docs {
-                let source_doc_id = doc.id.0.clone();
-                seen_ids.insert(source_doc_id.clone());
+                    let title = doc.title.as_deref()
+                        .map(|s| s.to_string())
+                        .filter(|s| !s.trim().is_empty())
+                        .or_else(|| {
+                            doc.relative_path.as_deref()
+                                .or(Some(&doc.id.0))
+                                .and_then(|p| {
+                                    p.split('/').last()
+                                        .map(|s| s.strip_suffix(".md").unwrap_or(s).to_string())
+                                })
+                        })
+                        .unwrap_or_else(|| "Untitled".to_string());
 
-                let title = doc.title.as_deref()
-                    .map(|s| s.to_string())
-                    .filter(|s| !s.trim().is_empty())
-                    .or_else(|| {
-                        // Attempt to extract title from source_doc_id or relative path
-                        doc.relative_path.as_deref()
-                            .or(Some(&doc.id.0))
-                            .and_then(|p| {
-                                p.split('/').last()
-                                    .map(|s| s.strip_suffix(".md").unwrap_or(s).to_string())
-                            })
-                    })
-                    .unwrap_or_else(|| "Untitled".to_string());
-
-                // 업데이트 시간 및 제목 상태 비교를 통한 스킵 로직
-                if let Some((old_ts, old_title)) = existing_meta.get(&source_doc_id) {
-                    let needs_repair = old_title == "Untitled" || old_title.is_empty();
-
-                    if doc.updated_at == Some(*old_ts) && !needs_repair {
-                        crate::log_d!("indexer", "[Core-Indexer] Skipping unchanged document: {} (ID: {})", title, source_doc_id);
-                        continue;
+                    if let Some((old_ts, old_title)) = existing_meta.get(&source_doc_id) {
+                        let needs_repair = old_title == "Untitled" || old_title.is_empty();
+                        if !full && doc.updated_at == Some(*old_ts) && !needs_repair {
+                            continue;
+                        }
                     }
 
-                    if needs_repair {
-                        crate::log_d!("indexer", "[Core-Indexer] Healing 'Untitled' document: {} (ID: {})", title, source_doc_id);
+                    match self.index_single_document(project_id, doc, &strategy).await {
+                        Ok(_) => { total += 1; }
+                        Err(e) => {
+                            crate::log_d!("indexer", "[Core-Indexer] Error indexing '{}' ({}): {}", title, source_doc_id, e);
+                            if let Ok(conn) = self.conn.lock() {
+                                persist_audit(&conn, &AuditEvent::PluginError {
+                                    plugin_id: plugin_id.clone(),
+                                    message: format!("문서 '{}' ({}) 인덱싱 실패: {}", title, source_doc_id, e),
+                                });
+                            }
+                        }
                     }
                 }
 
-                if let Err(e) = self.index_single_document(project_id, doc, &strategy).await {
-                    crate::log_d!("indexer", "[Core-Indexer] Error indexing {}: {}", source_doc_id, e);
-                } else {
-                    total += 1;
-                }
+                cursor = stream.next_cursor;
+                if cursor.is_none() { break; }
             }
+            Ok::<(), String>(())
+        }.await;
 
-            cursor = stream.next_cursor;
-            if cursor.is_none() { break; }
-        }
-
-        // 3. 소스에서 사라진 문서 제거
-        let removed = self.remove_deleted_documents(project_id, &seen_ids).await?;
-        if removed > 0 {
-            crate::log_d!("indexer", "[Core-Indexer] Removed {} deleted documents from index", removed);
-        }
-
-        // 4. 링크 해결 수행 (target_raw -> target_id)
+        // 3. 뒷정리 및 링크 해결
+        let _ = self.remove_deleted_documents(project_id, &seen_ids).await;
         {
-            let conn = self.conn.lock().map_err(|_| "db lock poisoned".to_string())?;
-            if let Err(e) = LinkResolver::resolve_all_unresolved_links(&conn) {
-                crate::log_d!("indexer", "[Core-Indexer] Link resolution error: {}", e);
+            if let Ok(conn) = self.conn.lock() {
+                let _ = LinkResolver::resolve_project_links(&conn, project_id);
+                // 인덱싱 종료 로그 기록 (에러가 있었더라도 지금까지 처리된 개수 기록)
+                persist_audit(&conn, &AuditEvent::IndexComplete { project_id, docs_indexed: total });
             }
         }
 
-        crate::log_d!("indexer", "[Core-Indexer] Cycle finished. Total indexed this run: {}", total);
-        Ok(total)
+        match result {
+            Ok(_) => Ok(total),
+            Err(e) => Err(e),
+        }
     }
 
     /// 단일 문서를 인덱싱합니다. (청킹, 임베딩, DB 저장 포함)
@@ -403,5 +426,45 @@ mod tests {
 
         let default_policy = indexer.get_project_policy("non-existent").await;
         assert!(default_policy.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_index_project_audits_on_plugin_not_found() {
+        let db = TestDb::new();
+        let conn = Arc::new(std::sync::Mutex::new(db.conn));
+        let pm = Arc::new(PluginManager::new(std::path::PathBuf::from("/tmp")));
+        let engine = Arc::new(SearchEngine::with_embedder(conn.clone(), Arc::new(crate::embedding::NoOpEmbedder)));
+        let indexer = IndexingService::new(conn.clone(), pm, engine);
+
+        // 프로젝트 삽입 (source_type = 'non_existent')
+        conn.lock().unwrap().execute(
+            "INSERT INTO projects (name, display_name, path, source_type, created_at, updated_at) \
+             VALUES ('my-proj', 'My Proj', '/tmp', 'non_existent', 0, 0)",
+            [],
+        ).unwrap();
+
+        // 실행 (플러그인을 찾을 수 없으므로 에러 발생 예상)
+        let result = indexer.index_project("my-proj", false).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("플러그인을 찾을 수 없습니다"));
+
+        // audit_log 확인
+        let (event_type, message): (String, String) = conn.lock().unwrap().query_row(
+            "SELECT event_type, payload FROM audit_log",
+            [],
+            |r| {
+                let event_type: String = r.get(0)?;
+                let payload: String = r.get(1)?;
+                let event: AuditEvent = serde_json::from_str(&payload).unwrap();
+                let msg = match event {
+                    AuditEvent::PluginError { message, .. } => message,
+                    _ => "wrong event".to_string(),
+                };
+                Ok((event_type, msg))
+            }
+        ).unwrap();
+
+        assert_eq!(event_type, "plugin_error");
+        assert!(message.contains("플러그인을 찾을 수 없습니다"));
     }
 }

@@ -119,11 +119,11 @@ async fn test_indexing_skip_unchanged_documents() {
     );
 
     // --- Execution 1: First indexing ---
-    let total = service.index_project("test-project").await.unwrap();
+    let total = service.index_project("test-project", false).await.unwrap();
     assert_eq!(total, 1, "Should index 1 document on first run");
 
     // --- Execution 2: Second indexing (unchanged) ---
-    let total = service.index_project("test-project").await.unwrap();
+    let total = service.index_project("test-project", false).await.unwrap();
     assert_eq!(total, 0, "Should skip document since updated_at is identical");
 
     // --- Execution 3: Third indexing (changed timestamp) ---
@@ -131,7 +131,7 @@ async fn test_indexing_skip_unchanged_documents() {
         let mut docs = shared_docs.lock().unwrap();
         docs[0].updated_at = Some(1001);
     }
-    let total = service.index_project("test-project").await.unwrap();
+    let total = service.index_project("test-project", false).await.unwrap();
     assert_eq!(total, 1, "Should re-index since updated_at changed");
 
     // --- Execution 4: Fourth indexing (timestamp removed - safety re-index) ---
@@ -139,6 +139,6 @@ async fn test_indexing_skip_unchanged_documents() {
         let mut docs = shared_docs.lock().unwrap();
         docs[0].updated_at = None;
     }
-    let total = service.index_project("test-project").await.unwrap();
+    let total = service.index_project("test-project", false).await.unwrap();
     assert_eq!(total, 1, "Should re-index since updated_at is None (safety first)");
 }

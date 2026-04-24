@@ -42,7 +42,7 @@ pub fn init_tracing() {
 }
 
 /// Audit event types
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuditEvent {
     IndexStart { project_id: i64 },

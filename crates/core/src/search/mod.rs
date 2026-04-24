@@ -1,6 +1,6 @@
 pub use crate::db::schema::{BatchIndexingRequest, DocMeta, Hit, SearchHit};
 use crate::embedding::{EmbeddingError, EmbeddingProvider};
-use crate::observability::{persist_audit, AuditEvent};
+
 use crate::search::highlighter::Highlighter;
 use rusqlite::{params, Connection};
 use sha2::{Sha256, Digest};
@@ -217,6 +217,23 @@ impl SearchEngine {
         Self { conn, embedder }
     }
 
+    /// Rebuild the vector table by dropping and recreating it with current dimensions.
+    /// This is useful when the dimension changes or internal virtual table state is corrupted.
+    pub async fn rebuild_vector_table(&self) -> Result<(), SearchError> {
+        let dim = self.embedder.dimension();
+        let conn = self.conn.lock().map_err(|_| SearchError::LockPoisoned)?;
+        
+        conn.execute_batch(&format!(
+            "DROP TABLE IF EXISTS chunk_embeddings;
+             CREATE VIRTUAL TABLE chunk_embeddings USING vec0(
+                chunk_id INTEGER PRIMARY KEY,
+                vector int8[{}]
+             );", dim
+        ))?;
+        
+        Ok(())
+    }
+
     pub fn new(conn: &Connection) -> SyncSearchEngine<'_> {
         SyncSearchEngine::from_conn(conn)
     }
@@ -293,8 +310,6 @@ impl SearchEngine {
                 |r| r.get(0)
             ).unwrap_or_else(|_| "full".to_string());
 
-            persist_audit(&tx, &AuditEvent::IndexStart { project_id });
-
             let mut current_chunk_offset = 0;
             for (doc_idx, req) in requests.into_iter().enumerate() {
                 let num_chunks = chunk_counts[doc_idx];
@@ -307,7 +322,6 @@ impl SearchEngine {
                 current_chunk_offset += num_chunks;
             }
 
-            persist_audit(&tx, &AuditEvent::IndexComplete { project_id, docs_indexed: num_requests });
             tx.commit()?;
             Ok(())
         }).await??;
@@ -352,9 +366,15 @@ impl SearchEngine {
 
         tokio::task::spawn_blocking(move || -> Result<(), SearchError> {
             let conn = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
-            persist_audit(&conn, &AuditEvent::IndexStart { project_id });
+            
+            // 진단 로그: 실제 삽입될 벡터들의 차원 확인
+            for (i, emb) in chunk_embeddings.iter().enumerate() {
+                if emb.len() != 384 {
+                    crate::log_d!("search", "[SearchEngine] DIMENSION MISMATCH! Chunk {} has {} bytes, expected 384", i, emb.len());
+                }
+            }
+
             index_document_sync(&conn, project_id, &source_doc_id, &title, &content, &chunks, &chunk_embeddings, &meta, &strategy)?;
-            persist_audit(&conn, &AuditEvent::IndexComplete { project_id, docs_indexed: 1 });
             Ok(())
         }).await??;
 
@@ -490,6 +510,26 @@ fn index_document_sync(
     )?;
 
     let doc_id: i64 = conn.query_row("SELECT id FROM documents WHERE project_id = ?1 AND source_doc_id = ?2", params![project_id, source_doc_id], |row| row.get(0))?;
+
+    // Phase 1: Initialize Freshness Record
+    let plugin_id: String = conn.query_row(
+        "SELECT plugin_id FROM source_instances WHERE project_id = ?1",
+        [project_id],
+        |r| r.get(0)
+    ).unwrap_or_else(|_| "unknown".to_string());
+    
+    let default_tier = crate::freshness::default_tier_for_source(&plugin_id);
+    let tier_str = match default_tier {
+        crate::freshness::RetentionTier::Short => "short",
+        crate::freshness::RetentionTier::Mid => "mid",
+        crate::freshness::RetentionTier::Long => "long",
+    };
+    
+    conn.execute(
+        "INSERT OR IGNORE INTO document_freshness(document_id, freshness_score, status, retention_tier, first_seen_at, last_content_change, score_updated_at)
+         VALUES (?1, 100.0, 'fresh', ?2, ?3, ?3, ?3)",
+        params![doc_id, tier_str, now],
+    )?;
 
     conn.execute("DELETE FROM document_tags WHERE document_id = ?1", [doc_id])?;
     for tag in &meta.tags { conn.execute("INSERT OR IGNORE INTO document_tags (document_id, tag) VALUES (?1, ?2)", params![doc_id, tag])?; }

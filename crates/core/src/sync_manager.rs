@@ -12,8 +12,10 @@ pub enum SyncTrigger {
     Periodic,
     /// 시스템 유휴 상태 감지 (Deep)
     Idle,
-    /// 특정 프로젝트 수동 동기화
+    /// 특정 프로젝트 수동 동기화 (Incremental)
     Manual(String),
+    /// 특정 프로젝트 강제 전체 재인덱싱 (Full)
+    FullReindex { project_name: String },
     /// 파일 시스템 감시자에 의한 이벤트 (Push)
     FileEvent { project_name: String, path: std::path::PathBuf },
 }
@@ -71,6 +73,28 @@ impl SyncManager {
         let _ = self.tx.send(trigger).await;
     }
 
+    pub async fn record_external_trigger(&self, t_type: &str, project_name: Option<String>, details: Option<String>) {
+        let mut recent = self.recent_triggers.lock().await;
+        if recent.len() >= 10 {
+            recent.pop_back();
+        }
+        recent.push_front(SyncTriggerSummary {
+            trigger_type: t_type.to_string(),
+            project_name,
+            details,
+            timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().unwrap_or_default().as_secs() as i64,
+        });
+    }
+
+    pub async fn trigger_full_indexing_by_name(&self, name: &str, full: bool) -> Result<(), String> {
+        if full {
+            let _ = self.tx.send(SyncTrigger::FullReindex { project_name: name.to_string() }).await;
+        } else {
+            let _ = self.tx.send(SyncTrigger::Manual(name.to_string())).await;
+        }
+        Ok(())
+    }
+
     pub fn indexer(&self) -> Arc<IndexingService> {
         Arc::clone(&self.indexing_service)
     }
@@ -79,7 +103,7 @@ impl SyncManager {
         let active_projects = self.get_active_projects().unwrap_or_default();
         for project_name in active_projects {
             crate::log_d!("sync", "[SyncManager] Running initial Catch-up scan for {}", project_name);
-            let _ = self.indexing_service.index_project(&project_name).await;
+            let _ = self.indexing_service.index_project(&project_name, false).await;
             self.update_last_sync(&project_name).await;
         }
 
@@ -110,6 +134,7 @@ impl SyncManager {
                     SyncTrigger::Periodic => ("Periodic", None, Some("Scheduled periodic check".to_string())),
                     SyncTrigger::Idle => ("Idle", None, Some("System idle - background maintenance".to_string())),
                     SyncTrigger::Manual(name) => ("Manual", Some(name.clone()), Some(format!("User requested sync for {}", name))),
+                    SyncTrigger::FullReindex { project_name } => ("FullReindex", Some(project_name.clone()), Some(format!("User requested FORCE FULL re-index for {}", project_name))),
                     SyncTrigger::FileEvent { project_name, path } => {
                         let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown file");
                         ("FileEvent", Some(project_name.clone()), Some(format!("Changed: {}", filename)))
@@ -126,7 +151,10 @@ impl SyncManager {
             
             match trigger {
                 SyncTrigger::Manual(project_name) => {
-                    self.run_task(&project_name).await;
+                    self.run_task(&project_name, false).await;
+                }
+                SyncTrigger::FullReindex { project_name } => {
+                    self.run_task(&project_name, true).await;
                 }
                 SyncTrigger::FileEvent { project_name, .. } => {
                     // 쿨다운 적용: 마지막 동기화 이후 너무 짧은 시간(예: 2초) 내에는 스킵
@@ -144,7 +172,7 @@ impl SyncManager {
                         continue;
                     }
 
-                    self.run_task(&project_name).await;
+                    self.run_task(&project_name, false).await;
                 }
                 SyncTrigger::Focus | SyncTrigger::Periodic | SyncTrigger::Idle => {
                     self.run_global_sync(trigger).await;
@@ -153,14 +181,14 @@ impl SyncManager {
         }
     }
 
-    async fn run_task(&self, project_name: &str) {
+    async fn run_task(&self, project_name: &str, full: bool) {
         {
             let mut active = self.active_tasks.lock().await;
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().unwrap_or_default().as_secs() as i64;
             active.insert(project_name.to_string(), now);
         }
         
-        let _ = self.indexing_service.index_project(project_name).await;
+        let _ = self.indexing_service.index_project(project_name, full).await;
         self.update_last_sync(project_name).await;
         
         {
@@ -181,7 +209,7 @@ impl SyncManager {
         for project_name in active_projects {
             if self.should_sync(&project_name, &trigger).await {
                 crate::log_d!("sync", "[SyncManager] Syncing project: {} (Trigger: {:?})", project_name, trigger);
-                self.run_task(&project_name).await;
+                self.run_task(&project_name, false).await;
             }
         }
     }

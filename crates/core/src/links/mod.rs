@@ -5,12 +5,14 @@ pub struct LinkResolver;
 impl LinkResolver {
     /// Resolves a raw link string to a document ID.
     /// Looks first in the current project, then globally.
+    /// Resolves a raw link string to a document ID.
+    /// Looks first in the current project, then globally.
     pub fn resolve_link(
         conn: &rusqlite::Connection,
         current_project_id: i64,
         raw_link: &str,
     ) -> Option<i64> {
-        // 1. Handle Doxus Virtual URIs: doxus://{source_project_id}/{source_doc_id}
+        // 1. Handle Doxus Virtual URIs
         if let Some(caps) = dx_uri_regex().captures(raw_link) {
             let source_project_id = &caps[1];
             let source_doc_id = &caps[2];
@@ -28,29 +30,28 @@ impl LinkResolver {
             }
         }
 
-        // 2. Handle Wiki-link aliases: [[target|label]] -> only use target
+        // 2. Handle Wiki-link aliases
         let target = if raw_link.contains('|') {
             raw_link.split('|').next().unwrap_or(raw_link).trim()
         } else {
             raw_link.trim()
         };
 
-        // Base normalization: remove extensions and common path prefixes
         let mut normalized = target.trim_start_matches("./");
         normalized = normalized.trim_start_matches("../");
         if let Some(stripped) = normalized.strip_suffix(".md") {
             normalized = stripped;
         }
 
-        // a. Match by source_doc_id, title, or file_path (with suffix matching for paths)
-        // Using LOWER() for case-insensitive matching
+        // Optimized SQL using NOCASE indexes (Removing LOWER() wrapper)
         let sql = "SELECT id FROM documents 
                    WHERE project_id = ?1 
-                   AND (LOWER(source_doc_id) = LOWER(?2) OR LOWER(title) = LOWER(?2) OR LOWER(file_path) = LOWER(?2) 
-                        OR LOWER(source_doc_id) = LOWER(?3) OR LOWER(title) = LOWER(?3) OR LOWER(file_path) = LOWER(?3)
+                   AND (source_doc_id = ?2 OR title = ?2 OR file_path = ?2 
+                        OR source_doc_id = ?3 OR title = ?3 OR file_path = ?3
                         OR file_path LIKE '%' || ?2
                         OR file_path LIKE '%' || ?3
-                        OR file_path LIKE '%' || ?3 || '.md')";
+                        OR file_path LIKE '%' || ?3 || '.md')
+                   LIMIT 1";
         
         let res: Option<i64> = conn.query_row(
             sql,
@@ -62,10 +63,10 @@ impl LinkResolver {
             return res;
         }
 
-        // 3. Global search (Fallthrough)
+        // Global search using NOCASE indexes
         let sql_global = "SELECT id FROM documents 
-                          WHERE LOWER(source_doc_id) = LOWER(?1) OR LOWER(title) = LOWER(?1) OR LOWER(file_path) = LOWER(?1)
-                             OR LOWER(source_doc_id) = LOWER(?2) OR LOWER(title) = LOWER(?2) OR LOWER(file_path) = LOWER(?2)
+                          WHERE source_doc_id = ?1 OR title = ?1 OR file_path = ?1
+                             OR source_doc_id = ?2 OR title = ?2 OR file_path = ?2
                              OR file_path LIKE '%' || ?1
                              OR file_path LIKE '%' || ?2
                              OR file_path LIKE '%' || ?2 || '.md'
@@ -81,19 +82,42 @@ impl LinkResolver {
             return res;
         }
 
-        // 4. Alias search
-        let sql_alias = "SELECT document_id FROM document_aliases WHERE LOWER(alias) = LOWER(?1) OR LOWER(alias) = LOWER(?2) LIMIT 1";
+        // Alias search
+        let sql_alias = "SELECT document_id FROM document_aliases WHERE alias = ?1 OR alias = ?2 LIMIT 1";
         let res: Option<i64> = conn.query_row(
             sql_alias,
             rusqlite::params![target, normalized],
             |r| r.get(0)
         ).ok();
 
-        if res.is_some() {
-            return res;
+        res
+    }
+
+    /// Resolves links only for a specific project to save time during indexing.
+    pub fn resolve_project_links(conn: &rusqlite::Connection, project_id: i64) -> Result<usize, String> {
+        let mut stmt = conn
+            .prepare("SELECT dl.id, dl.target_raw FROM document_links dl 
+                      JOIN documents d ON dl.source_id = d.id 
+                      WHERE d.project_id = ?1 AND dl.target_id IS NULL")
+            .map_err(|e| e.to_string())?;
+
+        let rows: Vec<(i64, String)> = stmt
+            .query_map([project_id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let mut resolved_count = 0;
+        for (link_id, target_raw) in rows {
+            if let Some(target_id) = Self::resolve_link(conn, project_id, &target_raw) {
+                let _ = conn.execute(
+                    "UPDATE document_links SET target_id = ?1 WHERE id = ?2",
+                    rusqlite::params![target_id, link_id]
+                );
+                resolved_count += 1;
+            }
         }
-        
-        None
+        Ok(resolved_count)
     }
 
     /// Finds all links with NULL target_id and tries to resolve them.
@@ -108,34 +132,24 @@ impl LinkResolver {
             .filter_map(|r| r.ok())
             .collect();
 
-        let total_unresolved = rows.len();
-        if total_unresolved > 0 {
-            crate::log_d!("links", "[LinkResolver] Found {} unresolved links. Starting resolution...", total_unresolved);
-        }
-
         let mut resolved_count = 0;
         for (link_id, source_doc_id, target_raw) in rows {
-            // Get the project_id of the source document
-            let project_id: i64 = conn.query_row(
+            let project_id: Result<i64, _> = conn.query_row(
                 "SELECT project_id FROM documents WHERE id = ?1",
                 [source_doc_id],
                 |r| r.get(0)
-            ).map_err(|e| e.to_string())?;
+            );
 
-            if let Some(target_id) = Self::resolve_link(conn, project_id, &target_raw) {
-                conn.execute(
-                    "UPDATE document_links SET target_id = ?1 WHERE id = ?2",
-                    rusqlite::params![target_id, link_id]
-                ).map_err(|e| e.to_string())?;
-                resolved_count += 1;
-                crate::log_d!("links", "[LinkResolver] Resolved link '{}' -> document ID: {}", target_raw, target_id);
+            if let Ok(pid) = project_id {
+                if let Some(target_id) = Self::resolve_link(conn, pid, &target_raw) {
+                    let _ = conn.execute(
+                        "UPDATE document_links SET target_id = ?1 WHERE id = ?2",
+                        rusqlite::params![target_id, link_id]
+                    );
+                    resolved_count += 1;
+                }
             }
         }
-
-        if resolved_count > 0 {
-            crate::log_d!("links", "[LinkResolver] Successfully resolved {}/{} links", resolved_count, total_unresolved);
-        }
-
         Ok(resolved_count)
     }
 }

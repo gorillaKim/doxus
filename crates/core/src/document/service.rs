@@ -6,6 +6,7 @@ use crate::plugin::PluginManager;
 use crate::auth::inject_keychain_auth;
 use crate::db::DbError;
 use doxus_plugin_sdk::{PluginConfig, PluginSecrets};
+use crate::observability::{persist_audit, AuditEvent};
 
 fn ds_log(msg: &str) {
     use std::io::Write;
@@ -199,6 +200,13 @@ impl DocumentService {
 
                 // Initialize plugin
                 if let Err(e) = source.initialize(plugin_config, plugin_secrets).await {
+                    let msg = format!("Failed to initialize plugin: {}", e);
+                    if let Ok(conn) = self.conn.lock() {
+                        persist_audit(&conn, &AuditEvent::PluginError {
+                            plugin_id: plugin_id.clone(),
+                            message: msg,
+                        });
+                    }
                     return Err(ServiceError::Plugin(format!("Failed to initialize plugin {}: {}", plugin_id, e)));
                 }
 
@@ -241,14 +249,17 @@ impl DocumentService {
                         ds_log(&format!("[ERR] [DS] Fetch FAILED: {}", e));
                         
                         // Persist error to audit log
+                        let event = AuditEvent::DocumentFetchError {
+                            project: project_name.to_string(),
+                            doc_id: source_doc_id.to_string(),
+                            message: e.to_string(),
+                        };
                         if let Some(path) = &self.db_path {
                             if let Ok(conn) = crate::db::open(path) {
-                                crate::observability::persist_audit(&conn, &crate::observability::AuditEvent::DocumentFetchError {
-                                    project: project_name.to_string(),
-                                    doc_id: source_doc_id.to_string(),
-                                    message: e.to_string(),
-                                });
+                                persist_audit(&conn, &event);
                             }
+                        } else if let Ok(conn) = self.conn.lock() {
+                            persist_audit(&conn, &event);
                         }
 
                         return Err(ServiceError::Plugin(format!("Failed to fetch document: {}", e)));
@@ -351,15 +362,40 @@ impl DocumentService {
         inject_keychain_auth(&plugin_id, &mut plugin_config, &mut plugin_secrets).await;
 
         source.initialize(plugin_config, plugin_secrets).await
-            .map_err(|e| ServiceError::Plugin(format!("Failed to initialize plugin {}: {}", plugin_id, e)))?;
+            .map_err(|e| {
+                let msg = format!("Failed to initialize plugin {}: {}", plugin_id, e);
+                if let Ok(conn) = self.conn.lock() {
+                    persist_audit(&conn, &AuditEvent::PluginError {
+                        plugin_id: plugin_id.clone(),
+                        message: msg.clone(),
+                    });
+                }
+                ServiceError::Plugin(msg)
+            })?;
 
         if !source.supports_write() {
-            return Err(ServiceError::Plugin(format!("Plugin {} does not support write operations", plugin_id)));
+            let msg = format!("Plugin {} does not support write operations", plugin_id);
+            if let Ok(conn) = self.conn.lock() {
+                persist_audit(&conn, &AuditEvent::PluginError {
+                    plugin_id: plugin_id.clone(),
+                    message: msg.clone(),
+                });
+            }
+            return Err(ServiceError::Plugin(msg));
         }
 
         source.create_document(title, content, folder, metadata.as_ref())
             .await
-            .map_err(|e| ServiceError::Plugin(e.to_string()))
+            .map_err(|e| {
+                let msg = format!("Failed to create document in plugin {}: {}", plugin_id, e);
+                if let Ok(conn) = self.conn.lock() {
+                    persist_audit(&conn, &AuditEvent::PluginError {
+                        plugin_id: plugin_id.clone(),
+                        message: msg.clone(),
+                    });
+                }
+                ServiceError::Plugin(msg)
+            })
     }
 }
 
