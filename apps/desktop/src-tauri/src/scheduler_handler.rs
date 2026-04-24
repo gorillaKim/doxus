@@ -31,7 +31,15 @@ impl AgentHandler for TauriAgentHandler {
 
 impl TauriAgentHandler {
     async fn run_ai_report(&self, job_name: &str, config: &serde_json::Value) -> Result<String, String> {
-        let model = config["model"].as_str().unwrap_or("claude-3-5-sonnet-latest");
+        let mut model = config["model"].as_str().unwrap_or("claude-3-5-sonnet-20241022").to_string();
+        
+        // Sanitize model ID for CLI compatibility
+        if model == "claude-3-5-sonnet-latest" {
+            model = "claude-3-5-sonnet-20241022".to_string();
+        } else if model == "gemini-1.5-pro" {
+            model = "gemini-1.5-pro-002".to_string();
+        }
+
         let persona = config["persona"].as_str().unwrap_or("devlog_specialist");
         let summary_style = config["summary_style"].as_str().unwrap_or("bullet_points");
         let custom_prompt = config["custom_prompt"].as_str().unwrap_or("");

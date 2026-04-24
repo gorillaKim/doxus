@@ -431,8 +431,8 @@ function CreateScheduleModal({ projects, editingJob, onClose, onCreated }: { pro
                                             onChange={e => setModel(e.target.value)}
                                             className="w-full bg-white/5 border border-white/10 rounded-2xl px-4 py-3.5 text-white focus:outline-none"
                                         >
-                                            <option value="claude-3-5-sonnet-latest">Claude 3.5 Sonnet</option>
-                                            <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
+                                            <option value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet</option>
+                                            <option value="gemini-1.5-pro-002">Gemini 1.5 Pro</option>
                                             <option value="gpt-4o">GPT-4o</option>
                                         </select>
                                     </div>
