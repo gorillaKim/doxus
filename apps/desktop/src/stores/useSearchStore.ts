@@ -81,20 +81,31 @@ export const useSearchStore = create<SearchState>((set, get) => ({
 
   search: async () => {
     const { query, filters, queryHistory } = get();
-    if (!query.trim()) return;
     const trimmed = query.trim();
-    const updated = [trimmed, ...queryHistory.filter((q) => q !== trimmed)].slice(0, 5);
-    set({ isLoading: true, error: null, queryHistory: updated });
-    // tagQuery는 검색 텍스트에 포함
-    const effectiveQuery = filters.tagQuery.trim()
-      ? `${trimmed} ${filters.tagQuery.trim()}`
-      : trimmed;
+    const tagTrimmed = filters.tagQuery.trim();
+    
+    // allow search if either text or tag is present
+    if (!trimmed && !tagTrimmed) return;
+
+    if (trimmed) {
+      const updated = [trimmed, ...queryHistory.filter((q) => q !== trimmed)].slice(0, 5);
+      set({ queryHistory: updated });
+    }
+    
+    set({ isLoading: true, error: null });
+
+    // Parse tags from tagQuery (e.g. "#tag1 #tag2" -> ["tag1", "tag2"])
+    const tags = tagTrimmed
+      ? tagTrimmed.split(/\s+/).filter(t => t.startsWith('#')).map(t => t.slice(1)).filter(t => t.length > 0)
+      : [];
+
     try {
       const result = await invoke<{ hits: SearchHit[] }>('search_documents', {
-        query: effectiveQuery,
-        limit: 20,
-        sourceTypes: filters.sourceTypes.length > 0 ? filters.sourceTypes : null,
-        projectNames: filters.projectNames.length > 0 ? filters.projectNames : null,
+        query: trimmed,
+        limit: 50,
+        source_types: filters.sourceTypes.length > 0 ? filters.sourceTypes : null,
+        project_names: filters.projectNames.length > 0 ? filters.projectNames : null,
+        tags: tags.length > 0 ? tags : null,
       });
       set({ hits: result.hits, isLoading: false });
     } catch (e) {

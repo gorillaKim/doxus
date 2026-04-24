@@ -531,6 +531,7 @@ pub async fn search_documents(
     limit: Option<usize>,
     source_types: Option<Vec<String>>,
     project_names: Option<Vec<String>>,
+    tags: Option<Vec<String>>,
 ) -> Result<serde_json::Value, String> {
     // 1. Resolve filters into project IDs in a scoped block
     let filter_ids: Vec<i64> = {
@@ -573,7 +574,9 @@ pub async fn search_documents(
 
     let embedder = state.embedder.read().await.clone();
     let engine = SearchEngine::with_embedder(state.conn.clone(), embedder);
-    let mut q = SearchQuery::new(&query).with_limit(limit.unwrap_or(20));
+    let mut q = SearchQuery::new(&query)
+        .with_limit(limit.unwrap_or(20))
+        .with_tags(tags.unwrap_or_default());
     if has_filter {
         q = q.with_projects(filter_ids);
     }
@@ -942,13 +945,33 @@ pub async fn get_document_content(
         ).ok().flatten()
     };
 
+    // 4. Fetch tags from DB (Source of truth for Doxus UI)
+    let tags = {
+        let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let stmt = conn.prepare(
+            "SELECT tag FROM document_tags dt \
+             JOIN documents d ON dt.document_id = d.id \
+             JOIN projects p ON d.project_id = p.id \
+             WHERE (p.name = ?1 OR p.source_project_id = ?1) AND d.source_doc_id = ?2"
+        ).ok();
+        
+        if let Some(mut s) = stmt {
+            s.query_map(rusqlite::params![project_name, doc.id.0], |r| r.get::<_, String>(0))
+                .ok()
+                .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
+                .unwrap_or_default()
+        } else {
+            doc.tags.clone()
+        }
+    };
+
     Ok(serde_json::json!({
         "title": doc.title,
         "content": doc.content,
         "file_path": file_path,
         "from_cache": false, 
         "reindex_triggered": reindex_triggered,
-        "tags": doc.tags,
+        "tags": tags,
         "aliases": doc.aliases,
         "created_at": doc.created_at,
         "updated_at": doc.updated_at,

@@ -85,6 +85,7 @@ pub struct SearchHit {
     pub score: f64,
     pub created_at: Option<i64>,
     pub updated_at: Option<i64>,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
@@ -104,6 +105,7 @@ pub struct Hit {
     pub score: f64,
     pub created_at: Option<i64>,
     pub updated_at: Option<i64>,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Default, Clone)]

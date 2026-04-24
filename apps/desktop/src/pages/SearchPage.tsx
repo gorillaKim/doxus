@@ -1057,6 +1057,15 @@ export function SearchPage() {
                       <span className="text-xs text-indigo-300 opacity-80">{selectedDoc.heading_path}</span>
                     </div>
                   )}
+                  {previewMeta && previewMeta.tags.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mt-2">
+                      {previewMeta.tags.map(t => (
+                        <span key={t} className="px-1.5 py-0.5 rounded-md bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 text-[10px]">
+                          #{t}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
                   <button

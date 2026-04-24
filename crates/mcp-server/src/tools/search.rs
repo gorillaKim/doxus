@@ -9,17 +9,23 @@ use std::sync::OnceLock;
 pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     use doxus_core::search::{SearchEngine, SearchMode, SearchQuery};
 
-    let query_text = match args["query"].as_str() {
-        Some(q) => q,
-        None => return McpResponse::err(id, -32602, "missing required arg: query"),
-    };
+    let query_text = args["query"].as_str().unwrap_or("");
+    let tags = args["tags"].as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<String>>())
+        .unwrap_or_default();
+
+    if query_text.is_empty() && tags.is_empty() {
+        return McpResponse::err(id, -32602, "Missing required arg: either 'query' or 'tags' must be provided");
+    }
+
     let limit = args["limit"].as_u64().unwrap_or(20) as usize;
     let offset = args["offset"].as_u64().unwrap_or(0) as usize;
     let project_filter = args["project"].as_str();
 
     let mut q = SearchQuery::new(query_text)
         .with_limit(limit)
-        .with_offset(offset);
+        .with_offset(offset)
+        .with_tags(tags);
 
     if let Some(proj) = project_filter {
         let conn = server.conn();
@@ -68,6 +74,7 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
                             "source_id": h.source_doc_id,
                             "title": h.title,
                             "heading": h.heading_path,
+                            "tags": h.tags,
                             "snippet": h.snippet,
                             "context": h.context_content,
                             "score": h.score,
@@ -111,6 +118,7 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
                             "id": h.document_id,
                             "source_id": h.source_doc_id,
                             "title": h.title,
+                            "tags": h.tags,
                             "snippet": h.snippet,
                             "score": h.score,
                             "created_at": h.created_at,

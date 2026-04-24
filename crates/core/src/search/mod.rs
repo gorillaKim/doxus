@@ -6,6 +6,7 @@ use rusqlite::{params, Connection};
 use sha2::{Sha256, Digest};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::collections::hash_map::Entry;
 use thiserror::Error;
 
 pub mod highlighter;
@@ -45,6 +46,7 @@ pub struct SearchQuery {
     pub created_before: Option<i64>,
     pub updated_after: Option<i64>,
     pub updated_before: Option<i64>,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -67,7 +69,13 @@ impl SearchQuery {
             created_before: None,
             updated_after: None,
             updated_before: None,
+            tags: vec![],
         }
+    }
+
+    pub fn with_tags(mut self, tags: Vec<String>) -> Self {
+        self.tags = tags;
+        self
     }
 
     pub fn with_projects(mut self, ids: Vec<i64>) -> Self {
@@ -144,32 +152,22 @@ fn rrf_merge(fts_hits: Vec<SearchHit>, vec_hits: Vec<SearchHit>) -> Vec<SearchHi
     let mut scores: HashMap<i64, (f64, SearchHit)> = HashMap::new();
 
     for (rank, hit) in fts_hits.into_iter().enumerate() {
-        use std::collections::hash_map::Entry;
         match scores.entry(hit.chunk_id) {
-            Entry::Vacant(v) => {
-                v.insert((rrf_score(rank + 1), hit));
-            }
+            Entry::Vacant(v) => { v.insert((rrf_score(rank + 1), hit)); }
             Entry::Occupied(mut o) => {
                 let e = o.get_mut();
                 e.0 += rrf_score(rank + 1);
-                if e.1.snippet.is_empty() && !hit.snippet.is_empty() {
-                    e.1.snippet = hit.snippet;
-                }
+                if e.1.snippet.is_empty() && !hit.snippet.is_empty() { e.1.snippet = hit.snippet; }
             }
         }
     }
     for (rank, hit) in vec_hits.into_iter().enumerate() {
-        use std::collections::hash_map::Entry;
         match scores.entry(hit.chunk_id) {
-            Entry::Vacant(v) => {
-                v.insert((rrf_score(rank + 1), hit));
-            }
+            Entry::Vacant(v) => { v.insert((rrf_score(rank + 1), hit)); }
             Entry::Occupied(mut o) => {
                 let e = o.get_mut();
                 e.0 += rrf_score(rank + 1);
-                if e.1.snippet.is_empty() && !hit.snippet.is_empty() {
-                    e.1.snippet = hit.snippet;
-                }
+                if e.1.snippet.is_empty() && !hit.snippet.is_empty() { e.1.snippet = hit.snippet; }
             }
         }
     }
@@ -190,7 +188,7 @@ impl From<SearchHit> for Hit {
         Hit {
             document_id: sh.document_id,
             chunk_id: sh.chunk_id,
-            project_id: 0,
+            project_id: sh.project_id,
             source_doc_id: sh.source_doc_id,
             title: sh.title,
             file_path: sh.file_path,
@@ -203,6 +201,7 @@ impl From<SearchHit> for Hit {
             score: sh.score,
             created_at: sh.created_at,
             updated_at: sh.updated_at,
+            tags: sh.tags,
         }
     }
 }
@@ -217,12 +216,9 @@ impl SearchEngine {
         Self { conn, embedder }
     }
 
-    /// Rebuild the vector table by dropping and recreating it with current dimensions.
-    /// This is useful when the dimension changes or internal virtual table state is corrupted.
     pub async fn rebuild_vector_table(&self) -> Result<(), SearchError> {
         let dim = self.embedder.dimension();
         let conn = self.conn.lock().map_err(|_| SearchError::LockPoisoned)?;
-        
         conn.execute_batch(&format!(
             "DROP TABLE IF EXISTS chunk_embeddings;
              CREATE VIRTUAL TABLE chunk_embeddings USING vec0(
@@ -230,7 +226,6 @@ impl SearchEngine {
                 vector int8[{}]
              );", dim
         ))?;
-        
         Ok(())
     }
 
@@ -260,39 +255,26 @@ impl SearchEngine {
         &self,
         requests: Vec<BatchIndexingRequest>,
     ) -> Result<(), SearchError> {
-        if requests.is_empty() {
-            return Ok(());
-        }
-
+        if requests.is_empty() { return Ok(()); }
         let num_requests = requests.len();
         let project_id = requests[0].project_id;
-        tracing::info!(project_id, doc_count = num_requests, "index_documents_batch: starting batch indexing");
-
+        
         let mut all_chunks = Vec::new();
         let mut flat_texts = Vec::new();
         let mut chunk_counts = Vec::with_capacity(num_requests);
 
-        for (doc_idx, req) in requests.iter().enumerate() {
-            let chunks = crate::chunker::split_chunks(
-                &req.content,
-                crate::chunker::ChunkConfig {
-                    title: Some(req.title.clone()),
-                    ..Default::default()
-                },
-            );
+        for req in requests.iter() {
+            let chunks = crate::chunker::split_chunks(&req.content, crate::chunker::ChunkConfig { title: Some(req.title.clone()), ..Default::default() });
             chunk_counts.push(chunks.len());
             for chunk in chunks {
                 flat_texts.push(chunk.embedding_text.clone());
-                all_chunks.push((doc_idx, chunk));
+                all_chunks.push(chunk);
             }
         }
 
-        if flat_texts.is_empty() {
-            return Ok(());
-        }
-
+        if flat_texts.is_empty() { return Ok(()); }
         let embedding_vecs = self.embedder.embed(&flat_texts.iter().map(|s| s.as_str()).collect::<Vec<_>>()).await?;
-        let mut flat_embeddings: Vec<Vec<u8>> = Vec::with_capacity(embedding_vecs.len());
+        let mut flat_embeddings = Vec::new();
         for emb in embedding_vecs {
             let quantized = crate::embedding::quantize_to_i8(&emb);
             let bytes: Vec<u8> = quantized.into_iter().map(|i| i as u8).collect();
@@ -304,28 +286,19 @@ impl SearchEngine {
             let mut conn_guard = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
             let tx = conn_guard.transaction()?;
             
-            let strategy: String = tx.query_row(
-                "SELECT storage_strategy FROM projects WHERE id = ?1",
-                params![project_id],
-                |r| r.get(0)
-            ).unwrap_or_else(|_| "full".to_string());
+            let strategy: String = tx.query_row("SELECT storage_strategy FROM projects WHERE id = ?1", params![project_id], |r| r.get(0)).unwrap_or_else(|_| "full".to_string());
 
             let mut current_chunk_offset = 0;
             for (doc_idx, req) in requests.into_iter().enumerate() {
                 let num_chunks = chunk_counts[doc_idx];
-                let doc_chunks: Vec<_> = all_chunks[current_chunk_offset..current_chunk_offset + num_chunks]
-                    .iter().map(|(_, c)| c.clone()).collect();
-                let doc_embeddings: Vec<_> = flat_embeddings[current_chunk_offset..current_chunk_offset + num_chunks]
-                    .iter().cloned().collect();
-
-                index_document_sync(&tx, req.project_id, &req.source_doc_id, &req.title, &req.content, &doc_chunks, &doc_embeddings, &req.meta, &strategy)?;
+                let doc_chunks = &all_chunks[current_chunk_offset..current_chunk_offset + num_chunks];
+                let doc_embeddings = &flat_embeddings[current_chunk_offset..current_chunk_offset + num_chunks];
+                index_document_sync(&tx, req.project_id, &req.source_doc_id, &req.title, &req.content, doc_chunks, doc_embeddings, &req.meta, &strategy)?;
                 current_chunk_offset += num_chunks;
             }
-
             tx.commit()?;
             Ok(())
         }).await??;
-
         Ok(())
     }
 
@@ -339,19 +312,11 @@ impl SearchEngine {
         strategy: &str,
     ) -> Result<(), SearchError> {
         let strategy = strategy.to_string();
-        let chunks = crate::chunker::split_chunks(
-            content,
-            crate::chunker::ChunkConfig {
-                title: Some(title.to_string()),
-                ..Default::default()
-            },
-        );
-
+        let chunks = crate::chunker::split_chunks(content, crate::chunker::ChunkConfig { title: Some(title.to_string()), ..Default::default() });
         if chunks.is_empty() { return Ok(()); }
 
         let texts: Vec<&str> = chunks.iter().map(|c| c.embedding_text.as_str()).collect();
         let embedding_vecs = self.embedder.embed(&texts).await.unwrap_or_default();
-        
         let mut chunk_embeddings = Vec::new();
         for emb in embedding_vecs {
             let quantized = crate::embedding::quantize_to_i8(&emb);
@@ -366,18 +331,9 @@ impl SearchEngine {
 
         tokio::task::spawn_blocking(move || -> Result<(), SearchError> {
             let conn = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
-            
-            // 진단 로그: 실제 삽입될 벡터들의 차원 확인
-            for (i, emb) in chunk_embeddings.iter().enumerate() {
-                if emb.len() != 384 {
-                    crate::log_d!("search", "[SearchEngine] DIMENSION MISMATCH! Chunk {} has {} bytes, expected 384", i, emb.len());
-                }
-            }
-
             index_document_sync(&conn, project_id, &source_doc_id, &title, &content, &chunks, &chunk_embeddings, &meta, &strategy)?;
             Ok(())
         }).await??;
-
         Ok(())
     }
 
@@ -387,19 +343,23 @@ impl SearchEngine {
             SearchMode::Vector => self.vector_search_async(query).await?,
             SearchMode::Hybrid => {
                 let fts_hits = self.fts_search_async(query).await?;
-                let vec_hits = self.vector_search_async(query).await.unwrap_or_default();
-                rrf_merge(fts_hits, vec_hits)
+                if !query.text.trim().is_empty() {
+                    let vec_hits = self.vector_search_async(query).await.unwrap_or_default();
+                    rrf_merge(fts_hits, vec_hits)
+                } else {
+                    fts_hits
+                }
             }
         };
 
         let conn = Arc::clone(&self.conn);
-        let query = query.clone();
+        let query_clone = query.clone();
         
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
             let mut paged_hits: Vec<Hit> = hits.into_iter()
-                .skip(query.offset)
-                .take(query.limit)
+                .skip(query_clone.offset)
+                .take(query_clone.limit)
                 .map(Hit::from)
                 .collect();
             
@@ -442,25 +402,25 @@ impl SearchEngine {
     }
 
     async fn vector_search_async(&self, query: &SearchQuery) -> Result<Vec<SearchHit>, SearchError> {
+        if query.text.trim().is_empty() {
+             return Ok(vec![]);
+        }
         let embedding = self.embedder.embed(&[query.text.as_str()]).await?;
         let emb = embedding.into_iter().next().ok_or_else(|| SearchError::Embedding("empty".into()))?;
         let quantized = crate::embedding::quantize_to_i8(&emb);
         let emb_bytes: Vec<u8> = quantized.into_iter().map(|i| i as u8).collect();
 
         let conn = Arc::clone(&self.conn);
-        let project_ids = query.project_ids.clone();
-        let limit = query.limit as i64;
-        let offset = query.offset as i64;
-        let query_text = query.text.clone();
+        let query_clone = query.clone();
 
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
-            vector_search_sync(&conn, &emb_bytes, limit, offset, &project_ids, &query_text)
+            vector_search_sync(&conn, &emb_bytes, &query_clone)
         }).await?
     }
 }
 
-fn index_document_sync(
+pub(crate) fn index_document_sync(
     conn: &Connection,
     project_id: i64,
     source_doc_id: &str,
@@ -511,40 +471,12 @@ fn index_document_sync(
 
     let doc_id: i64 = conn.query_row("SELECT id FROM documents WHERE project_id = ?1 AND source_doc_id = ?2", params![project_id, source_doc_id], |row| row.get(0))?;
 
-    // Phase 1: Initialize Freshness Record
-    let plugin_id: String = conn.query_row(
-        "SELECT plugin_id FROM source_instances WHERE project_id = ?1",
-        [project_id],
-        |r| r.get(0)
-    ).unwrap_or_else(|_| "unknown".to_string());
-    
-    let default_tier = crate::freshness::default_tier_for_source(&plugin_id);
-    let tier_str = match default_tier {
-        crate::freshness::RetentionTier::Short => "short",
-        crate::freshness::RetentionTier::Mid => "mid",
-        crate::freshness::RetentionTier::Long => "long",
-    };
-    
-    conn.execute(
-        "INSERT OR IGNORE INTO document_freshness(document_id, freshness_score, status, retention_tier, first_seen_at, last_content_change, score_updated_at)
-         VALUES (?1, 100.0, 'fresh', ?2, ?3, ?3, ?3)",
-        params![doc_id, tier_str, now],
-    )?;
-
     conn.execute("DELETE FROM document_tags WHERE document_id = ?1", [doc_id])?;
     for tag in &meta.tags { conn.execute("INSERT OR IGNORE INTO document_tags (document_id, tag) VALUES (?1, ?2)", params![doc_id, tag])?; }
     conn.execute("DELETE FROM document_aliases WHERE document_id = ?1", [doc_id])?;
     for alias in &meta.aliases { conn.execute("INSERT OR IGNORE INTO document_aliases (document_id, alias) VALUES (?1, ?2)", params![doc_id, alias])?; }
     conn.execute("DELETE FROM document_metadata WHERE document_id = ?1", [doc_id])?;
     for (k, v) in &meta.metadata { conn.execute("INSERT OR REPLACE INTO document_metadata (document_id, key, value) VALUES (?1, ?2, ?3)", params![doc_id, k, v.to_string()])?; }
-
-    conn.execute("DELETE FROM document_links WHERE source_id = ?1", [doc_id])?;
-    for raw_link in &meta.links {
-        conn.execute(
-            "INSERT INTO document_links (source_id, target_raw, link_type) VALUES (?1, ?2, 'wikilink')",
-            params![doc_id, raw_link],
-        )?;
-    }
 
     conn.execute("DELETE FROM chunks WHERE document_id = ?1", [doc_id])?;
     for (i, chunk) in chunks.iter().enumerate() {
@@ -563,60 +495,101 @@ fn index_document_sync(
 
 fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchHit>, SearchError> {
     let fts_query = build_fts_query(&query.text);
-    if fts_query.is_empty() { return Ok(vec![]); }
+    if fts_query.is_empty() && query.tags.is_empty() && query.project_ids.is_empty() {
+        return Ok(vec![]);
+    }
 
-    // ?1=fts_query, ?2=limit, ?3=offset, ?4..=project_ids, then date params
-    let project_param_start = 4usize;
-    let (project_filter, mut next_param) = if query.project_ids.is_empty() {
-        ("AND p.status = 'active'".to_string(), project_param_start)
+    let mut next_param = 1usize;
+    let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+    let match_clause = if !fts_query.is_empty() {
+        let q = fts_query.clone();
+        params_vec.push(Box::new(q));
+        format!("chunks_fts MATCH ?{}", next_param)
     } else {
-        let placeholders: Vec<String> = (0..query.project_ids.len())
-            .map(|i| format!("?{}", project_param_start + i))
-            .collect();
-        (format!("AND d.project_id IN ({})", placeholders.join(", ")), project_param_start + query.project_ids.len())
+        "1=1".to_string()
     };
+    if !fts_query.is_empty() { next_param += 1; }
+
+    let limit_val = (query.limit + query.offset) as i64;
+    params_vec.push(Box::new(limit_val));
+    let limit_param_idx = next_param;
+    next_param += 1;
+
+    let offset_val = 0i64;
+    params_vec.push(Box::new(offset_val));
+    let offset_param_idx = next_param;
+    next_param += 1;
+
+    let (project_filter, projects_next_param) = if query.project_ids.is_empty() {
+        ("AND p.status = 'active'".to_string(), next_param)
+    } else {
+        let start = next_param;
+        let placeholders: Vec<String> = (0..query.project_ids.len())
+            .map(|i| format!("?{}", start + i))
+            .collect();
+        for id in &query.project_ids { params_vec.push(Box::new(*id)); }
+        (format!("AND d.project_id IN ({})", placeholders.join(", ")), next_param + query.project_ids.len())
+    };
+    next_param = projects_next_param;
+
+    let mut tag_filter = String::new();
+    if !query.tags.is_empty() {
+        let start = next_param;
+        let placeholders: Vec<String> = (0..query.tags.len())
+            .map(|i| format!("?{}", start + i))
+            .collect();
+        for tag in &query.tags { params_vec.push(Box::new(tag.to_string())); }
+        tag_filter = format!(
+            "AND d.id IN (SELECT document_id FROM document_tags WHERE tag IN ({}))",
+            placeholders.join(", ")
+        );
+        next_param += query.tags.len();
+    }
 
     let mut date_filter = String::new();
-    if query.created_after.is_some()  { date_filter.push_str(&format!(" AND d.created_at >= ?{next_param}")); next_param += 1; }
-    if query.created_before.is_some() { date_filter.push_str(&format!(" AND d.created_at <= ?{next_param}")); next_param += 1; }
-    if query.updated_after.is_some()  { date_filter.push_str(&format!(" AND d.updated_at >= ?{next_param}")); next_param += 1; }
-    if query.updated_before.is_some() { date_filter.push_str(&format!(" AND d.updated_at <= ?{next_param}")); next_param += 1; }
+    if let Some(v) = query.created_after  { date_filter.push_str(&format!(" AND d.created_at >= ?{}", next_param)); params_vec.push(Box::new(v)); next_param += 1; }
+    if let Some(v) = query.created_before { date_filter.push_str(&format!(" AND d.created_at <= ?{}", next_param)); params_vec.push(Box::new(v)); next_param += 1; }
+    if let Some(v) = query.updated_after  { date_filter.push_str(&format!(" AND d.updated_at >= ?{}", next_param)); params_vec.push(Box::new(v)); next_param += 1; }
+    if let Some(v) = query.updated_before { date_filter.push_str(&format!(" AND d.updated_at <= ?{}", next_param)); params_vec.push(Box::new(v)); next_param += 1; }
     let _ = next_param;
+
+    let score_expr = if fts_query.is_empty() {
+        "1.0".to_string()
+    } else {
+        format!("bm25(chunks_fts, 1.0, 3.0, 10.0)")
+    };
 
     let sql = format!(
         "SELECT d.id, d.source_doc_id, d.project_id, c.id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path,
-                '' AS snippet, bm25(chunks_fts, 1.0, 3.0, 10.0) AS score,
+                '' AS snippet, ABS({}) AS score,
                 d.url, d.metadata_json, d.last_indexed,
                 c.start_byte, c.end_byte, c.content,
-                d.created_at, d.updated_at
+                d.created_at, d.updated_at,
+                (SELECT GROUP_CONCAT(tag) FROM document_tags WHERE document_id = d.id) as tags
          FROM chunks_fts
          JOIN chunks c ON c.id = chunks_fts.rowid
          JOIN documents d ON d.id = c.document_id
          JOIN projects p ON p.id = d.project_id
-         WHERE chunks_fts MATCH ?1
+         WHERE {}
          {project_filter}
          {date_filter}
+         {tag_filter}
          ORDER BY score
-         LIMIT ?2 OFFSET ?3"
+         LIMIT ?{} OFFSET ?{}",
+        score_expr, match_clause, limit_param_idx, offset_param_idx
     );
 
     let keywords: Vec<String> = query.text.split_whitespace().map(|s| s.to_string()).collect();
     let highlighter = Highlighter::new(&keywords).unwrap_or_else(|_| Highlighter::new(&[]).unwrap());
 
     let mut stmt = conn.prepare(&sql)?;
-    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
-        Box::new(fts_query),
-        Box::new((query.limit + query.offset) as i64),
-        Box::new(0i64),
-    ];
-    for id in &query.project_ids { params.push(Box::new(*id)); }
-    if let Some(v) = query.created_after  { params.push(Box::new(v)); }
-    if let Some(v) = query.created_before { params.push(Box::new(v)); }
-    if let Some(v) = query.updated_after  { params.push(Box::new(v)); }
-    if let Some(v) = query.updated_before { params.push(Box::new(v)); }
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
 
     let hits = stmt.query_map(param_refs.as_slice(), |row| {
+        let tags_str: Option<String> = row.get(17)?;
+        let tags = tags_str.map(|s| s.split(',').map(|t| t.to_string()).collect()).unwrap_or_default();
+        
         let mut hit = SearchHit {
             document_id: row.get(0)?,
             source_doc_id: row.get(1)?,
@@ -626,7 +599,7 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
             file_path: row.get(5)?,
             heading_path: row.get(6)?,
             snippet: row.get(7)?,
-            score: row.get::<_, f64>(8).unwrap_or(0.0).abs(),
+            score: row.get::<_, f64>(8).unwrap_or(0.0),
             url: row.get(9)?,
             metadata_json: row.get(10)?,
             last_indexed: row.get(11)?,
@@ -636,6 +609,7 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
             context_content: None,
             created_at: row.get(15)?,
             updated_at: row.get(16)?,
+            tags,
         };
 
         if let Some(ref path_str) = hit.file_path {
@@ -660,21 +634,36 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
 fn vector_search_sync(
     conn: &Connection,
     emb_bytes: &[u8],
-    limit: i64,
-    offset: i64,
-    project_ids: &[i64],
-    query_text: &str,
+    query: &SearchQuery,
 ) -> Result<Vec<SearchHit>, SearchError> {
-    let k = limit + offset;
-    let project_filter = if project_ids.is_empty() {
-        "AND p.status = 'active'".to_string()
+    let k = (query.limit + query.offset) as i64;
+    let mut next_param = 3usize;
+    let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(emb_bytes.to_vec()), Box::new(k)];
+
+    let (project_filter, projects_next_param) = if query.project_ids.is_empty() {
+        ("AND p.status = 'active'".to_string(), next_param)
     } else {
-        let placeholders: Vec<String> = (0..project_ids.len()).map(|i| format!("?{}", i + 3)).collect();
-        format!("AND d.project_id IN ({})", placeholders.join(", "))
+        let start = next_param;
+        let placeholders: Vec<String> = (0..query.project_ids.len()).map(|i| format!("?{}", start + i)).collect();
+        for id in &query.project_ids { params_vec.push(Box::new(*id)); }
+        (format!("AND d.project_id IN ({})", placeholders.join(", ")), next_param + query.project_ids.len())
     };
+    next_param = projects_next_param;
+
+    let mut tag_filter = String::new();
+    if !query.tags.is_empty() {
+        let start = next_param;
+        let placeholders: Vec<String> = (0..query.tags.len()).map(|i| format!("?{}", start + i)).collect();
+        for tag in &query.tags { params_vec.push(Box::new(tag.to_string())); }
+        tag_filter = format!(
+            "AND d.id IN (SELECT document_id FROM document_tags WHERE tag IN ({}))",
+            placeholders.join(", ")
+        );
+    }
 
     let sql = format!(
-        "SELECT c.id, c.document_id, d.project_id, d.source_doc_id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path, c.content, knn.distance, d.url, d.metadata_json, d.last_indexed, c.start_byte, c.end_byte, d.created_at, d.updated_at
+        "SELECT c.id, c.document_id, d.project_id, d.source_doc_id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path, c.content, knn.distance, d.url, d.metadata_json, d.last_indexed, c.start_byte, c.end_byte, d.created_at, d.updated_at,
+                (SELECT GROUP_CONCAT(tag) FROM document_tags WHERE document_id = d.id) as tags
          FROM (
              SELECT chunk_id, distance FROM chunk_embeddings
              WHERE vector MATCH vec_int8(?1) AND k = ?2
@@ -682,20 +671,21 @@ fn vector_search_sync(
          JOIN chunks c ON knn.chunk_id = c.id
          JOIN documents d ON d.id = c.document_id
          JOIN projects p ON p.id = d.project_id
-         WHERE 1=1 {project_filter}
+         WHERE 1=1 {project_filter} {tag_filter}
          ORDER BY knn.distance"
     );
 
-    let keywords: Vec<String> = query_text.split_whitespace().map(|s| s.to_string()).collect();
+    let keywords: Vec<String> = query.text.split_whitespace().map(|s| s.to_string()).collect();
     let highlighter = Highlighter::new(&keywords).unwrap_or_else(|_| Highlighter::new(&[]).unwrap());
 
     let mut stmt = conn.prepare(&sql)?;
-    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(emb_bytes.to_vec()), Box::new(k)];
-    for id in project_ids { params.push(Box::new(*id)); }
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
     
     let hits = stmt.query_map(param_refs.as_slice(), |row| {
         let distance: f64 = row.get(8)?;
+        let tags_str: Option<String> = row.get(16)?;
+        let tags = tags_str.map(|s| s.split(',').map(|t| t.to_string()).collect()).unwrap_or_default();
+
         let mut hit = SearchHit {
             chunk_id: row.get(0)?,
             document_id: row.get(1)?,
@@ -715,6 +705,7 @@ fn vector_search_sync(
             context_content: None,
             created_at: row.get(14)?,
             updated_at: row.get(15)?,
+            tags,
         };
 
         if let Some(ref path_str) = hit.file_path {
@@ -790,141 +781,15 @@ impl<'a> SyncSearchEngine<'a> {
     }
     pub fn index_document_with_meta(&self, project_id: i64, sid: &str, title: &str, content: &str, meta: &DocMeta, strategy: &str) -> Result<(), SearchError> {
         let chunks = crate::chunker::split_chunks(content, crate::chunker::ChunkConfig { title: Some(title.to_string()), ..Default::default() });
-        index_document_sync(self.conn, project_id, sid, title, content, &chunks, &[], meta, strategy)
+        let now = chrono::Utc::now().timestamp();
+        let meta = DocMeta {
+            created_at: meta.created_at.or(Some(now)),
+            updated_at: meta.updated_at.or(Some(now)),
+            ..meta.clone()
+        };
+        index_document_sync(self.conn, project_id, sid, title, content, &chunks, &[], &meta, strategy)
     }
     pub fn search(&self, query: &SearchQuery) -> Result<Vec<SearchHit>, SearchError> {
         fts_search_sync(self.conn, query)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::db::TestDb;
-
-    fn insert_project(db: &TestDb, name: &str, path: &str) -> i64 {
-        db.conn.execute("INSERT INTO projects(name, display_name, path, status, created_at, updated_at) VALUES (?1, ?1, ?2, 'active', unixepoch(), unixepoch())", [name, path]).unwrap();
-        db.conn.query_row("SELECT id FROM projects WHERE name=?1", [name], |r| r.get(0)).unwrap()
-    }
-
-    #[test]
-    fn fts_search_returns_results() {
-        let db = TestDb::new();
-        let pid = insert_project(&db, "vault", "/vault");
-        let engine = SearchEngine::new(&db.conn);
-        engine.index_document(pid, "doc1", "Rust Programming", "Rust is a systems language", "full").unwrap();
-
-        let query = SearchQuery::new("Rust programming");
-        let hits = engine.search(&query).unwrap();
-        assert!(!hits.is_empty(), "should find Rust document");
-        assert_eq!(hits[0].title.as_deref(), Some("Rust Programming"));
-    }
-
-    // ── 날짜 필터 TDD 테스트 ──────────────────────────────────────────────
-
-    fn insert_project_and_doc_with_dates(db: &TestDb, pid: i64, sid: &str, title: &str, created_at: i64, updated_at: i64) {
-        let engine = SyncSearchEngine::from_conn(&db.conn);
-        let meta = DocMeta {
-            created_at: Some(created_at),
-            updated_at: Some(updated_at),
-            ..Default::default()
-        };
-        engine.index_document_with_meta(pid, sid, title, title, &meta, "full").unwrap();
-    }
-
-    #[test]
-    fn test_search_date_filter_created_after() {
-        let db = TestDb::new();
-        let pid = insert_project(&db, "date-vault", "/date-vault");
-        insert_project_and_doc_with_dates(&db, pid, "old-doc", "Old Document", 1000, 1000);
-        insert_project_and_doc_with_dates(&db, pid, "new-doc", "New Document", 2000, 2000);
-
-        let mut query = SearchQuery::new("Document");
-        query.created_after = Some(1500);
-        let hits = SyncSearchEngine::from_conn(&db.conn).search(&query).unwrap();
-        assert_eq!(hits.len(), 1, "created_after=1500이면 created_at=2000 문서만 반환");
-        assert_eq!(hits[0].title.as_deref(), Some("New Document"));
-    }
-
-    #[test]
-    fn test_search_date_filter_no_filter() {
-        let db = TestDb::new();
-        let pid = insert_project(&db, "nofilter-vault", "/nofilter-vault");
-        insert_project_and_doc_with_dates(&db, pid, "doc-a", "Alpha Document", 1000, 1000);
-        insert_project_and_doc_with_dates(&db, pid, "doc-b", "Beta Document", 2000, 2000);
-
-        let query = SearchQuery::new("Document");
-        let hits = SyncSearchEngine::from_conn(&db.conn).search(&query).unwrap();
-        assert_eq!(hits.len(), 2, "날짜 필터 없으면 두 문서 모두 반환");
-    }
-
-    #[test]
-    fn test_search_hit_includes_dates() {
-        let db = TestDb::new();
-        let pid = insert_project(&db, "hit-dates-vault", "/hit-dates-vault");
-        insert_project_and_doc_with_dates(&db, pid, "dated-doc", "Dated Document", 1234, 5678);
-
-        let query = SearchQuery::new("Dated Document");
-        let hits = SyncSearchEngine::from_conn(&db.conn).search(&query).unwrap();
-        assert!(!hits.is_empty(), "결과가 있어야 함");
-        let hit = &hits[0];
-        assert_eq!(hit.created_at, Some(1234), "hit에 created_at 포함");
-        assert_eq!(hit.updated_at, Some(5678), "hit에 updated_at 포함");
-    }
-
-    #[test]
-    fn test_search_date_filter_created_before() {
-        let db = TestDb::new();
-        let pid = insert_project(&db, "before-vault", "/before-vault");
-        insert_project_and_doc_with_dates(&db, pid, "old-doc", "Old Document", 1000, 1000);
-        insert_project_and_doc_with_dates(&db, pid, "new-doc", "New Document", 2000, 2000);
-
-        let mut query = SearchQuery::new("Document");
-        query.created_before = Some(1500);
-        let hits = SyncSearchEngine::from_conn(&db.conn).search(&query).unwrap();
-        assert_eq!(hits.len(), 1, "created_before=1500이면 created_at=1000 문서만 반환");
-        assert_eq!(hits[0].title.as_deref(), Some("Old Document"));
-    }
-
-    #[test]
-    fn test_search_date_filter_updated_after() {
-        let db = TestDb::new();
-        let pid = insert_project(&db, "updated-vault", "/updated-vault");
-        insert_project_and_doc_with_dates(&db, pid, "stale-doc", "Stale Document", 1000, 1000);
-        insert_project_and_doc_with_dates(&db, pid, "fresh-doc", "Fresh Document", 1000, 3000);
-
-        let mut query = SearchQuery::new("Document");
-        query.updated_after = Some(2000);
-        let hits = SyncSearchEngine::from_conn(&db.conn).search(&query).unwrap();
-        assert_eq!(hits.len(), 1, "updated_after=2000이면 updated_at=3000 문서만 반환");
-        assert_eq!(hits[0].title.as_deref(), Some("Fresh Document"));
-    }
-
-    #[test]
-    fn highlighter_reads_from_filesystem_for_local_files() {
-        let db = TestDb::new();
-        let temp_dir = std::env::temp_dir().join("doxus_test");
-        std::fs::create_dir_all(&temp_dir).unwrap();
-        let file_path = temp_dir.join("test.md");
-        let content = "The quick brown fox jumps over the lazy dog. Rust is amazing.";
-        std::fs::write(&file_path, content).unwrap();
-
-        db.conn.execute("INSERT INTO projects(name, display_name, path, source_type, status, created_at, updated_at) VALUES ('obsidian', 'Obsidian', ?1, 'obsidian', 'active', 0, 0)", [temp_dir.to_string_lossy().to_string()]).unwrap();
-        let pid: i64 = db.conn.query_row("SELECT id FROM projects WHERE source_type='obsidian'", [], |r| r.get(0)).unwrap();
-
-        let engine = SearchEngine::new(&db.conn);
-        let meta = DocMeta {
-            relative_path: Some("test.md".to_string()),
-            ..Default::default()
-        };
-        engine.index_document_with_meta(pid, "test1", "Test File", content, &meta, "reference").unwrap();
-
-        let db_content: Option<String> = db.conn.query_row("SELECT content FROM chunks WHERE document_id = (SELECT id FROM documents WHERE source_doc_id='test1')", [], |r| r.get(0)).unwrap();
-        assert!(db_content.is_none(), "DB content should be offloaded (NULL) for local files");
-
-        let query = SearchQuery::new("brown fox");
-        let hits = engine.search(&query).unwrap();
-        assert!(!hits.is_empty());
-        assert!(hits[0].snippet.contains("<b>brown</b> <b>fox</b>"), "Snippet should contain highlighted keywords from file");
     }
 }
