@@ -229,8 +229,6 @@ function CreateScheduleModal({ projects, editingJob, onClose, onCreated }: { pro
     const [action, setAction] = useState(editingJob?.action || "incremental_sync");
     const [scheduleType, setScheduleType] = useState<"daily" | "weekly" | "interval">(editingJob?.schedule?.type || "daily");
     
-    // AI Agent Specific
-    const [model, setModel] = useState(editingJob?.action_config?.model || "claude-3-5-sonnet-latest");
     const [persona, setPersona] = useState(editingJob?.action_config?.persona || PERSONA_PRESETS[0].id);
     const [selectedProjects, setSelectedProjects] = useState<string[]>(editingJob?.action_config?.scope?.project_names || []);
     const [tags, setTags] = useState(editingJob?.action_config?.scope?.tags?.join(", ") || "");
@@ -240,6 +238,12 @@ function CreateScheduleModal({ projects, editingJob, onClose, onCreated }: { pro
     const [summaryStyle, setSummaryStyle] = useState(editingJob?.action_config?.summary_style || "bullet_points");
     const [customPrompt, setCustomPrompt] = useState(editingJob?.action_config?.custom_prompt || "");
     const [description, setDescription] = useState(editingJob?.description || "");
+    
+    // AI Provider & Model handling
+    const initialModel = editingJob?.action_config?.model || "claude-3-5-sonnet";
+    const initialProvider = initialModel.includes("gemini") ? "gemini" : "claude";
+    const [provider, setProvider] = useState(initialProvider);
+    const [model, setModel] = useState(initialModel);
 
     // Common Parameters
     const [hour, setHour] = useState(editingJob?.schedule?.hour ?? 3);
@@ -422,31 +426,90 @@ function CreateScheduleModal({ projects, editingJob, onClose, onCreated }: { pro
                             </div>
                         ) : (
                             <div className="space-y-6 animate-in slide-in-from-bottom-2 duration-300">
-                                {/* AI 모델 & 페르소나 */}
                                 <div className="grid grid-cols-2 gap-4">
                                     <div>
-                                        <label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-widest pl-1">AI 모델</label>
+                                        <label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-widest pl-1">AI 공급자</label>
+                                        <div className="flex gap-2">
+                                            {[
+                                                { id: 'claude', name: 'Anthropic', icon: '🎨' },
+                                                { id: 'gemini', name: 'Google', icon: '💎' },
+                                                { id: 'openai', name: 'OpenAI', icon: '🤖' },
+                                            ].map(p => (
+                                                <button
+                                                    key={p.id}
+                                                    onClick={() => {
+                                                        setProvider(p.id);
+                                                        const defaultModels: any = {
+                                                            claude: 'claude-3-5-sonnet',
+                                                            gemini: 'gemini-1.5-pro-002',
+                                                            openai: 'gpt-4o'
+                                                        };
+                                                        setModel(defaultModels[p.id]);
+                                                    }}
+                                                    className={`flex-1 py-3 px-2 rounded-2xl border text-center transition-all ${
+                                                        provider === p.id 
+                                                        ? 'bg-indigo-500/10 border-indigo-500/50 ring-1 ring-indigo-500/50 text-indigo-400' 
+                                                        : 'bg-white/5 border-white/5 text-gray-500 hover:border-white/20'
+                                                    }`}
+                                                >
+                                                    <div className="text-lg mb-1">{p.icon}</div>
+                                                    <div className="text-[10px] font-bold">{p.name}</div>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-widest pl-1">세부 모델 선택</label>
                                         <select 
                                             value={model}
                                             onChange={e => setModel(e.target.value)}
-                                            className="w-full bg-white/5 border border-white/10 rounded-2xl px-4 py-3.5 text-white focus:outline-none"
+                                            className="w-full bg-white/5 border border-white/10 rounded-2xl px-4 py-4 text-white focus:outline-none transition-all focus:border-indigo-500/50 appearance-none bg-[url('data:image/svg+xml;charset=US-ASCII,%3Csvg%20width%3D%2220%22%20height%3D%2220%22%20viewBox%3D%220%200%2020%2020%22%20fill%3D%22none%22%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%3E%3Cpath%20d%3D%22M5%208L10%2013L15%208%22%20stroke%3D%22white%22%20stroke-width%3D%222%22%20stroke-linecap%3D%22round%22%20stroke-linejoin%3D%22round%22/%3E%3C/svg%3E')] bg-[length:20px_20px] bg-[right_1rem_center] bg-no-repeat"
                                         >
-                                            <option value="claude-3-5-sonnet">Claude 3.5 Sonnet</option>
-                                            <option value="gemini-1.5-pro-002">Gemini 1.5 Pro</option>
-                                            <option value="gpt-4o">GPT-4o</option>
+                                            {provider === 'claude' && (
+                                                <>
+                                                    <option value="claude-3-5-sonnet">Claude 3.5 Sonnet</option>
+                                                    <option value="claude-3-opus">Claude 3 Opus</option>
+                                                    <option value="claude-3-5-haiku">Claude 3.5 Haiku</option>
+                                                </>
+                                            )}
+                                            {provider === 'gemini' && (
+                                                <>
+                                                    <option value="gemini-1.5-pro-002">Gemini 1.5 Pro</option>
+                                                    <option value="gemini-1.5-flash-002">Gemini 1.5 Flash</option>
+                                                </>
+                                            )}
+                                            {provider === 'openai' && (
+                                                <>
+                                                    <option value="gpt-4o">GPT-4o</option>
+                                                    <option value="gpt-4o-mini">GPT-4o Mini</option>
+                                                    <option value="o1-preview">o1 Preview</option>
+                                                </>
+                                            )}
                                         </select>
                                     </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 gap-2">
                                     <div>
                                         <label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-widest pl-1">페르소나</label>
-                                        <select 
-                                            value={persona}
-                                            onChange={e => setPersona(e.target.value)}
-                                            className="w-full bg-white/5 border border-white/10 rounded-2xl px-4 py-3.5 text-white focus:outline-none"
-                                        >
+                                        <div className="grid grid-cols-2 gap-2">
                                             {PERSONA_PRESETS.map(p => (
-                                                <option key={p.id} value={p.id}>{p.name}</option>
+                                                <button
+                                                    key={p.id}
+                                                    onClick={() => setPersona(p.id)}
+                                                    className={`p-3 rounded-xl border text-left transition-all ${
+                                                        persona === p.id 
+                                                        ? 'bg-white/10 border-white/20 text-indigo-400' 
+                                                        : 'bg-white/5 border-white/5 text-gray-500 hover:text-gray-300'
+                                                    }`}
+                                                >
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="text-lg">{p.icon}</span>
+                                                        <span className="text-xs font-bold">{p.name}</span>
+                                                    </div>
+                                                </button>
                                             ))}
-                                        </select>
+                                        </div>
                                     </div>
                                 </div>
 
