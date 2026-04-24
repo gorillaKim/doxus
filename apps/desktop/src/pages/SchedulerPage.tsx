@@ -497,7 +497,7 @@ function CreateScheduleModal({ projects, editingJob, onClose, onCreated }: { pro
                                                 <button
                                                     key={p.id}
                                                     onClick={() => setPersona(p.id)}
-                                                    className={`p-3 rounded-xl border text-left transition-all ${
+                                                    className={`p-3 rounded-xl border text-left transition-all relative group/persona ${
                                                         persona === p.id 
                                                         ? 'bg-white/10 border-white/20 text-indigo-400' 
                                                         : 'bg-white/5 border-white/5 text-gray-500 hover:text-gray-300'
@@ -506,6 +506,16 @@ function CreateScheduleModal({ projects, editingJob, onClose, onCreated }: { pro
                                                     <div className="flex items-center gap-2">
                                                         <span className="text-lg">{p.icon}</span>
                                                         <span className="text-xs font-bold">{p.name}</span>
+                                                    </div>
+
+                                                    {/* Tooltip */}
+                                                    <div className="absolute bottom-full left-0 mb-2 w-56 p-3 bg-gray-900 border border-white/10 rounded-xl shadow-2xl opacity-0 invisible group-hover/persona:opacity-100 group-hover/persona:visible transition-all z-20 pointer-events-none">
+                                                        <div className="flex flex-col gap-1.5">
+                                                            <span className="text-white font-bold text-[10px]">{p.name}</span>
+                                                            <span className="text-gray-400 text-[10px] leading-relaxed">{p.description}</span>
+                                                        </div>
+                                                        {/* Arrow */}
+                                                        <div className="absolute top-full left-6 border-8 border-transparent border-t-gray-900" />
                                                     </div>
                                                 </button>
                                             ))}
@@ -591,26 +601,37 @@ function CreateScheduleModal({ projects, editingJob, onClose, onCreated }: { pro
                                 </div>
 
                                 {/* 요약 스타일 */}
-                                <div>
+                                <div className="space-y-4">
                                     <label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-widest pl-1">결과물 요약 방식</label>
                                     <div className="grid grid-cols-4 gap-2">
                                         {[
-                                            { id: 'bullet_points', name: '📌 지표형' },
-                                            { id: 'narrative', name: '📖 서사형' },
-                                            { id: 'actionable', name: '💡 통찰형' },
-                                            { id: 'comparative', name: '🔄 비교형' },
+                                            { id: 'bullet_points', name: '📌 지표형', desc: '숫자 기반의 실적, 완료 수치 등 핵심 지표 위주로 요약합니다.' },
+                                            { id: 'narrative', name: '📖 서사형', desc: '작업의 맥락과 진행 과정을 이야기 형식으로 서술합니다.' },
+                                            { id: 'actionable', name: '💡 통찰형', desc: '데이터 이면에 숨은 의미와 개선점, 향후 제언을 포함합니다.' },
+                                            { id: 'comparative', name: '🔄 비교형', desc: '이전 데이터와의 차이점 및 변화된 부분을 대조하여 보여줍니다.' },
                                         ].map(s => (
-                                            <button
-                                                key={s.id}
-                                                onClick={() => setSummaryStyle(s.id)}
-                                                className={`py-2 rounded-xl text-[10px] font-bold transition-all border ${
-                                                    summaryStyle === s.id 
-                                                    ? 'bg-white/10 border-white/30 text-white' 
-                                                    : 'bg-white/5 border-white/5 text-gray-500 hover:text-gray-400'
-                                                }`}
-                                            >
-                                                {s.name}
-                                            </button>
+                                            <div key={s.id} className="relative group/style">
+                                                <button
+                                                    onClick={() => setSummaryStyle(s.id)}
+                                                    className={`w-full py-3 rounded-2xl text-[10px] font-bold transition-all border ${
+                                                        summaryStyle === s.id 
+                                                        ? 'bg-white/10 border-white/30 text-white ring-1 ring-white/20' 
+                                                        : 'bg-white/5 border-white/5 text-gray-500 hover:text-gray-400 hover:border-white/10'
+                                                    }`}
+                                                >
+                                                    {s.name}
+                                                </button>
+                                                
+                                                {/* Tooltip */}
+                                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-48 p-3 bg-gray-900 border border-white/10 rounded-xl shadow-2xl opacity-0 invisible group-hover/style:opacity-100 group-hover/style:visible transition-all z-20 pointer-events-none">
+                                                    <div className="flex flex-col gap-1.5">
+                                                        <span className="text-white font-bold text-[10px]">{s.name}</span>
+                                                        <span className="text-gray-400 text-[10px] leading-relaxed">{s.desc}</span>
+                                                    </div>
+                                                    {/* Arrow */}
+                                                    <div className="absolute top-full left-1/2 -translate-x-1/2 border-8 border-transparent border-t-gray-900" />
+                                                </div>
+                                            </div>
                                         ))}
                                     </div>
                                 </div>
