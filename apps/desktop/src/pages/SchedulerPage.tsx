@@ -238,6 +238,8 @@ function CreateScheduleModal({ projects, editingJob, onClose, onCreated }: { pro
     const [outputProject, setOutputProject] = useState(editingJob?.action_config?.output?.project_name || "");
     const [outputDir, setOutputDir] = useState(editingJob?.action_config?.output?.sub_dir || "reports");
     const [summaryStyle, setSummaryStyle] = useState(editingJob?.action_config?.summary_style || "bullet_points");
+    const [customPrompt, setCustomPrompt] = useState(editingJob?.action_config?.custom_prompt || "");
+    const [description, setDescription] = useState(editingJob?.description || "");
 
     // Common Parameters
     const [hour, setHour] = useState(editingJob?.schedule?.hour ?? 3);
@@ -287,6 +289,7 @@ function CreateScheduleModal({ projects, editingJob, onClose, onCreated }: { pro
                 sub_dir: outputDir,
             };
             actionConfig.summary_style = summaryStyle;
+            actionConfig.custom_prompt = customPrompt;
         }
 
         try {
@@ -295,6 +298,7 @@ function CreateScheduleModal({ projects, editingJob, onClose, onCreated }: { pro
                     jobId: editingJob.id,
                     projectId: null,
                     jobName: name,
+                    description,
                     executor,
                     action: executor === 'agent' ? 'ai_agent_report' : action,
                     actionConfig,
@@ -305,6 +309,7 @@ function CreateScheduleModal({ projects, editingJob, onClose, onCreated }: { pro
                 await invoke("create_scheduled_job", {
                     projectId: null,
                     jobName: name,
+                    description,
                     executor,
                     action: executor === 'agent' ? 'ai_agent_report' : action,
                     actionConfig,
@@ -378,6 +383,15 @@ function CreateScheduleModal({ projects, editingJob, onClose, onCreated }: { pro
                                     onChange={e => setName(e.target.value)}
                                     placeholder="예: 주간 개발 리포트"
                                     className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-3.5 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-all placeholder:text-gray-600" 
+                                />
+                            </div>
+                            <div className="col-span-2">
+                                <label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-widest pl-1">스케줄 상세 설명</label>
+                                <textarea 
+                                    value={description}
+                                    onChange={e => setDescription(e.target.value)}
+                                    placeholder="어떤 목적으로 만들어진 스케줄인지 기록해 두세요."
+                                    className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-3.5 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-all placeholder:text-gray-600 resize-none h-20" 
                                 />
                             </div>
                         </div>
@@ -536,6 +550,21 @@ function CreateScheduleModal({ projects, editingJob, onClose, onCreated }: { pro
                                             </button>
                                         ))}
                                     </div>
+                                </div>
+
+                                {/* 커스텀 프롬프트 */}
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-500 mb-2 uppercase tracking-widest pl-1">
+                                        {persona === 'custom' ? '✨ 에이전트 명령 프롬프트' : '➕ 추가 지시사항 (선택사항)'}
+                                    </label>
+                                    <textarea 
+                                        value={customPrompt}
+                                        onChange={e => setCustomPrompt(e.target.value)}
+                                        placeholder={persona === 'custom' 
+                                            ? "에이전트가 어떤 작업을 수행해야 하는지 구체적으로 입력하세요.\n예: '최근 인덱싱된 문서들을 분석해서 주요 보안 취약점 대책을 정리해줘.'" 
+                                            : "기본 페르소나 작업 외에 특별히 신경 써야 할 점이 있다면 입력하세요."}
+                                        className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-3.5 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-all placeholder:text-gray-600 resize-none h-32 text-sm" 
+                                    />
                                 </div>
                             </div>
                         )}
