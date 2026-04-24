@@ -74,22 +74,32 @@ async fn main() -> Result<()> {
     let server = McpServer::new(Arc::clone(&conn), db_path.clone(), None, Arc::clone(&plugin_manager), plugins_dir);
     let embedder_handle = server.embedder_arc();
     
-    // Background thread to load ONNX
-    std::thread::spawn(move || {
-        tracing::info!("[MCP] Starting background ONNX load...");
-        match doxus_core::embedding::OnnxEmbedder::from_default_path() {
-            Ok(e) => {
-                let mut guard = embedder_handle.lock().unwrap();
-                *guard = Some(Arc::new(e));
-                tracing::info!("[MCP] ONNX load complete. Hybrid search enabled.");
+    // Background thread to load ONNX (only if enabled via env)
+    if std::env::var("DOXUS_ENABLE_ONNX").is_ok() {
+        std::thread::spawn(move || {
+            tracing::info!("[MCP] Starting background ONNX load...");
+            match doxus_core::embedding::OnnxEmbedder::from_default_path() {
+                Ok(e) => {
+                    let mut guard = embedder_handle.lock().unwrap();
+                    *guard = Some(Arc::new(e));
+                    tracing::info!("[MCP] ONNX load complete. Hybrid search enabled.");
+                }
+                Err(e) => {
+                    tracing::warn!("[MCP] ONNX load failed: {}. Vector search disabled.", e);
+                }
             }
-            Err(e) => {
-                tracing::warn!("[MCP] ONNX load failed: {}. Vector search disabled.", e);
-            }
-        }
-    });
+        });
+    } else {
+        tracing::info!("[MCP] ONNX auto-load disabled. Vector search tools will be unavailable.");
+    }
 
-    let sync_handle = spawn_sync_loop(sync_conn, server.embedder_arc(), Arc::clone(&plugin_manager), interval_secs);
+    // Sync loop (only if enabled via env)
+    let sync_handle_opt = if std::env::var("DOXUS_ENABLE_SYNC").is_ok() {
+        Some(spawn_sync_loop(sync_conn, server.embedder_arc(), Arc::clone(&plugin_manager), interval_secs))
+    } else {
+        tracing::info!("[MCP] Background sync disabled in sidecar.");
+        None
+    };
 
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
@@ -133,7 +143,9 @@ async fn main() -> Result<()> {
     };
 
     // Graceful shutdown of the sync loop.
-    sync_handle.shutdown().await;
+    if let Some(h) = sync_handle_opt {
+        h.shutdown().await;
+    }
 
     result
 }

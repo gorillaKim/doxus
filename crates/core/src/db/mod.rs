@@ -20,7 +20,7 @@ pub fn apply_pragmas(conn: &Connection) -> SqlResult<()> {
          PRAGMA synchronous = NORMAL;
          PRAGMA foreign_keys = ON;
          PRAGMA busy_timeout = 5000;
-         PRAGMA cache_size = -32000;",
+         PRAGMA cache_size = -16000;",
     )
 }
 
@@ -97,6 +97,7 @@ pub fn open(path: &Path) -> Result<Connection, DbError> {
     apply_pragmas(&conn).map_err(DbError::Sqlite)?;
     create_vec0_table(&conn)?;
     migrate(&conn)?;
+    let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA shrink_memory;");
     Ok(conn)
 }
 

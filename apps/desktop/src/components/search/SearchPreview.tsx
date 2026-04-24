@@ -254,9 +254,11 @@ export const SearchPreview: React.FC<SearchPreviewProps> = ({
                         <p className="text-gray-600 text-[10px] mt-2 font-mono uppercase tracking-tighter">{previewError}</p>
                     </div>
                     <div className="opacity-40 grayscale blur-[0.5px] scale-95 pointer-events-none">
-                        <ReactMarkdown className="prose prose-invert max-w-none" remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
-                            {selectedDoc.snippet || '내용 없음'}
-                        </ReactMarkdown>
+                        <div className="prose prose-invert max-w-none">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
+                                {selectedDoc.snippet || '내용 없음'}
+                            </ReactMarkdown>
+                        </div>
                     </div>
                 </div>
             ) : (

@@ -751,23 +751,37 @@ impl DocSource for ObsidianPlugin {
     async fn fetch_changes(&self, opts: FetchChangesOpts) -> Result<ChangeSet, PluginError> {
         let vault = self.vault()?;
 
-        // Collect only file paths — no content reads yet
-        let all_paths = self.collect_markdown_paths(vault);
+        // 1. Get total sorted paths (cached if possible)
+        let all_paths = {
+            let mut cache = self.cached_paths.lock().unwrap();
+            let now = std::time::Instant::now();
+            if let Some((ts, ref paths)) = *cache {
+                if now.duration_since(ts) < std::time::Duration::from_secs(60) {
+                    paths.clone()
+                } else {
+                    let new_paths = self.collect_markdown_paths(vault);
+                    *cache = Some((now, new_paths.clone()));
+                    new_paths
+                }
+            } else {
+                let new_paths = self.collect_markdown_paths(vault);
+                *cache = Some((now, new_paths.clone()));
+                new_paths
+            }
+        };
 
-        // Build the set of on-disk relative IDs without reading content
-        let on_disk: HashSet<String> = all_paths
-            .iter()
-            .map(|p| {
-                p.strip_prefix(vault)
-                    .unwrap_or(p)
-                    .to_string_lossy()
-                    .to_string()
-            })
-            .collect();
+        let total = all_paths.len();
+        let offset: usize = match opts.cursor {
+            Some(ref c) => c.parse().unwrap_or(0),
+            None => 0,
+        };
+        let page_size = opts.page_size.min(100); // Strict limit to prevent memory spikes
 
-        // Read only files modified after `since`
+        // 2. Process only the current PAGE of paths for updates
         let mut updated = Vec::new();
-        for file_path in &all_paths {
+        let page_paths = all_paths.iter().skip(offset).take(page_size);
+
+        for file_path in page_paths {
             let mtime = file_path
                 .metadata()
                 .ok()
@@ -775,22 +789,42 @@ impl DocSource for ObsidianPlugin {
                 .and_then(|t| {
                     t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs() as i64)
                 });
-            if mtime.map(|t| t > opts.since).unwrap_or(false) {
-                let doc = self
-                    .read_markdown_file(vault, file_path)
-                    .map_err(|e| PluginError::Internal(e.to_string()))?;
-                updated.push(doc);
+
+            // Re-index if modified after 'since'
+            if mtime.map(|t| t > opts.since).unwrap_or(true) {
+                if let Ok(doc) = self.read_markdown_file(vault, file_path) {
+                    updated.push(doc);
+                }
             }
         }
 
-        // Detect deletions: known_ids not present on disk
-        let deleted_ids: Vec<SourceDocId> = opts
-            .known_ids
-            .into_iter()
-            .filter(|id| !on_disk.contains(&id.0))
-            .collect();
+        // 3. Detect deletions: ONLY during the VERY FIRST page of the sync (offset 0).
+        // Build the on-disk set lazily here to avoid allocating it on every subsequent page.
+        let deleted_ids: Vec<SourceDocId> = if offset == 0 && !opts.known_ids.is_empty() {
+            let on_disk: HashSet<String> = all_paths
+                .iter()
+                .map(|p| {
+                    p.strip_prefix(vault)
+                        .unwrap_or(p)
+                        .to_string_lossy()
+                        .to_string()
+                })
+                .collect();
+            opts.known_ids
+                .into_iter()
+                .filter(|id| !on_disk.contains(&id.0))
+                .collect()
+        } else {
+            vec![]
+        };
 
-        Ok(ChangeSet { updated, deleted_ids, next_cursor: None })
+        let next_cursor = if offset + page_size < total {
+            Some((offset + page_size).to_string())
+        } else {
+            None
+        };
+
+        Ok(ChangeSet { updated, deleted_ids, next_cursor })
     }
 }
 

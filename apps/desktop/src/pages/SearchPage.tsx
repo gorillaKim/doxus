@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { useSearchStore, SearchFilters } from '../stores/useSearchStore';
+import { useSearchStore } from '../stores/useSearchStore';
 import { usePluginStore } from '../stores/usePluginStore';
 
 import { SearchHeader } from '../components/search/SearchHeader';
@@ -17,9 +17,11 @@ export function SearchPage() {
   const { 
     query, filters, hits, isLoading, error, 
     setQuery, setFilters, search, clear, 
-    allDocuments, allDocsLoading, listAllDocuments, 
+    documentsById, allDocsLoading, listAllDocuments, 
     updateDocumentMetadata 
   } = useSearchStore();
+
+  const allDocuments = useMemo(() => Object.values(documentsById), [documentsById]);
 
   const getEmoji = usePluginStore((s) => s.getEmoji);
   
@@ -32,29 +34,25 @@ export function SearchPage() {
   const [previewError, setPreviewError] = useState<string | null>(null);
   
   const processedDocIdRef = useRef<string | null>(null);
-  const allDocsRef = useRef(allDocuments);
-  useEffect(() => { allDocsRef.current = allDocuments; }, [allDocuments]);
-
+  
   // Listeners for background updates
   useEffect(() => {
     const unlistenDoc = listen<{ source_doc_id: string; last_indexed: number }>('document-indexed', (e) => {
-      updateDocumentMetadata(e.payload.source_doc_id, { last_indexed: e.payload.last_indexed });
+      throttledUpdateMetadata(e.payload.source_doc_id, { last_indexed: e.payload.last_indexed });
     });
     const unlistenProj = listen<{ indexed: number; project_name: string }>('project-indexed', (e) => {
-      // 인덱싱 완료 시 전체 로드를 하는 대신, 현재 검색 결과가 있거나 필요하다면 검색을 재실행합니다.
       if (e.payload.indexed > 0) {
-        // search(); // 필요 시 검색 재실행 (선택 사항)
+        // search();
       }
     });
     return () => {
       unlistenDoc.then(f => f());
       unlistenProj.then(f => f());
     };
-  }, [updateDocumentMetadata, listAllDocuments]);
+  }, [updateDocumentMetadata]);
 
-  // [Optimization] Do not load all documents into memory at once. 
-  // It causes massive memory usage (7GB+) in large vaults.
-  // useEffect(() => { listAllDocuments(); }, [listAllDocuments]);
+  // Load documents on mount (Limited to 1,000 in store)
+  useEffect(() => { listAllDocuments(); }, [listAllDocuments]);
 
   // Sync URL state (Read)
   useEffect(() => {
@@ -86,7 +84,6 @@ export function SearchPage() {
       const numericId = parseInt(docId, 10);
       processedDocIdRef.current = docId;
       
-      // allDocuments에서 찾지 말고 직접 페치하여 처리
       invoke<any>('get_document_content', { documentId: numericId })
         .then(doc => {
           if (doc && selectedDoc?.document_id !== numericId) {
@@ -108,7 +105,7 @@ export function SearchPage() {
     if (shouldSearch) {
       search();
     }
-  }, [searchParams, allDocuments, selectedDoc]);
+  }, [searchParams, selectedDoc]);
 
   // Sync URL state (Write)
   useEffect(() => {

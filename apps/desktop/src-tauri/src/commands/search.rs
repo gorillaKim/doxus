@@ -1006,7 +1006,14 @@ pub async fn get_document_content(
     }))
 }
 
-pub fn list_all_documents_impl(conn: &rusqlite::Connection) -> Result<serde_json::Value, String> {
+pub fn list_all_documents_impl(
+    conn: &rusqlite::Connection,
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Result<serde_json::Value, String> {
+    let limit_val = limit.unwrap_or(100);
+    let offset_val = offset.unwrap_or(0);
+
     let mut stmt = conn.prepare(
         "SELECT d.id, COALESCE(NULLIF(d.title, ''), d.source_doc_id) as title, d.source_doc_id, p.name, COALESCE(p.source_type, 'obsidian'), \
                 d.file_path, p.path, d.url, d.updated_at, d.last_indexed, \
@@ -1016,12 +1023,15 @@ pub fn list_all_documents_impl(conn: &rusqlite::Connection) -> Result<serde_json
          JOIN projects p ON d.project_id = p.id
          LEFT JOIN document_freshness f ON d.id = f.document_id
          WHERE p.status = 'active'
-         ORDER BY p.name, title"
+         ORDER BY p.name, title
+         LIMIT ?1 OFFSET ?2"
     ).map_err(|e| e.to_string())?;
+    
     let docs: Vec<_> = stmt
-        .query_map([], |r| {
+        .query_map(rusqlite::params![limit_val as i64, offset_val as i64], |r| {
             let document_id = r.get::<_, i64>(0)?;
             let title = r.get::<_, Option<String>>(1)?.unwrap_or_else(|| "Untitled".to_string());
+// ... rest of the mapping logic remains same ...
             let source_doc_id = r.get::<_, String>(2)?;
             let project_name = r.get::<_, String>(3)?;
             let source_type = r.get::<_, String>(4)?;
@@ -1037,19 +1047,12 @@ pub fn list_all_documents_impl(conn: &rusqlite::Connection) -> Result<serde_json
             let freshness_score: f64 = r.get(11).unwrap_or(100.0);
             let retention_tier: String = r.get(12).unwrap_or_else(|_| "mid".to_string());
 
-            // Normalize file_path for UI tree: strip project_path if it's an absolute path
-            // Also strip "virtual root" if it matches name part (e.g. '컨플/테크스펙' -> strip '테크스펙/')
             let display_file_path = if let Some(ref path) = file_path {
                 let mut p = path.as_str();
-                
-                // 1. Absolute path stripping (Local projects)
                 if !project_path.is_empty() && p.starts_with(&project_path) {
                     p = p.strip_prefix(&project_path).unwrap_or(p);
                 }
-
                 p = p.trim_start_matches('/');
-
-                // 2. Virtual root stripping (Web/Confluence projects)
                 if project_name.contains('/') {
                     if let Some(virtual_root) = project_name.split('/').last() {
                         if !virtual_root.is_empty() && p.starts_with(virtual_root) {
@@ -1060,7 +1063,6 @@ pub fn list_all_documents_impl(conn: &rusqlite::Connection) -> Result<serde_json
                         }
                     }
                 }
-
                 p.to_string()
             } else {
                 source_doc_id.clone()
@@ -1084,15 +1086,19 @@ pub fn list_all_documents_impl(conn: &rusqlite::Connection) -> Result<serde_json
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
+    let count = docs.len();
+    doxus_core::log_d!("commands", "[Core] list_all_documents: found {} documents (limit: {}, offset: {})", count, limit_val, offset_val);
     Ok(serde_json::json!({ "documents": docs }))
 }
 
 #[tauri::command]
 pub async fn list_all_documents(
     state: tauri::State<'_, Arc<crate::AppState>>,
+    limit: Option<usize>,
+    offset: Option<usize>,
 ) -> Result<serde_json::Value, String> {
     let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
-    list_all_documents_impl(&conn)
+    list_all_documents_impl(&conn, limit, offset)
 }
 
 #[tauri::command]

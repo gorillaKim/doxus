@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useProjectStore, Project } from '../stores/useProjectStore';
 import { usePluginStore } from '../stores/usePluginStore';
 import { ProjectCard } from '../components/projects/ProjectCard';
@@ -158,9 +158,6 @@ export function ProjectsPage() {
                 icon={getEmoji(`com.doxus.${p.source_type?.replace(/^com\.doxus\./, '')}`)}
                 isBusy={indexingNames.has(p.name) || togglingId === p.name || updatingId === p.id || removingId === p.name}
                 isIndexing={indexingNames.has(p.name)}
-                isToggling={togglingId === p.name}
-                isUpdating={updatingId === p.id}
-                isRemoving={removingId === p.name}
                 onIndex={() => handleIndex(p.name)}
                 onToggle={() => handleToggleStatus(p.name, p.status)}
                 onSensitivityChange={(val) => handleSensitivityChange(p.id, val)}

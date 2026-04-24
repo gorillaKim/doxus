@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
 interface Project {
@@ -83,8 +83,8 @@ export function CreateScheduleModal({ projects, editingJob, onClose, onCreated }
             actionConfig.persona = persona;
             actionConfig.scope = {
                 project_names: selectedProjects,
-                tags: tags.split(",").map(t => t.trim()).filter(Boolean),
-                keywords: keywords.split(",").map(k => k.trim()).filter(Boolean),
+                tags: tags.split(",").map((t: string) => t.trim()).filter(Boolean),
+                keywords: keywords.split(",").map((k: string) => k.trim()).filter(Boolean),
             };
             actionConfig.output = {
                 project_name: outputProject,

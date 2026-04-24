@@ -1,0 +1,6 @@
+src/components/projects/ProjectFilterTabs.tsx(2,1): error TS6133: 'usePluginStore' is declared but its value is never read.
+src/components/scheduler/CreateScheduleModal.tsx(1,8): error TS6133: 'React' is declared but its value is never read.
+src/components/scheduler/CreateScheduleModal.tsx(86,43): error TS7006: Parameter 't' implicitly has an 'any' type.
+src/components/scheduler/CreateScheduleModal.tsx(87,51): error TS7006: Parameter 'k' implicitly has an 'any' type.
+src/components/search/SearchPreview.tsx(257,40): error TS2322: Type '{ children: string; className: string; remarkPlugins: ((options?: Options | null | undefined) => undefined)[]; rehypePlugins: ((options?: Options | null | undefined) => (tree: Root, file: VFile) => Root)[]; }' is not assignable to type 'IntrinsicAttributes & Readonly<Options>'.
+  Property 'className' does not exist on type 'IntrinsicAttributes & Readonly<Options>'.

@@ -11,7 +11,7 @@ interface SearchSidebarProps {
   hasSearch: boolean;
 }
 
-export const SearchSidebar: React.FC<SearchSidebarProps> = ({
+export const SearchSidebar = React.memo<SearchSidebarProps>(({
   isLoading,
   itemCount,
   groupedEntries,
@@ -57,6 +57,15 @@ export const SearchSidebar: React.FC<SearchSidebarProps> = ({
     });
     return next;
   }, [groupedEntries, activeTab]);
+
+  // [Optimization] Cache trees for each project to avoid repeated O(N) tree building
+  const projectTrees = useMemo(() => {
+    const trees = new Map<string, any>();
+    filteredEntries.forEach((group, projectName) => {
+      trees.set(projectName, buildTree(group.docs));
+    });
+    return trees;
+  }, [filteredEntries]);
 
   return (
     <div className="w-80 shrink-0 h-full flex flex-col bg-white/[0.02] border-r border-white/5 overflow-hidden">
@@ -108,7 +117,7 @@ export const SearchSidebar: React.FC<SearchSidebarProps> = ({
       {/* Directory Tree */}
       <div className="flex-1 overflow-y-auto no-scrollbar px-3 pb-20">
         {Array.from(filteredEntries.entries()).map(([projectName, group]) => {
-          const tree = buildTree(group.docs);
+          const tree = projectTrees.get(projectName);
           const isCollapsed = collapsedProjects.has(projectName);
 
           return (
@@ -123,7 +132,7 @@ export const SearchSidebar: React.FC<SearchSidebarProps> = ({
                 <span className="text-[9px] text-gray-700 ml-auto font-mono group-hover:text-gray-500">{group.docs.length}</span>
               </div>
               
-              {!isCollapsed && (
+              {!isCollapsed && tree && (
                 <div className="flex flex-col gap-0.5 animate-in fade-in slide-in-from-top-1 duration-300">
                   {Array.from(tree.children.values()).map(child => (
                     <TreeNodeView key={child.name} node={child} depth={0} selectedDoc={selectedDoc} onSelect={onSelect} />
@@ -143,4 +152,4 @@ export const SearchSidebar: React.FC<SearchSidebarProps> = ({
       </div>
     </div>
   );
-};
+});

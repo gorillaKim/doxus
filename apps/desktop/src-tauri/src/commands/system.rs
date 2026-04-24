@@ -1,21 +1,23 @@
 use serde::Serialize;
 use std::path::PathBuf;
-use std::sync::Arc;
-use sysinfo::{Pid, System, Disks};
+use std::sync::{Arc, Mutex};
+use sysinfo::{Pid, System, Disks, ProcessesToUpdate};
 use tauri::Emitter;
 use walkdir::WalkDir;
+use once_cell::sync::Lazy;
 
 #[derive(Debug, Serialize)]
 pub struct ResourceUsage {
-    pub cpu_usage: f32,           // %
+    pub cpu_usage: f32,           // Normalized % (0-100)
     pub memory_usage: u64,        // Bytes (RSS)
     pub total_memory: u64,        // Bytes
-    pub disk_usage: u64,          // Bytes (~/.doxus size)
+    pub disk_usage: u64,          // Bytes (~/.doxus/db + models size)
     pub total_disk: u64,          // Bytes
     pub available_disk: u64,      // Bytes
 }
 
 fn get_dir_size(path: PathBuf) -> u64 {
+    if !path.exists() { return 0; }
     WalkDir::new(path)
         .into_iter()
         .filter_map(|e| e.ok())
@@ -24,52 +26,67 @@ fn get_dir_size(path: PathBuf) -> u64 {
         .sum()
 }
 
+static SYSTEM: Lazy<Arc<Mutex<System>>> = Lazy::new(|| {
+    Arc::new(Mutex::new(System::new()))
+});
+
+static DISK_INFO_CACHE: Lazy<Arc<Mutex<(std::time::Instant, u64, u64, u64)>>> = Lazy::new(|| {
+    Arc::new(Mutex::new((std::time::Instant::now() - std::time::Duration::from_secs(3600), 0, 0, 0)))
+});
+
 #[tauri::command]
 pub async fn get_resource_usage() -> Result<ResourceUsage, String> {
-    let mut sys = System::new_all();
-    sys.refresh_all();
-
+    let mut sys = SYSTEM.lock().map_err(|_| "system lock poisoned")?;
+    
     let pid = Pid::from_u32(std::process::id());
-    
-    // Process-specific info
-    let cpu_usage = if let Some(process) = sys.process(pid) {
-        process.cpu_usage()
+    sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+    sys.refresh_memory();
+
+    let core_count = sys.cpus().len() as f32;
+    let (cpu_usage, memory_usage): (f32, u64) = if let Some(process) = sys.process(pid) {
+        // Normalize CPU usage to 0-100% range
+        let normalized = if core_count > 0.0 {
+            process.cpu_usage() / core_count
+        } else {
+            process.cpu_usage()
+        };
+        (normalized, process.memory())
     } else {
-        0.0
+        (0.0, 0)
     };
 
-    let memory_usage = if let Some(process) = sys.process(pid) {
-        process.memory()
-    } else {
-        0
-    };
-
-    // System-wide info
     let total_memory = sys.total_memory();
-    
-    // Disk info: ~/.doxus/db (where the Knowledge Index grows)
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    let doxus_db_dir = PathBuf::from(&home).join(".doxus/db");
-    let disk_usage = if doxus_db_dir.exists() {
-        get_dir_size(doxus_db_dir)
-    } else {
-        0
-    };
-
-    // Overall disk capacity where home is located
-    let mut total_disk = 0;
-    let mut available_disk = 0;
+    let doxus_root = PathBuf::from(&home).join(".doxus");
+    let doxus_db_dir = doxus_root.join("db");
+    let doxus_models_dir = doxus_root.join("models");
     
-    let disks = Disks::new_with_refreshed_list();
-    for disk in &disks {
-        let mount_point = disk.mount_point().to_str().unwrap_or("");
-        if !mount_point.is_empty() && home.starts_with(mount_point) {
-            total_disk = disk.total_space();
-            available_disk = disk.available_space();
-            // Don't break immediately, we might find a more specific match (shorter path vs longer path)
-            // But usually the first match is fine for home dir.
+    let (disk_usage, total_disk, available_disk) = {
+        let mut cache = DISK_INFO_CACHE.lock().map_err(|_| "disk cache lock poisoned")?;
+        if cache.0.elapsed() > std::time::Duration::from_secs(60) {
+            let usage = get_dir_size(doxus_db_dir) + get_dir_size(doxus_models_dir);
+            
+            let mut total = 0;
+            let mut available = 0;
+            let disks = Disks::new_with_refreshed_list();
+            for disk in &disks {
+                let mount_point = disk.mount_point().to_str().unwrap_or("");
+                if !mount_point.is_empty() && home.starts_with(mount_point) {
+                    total = disk.total_space();
+                    available = disk.available_space();
+                    break;
+                }
+            }
+            
+            cache.0 = std::time::Instant::now();
+            cache.1 = usage;
+            cache.2 = total;
+            cache.3 = available;
+            (usage, total, available)
+        } else {
+            (cache.1, cache.2, cache.3)
         }
-    }
+    };
 
     Ok(ResourceUsage {
         cpu_usage,

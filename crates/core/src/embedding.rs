@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use ort::session::builder::GraphOptimizationLevel;
 use ort::{session::Session, value::TensorRef};
 use std::sync::Mutex;
 use thiserror::Error;
@@ -71,6 +72,10 @@ mod quantization_tests {
     }
 }
 
+/// Mini-batch size for ONNX inference. Keeps per-call tensor memory bounded:
+/// `EMBED_BATCH_SIZE * max_tokens * dim * 4 bytes` ≈ 32 * 512 * 384 * 4 ≈ 24 MB peak.
+const EMBED_BATCH_SIZE: usize = 32;
+
 /// ONNX-backed embedding provider using all-MiniLM-L6-v2
 pub struct OnnxEmbedder {
     info: ModelInfo,
@@ -113,9 +118,13 @@ impl OnnxEmbedder {
         
         let session = Session::builder()
             .map_err(|e| EmbeddingError::ModelLoad(e.to_string()))?
+            .with_optimization_level(GraphOptimizationLevel::Level1)
+            .map_err(|e| EmbeddingError::ModelLoad(e.to_string()))?
+            .with_intra_threads(1)
+            .map_err(|e| EmbeddingError::ModelLoad(e.to_string()))?
             .commit_from_file(&path)
-            .ok()
-            .map(Mutex::new);
+            .map(Mutex::new)
+            .map_err(|e| EmbeddingError::ModelLoad(e.to_string()))?;
 
         Ok(Self {
             info: ModelInfo {
@@ -124,7 +133,7 @@ impl OnnxEmbedder {
                 max_tokens: 512,
                 path: Some(path_clone.to_string_lossy().to_string()),
             },
-            session,
+            session: Some(session),
             tokenizer,
         })
     }
@@ -137,8 +146,6 @@ impl EmbeddingProvider for OnnxEmbedder {
             return Err(EmbeddingError::EmptyInput);
         }
 
-        let batch_size = texts.len();
-
         let tokenizer = self.tokenizer.as_ref().ok_or_else(|| {
             EmbeddingError::Tokenizer("tokenizer not loaded".to_string())
         })?;
@@ -149,99 +156,104 @@ impl EmbeddingProvider for OnnxEmbedder {
             .lock()
             .map_err(|e| EmbeddingError::Inference(format!("session lock poisoned: {e}")))?;
 
-        // Batch tokenize
-        let encodings = tokenizer
-            .encode_batch(
-                texts.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
-                true,
-            )
-            .map_err(|e| EmbeddingError::Tokenizer(e.to_string()))?;
-
-        let max_len = encodings
-            .iter()
-            .map(|e| e.get_ids().len())
-            .max()
-            .unwrap_or(0);
-
-        // Build flat i64 buffers: input_ids, attention_mask, token_type_ids
-        let mut input_ids = vec![0i64; batch_size * max_len];
-        let mut attention_mask = vec![0i64; batch_size * max_len];
-        let mut token_type_ids = vec![0i64; batch_size * max_len];
-
-        for (i, enc) in encodings.iter().enumerate() {
-            let ids = enc.get_ids();
-            let mask = enc.get_attention_mask();
-            let type_ids = enc.get_type_ids();
-            for j in 0..ids.len() {
-                input_ids[i * max_len + j] = ids[j] as i64;
-                attention_mask[i * max_len + j] = mask[j] as i64;
-                token_type_ids[i * max_len + j] = type_ids[j] as i64;
-            }
-        }
-
-        // Build TensorRef from (shape, &[T]) tuples — avoids ndarray version conflicts
-        let shape = [batch_size, max_len];
-        let ids_ref = TensorRef::<i64>::from_array_view((shape, input_ids.as_slice()))
-            .map_err(|e| EmbeddingError::Inference(e.to_string()))?;
-        let mask_ref = TensorRef::<i64>::from_array_view((shape, attention_mask.as_slice()))
-            .map_err(|e| EmbeddingError::Inference(e.to_string()))?;
-        let type_ref = TensorRef::<i64>::from_array_view((shape, token_type_ids.as_slice()))
-            .map_err(|e| EmbeddingError::Inference(e.to_string()))?;
-
-        let outputs = session
-            .run(ort::inputs![
-                "input_ids" => ids_ref,
-                "attention_mask" => mask_ref,
-                "token_type_ids" => type_ref,
-            ])
-            .map_err(|e| EmbeddingError::Inference(e.to_string()))?;
-
-        // last_hidden_state shape: [batch, seq_len, 384]
-        // Use try_extract_tensor which returns (&Shape, &[f32]) — no ndarray needed
-        let (hidden_shape, hidden_data) = outputs["last_hidden_state"]
-            .try_extract_tensor::<f32>()
-            .map_err(|e| EmbeddingError::Inference(e.to_string()))?;
-
-        // hidden_shape is [batch, seq_len, dim]
         let dim = self.info.dimension;
-        let seq_len = hidden_shape[1] as usize;
-        let mut embeddings = Vec::with_capacity(batch_size);
+        let mut embeddings = Vec::with_capacity(texts.len());
 
-        for i in 0..batch_size {
-            let mask_sum: f32 = attention_mask[i * max_len..(i + 1) * max_len]
+        // Process in mini-batches to keep peak tensor memory bounded.
+        // A single call with hundreds of chunks would allocate
+        // `batch * max_len * dim * 4 bytes` which can reach hundreds of MB.
+        for chunk in texts.chunks(EMBED_BATCH_SIZE) {
+            let batch_size = chunk.len();
+
+            // Batch tokenize (avoiding to_string() clones)
+            let encodings = tokenizer
+                .encode_batch(chunk.to_vec(), true)
+                .map_err(|e| EmbeddingError::Tokenizer(e.to_string()))?;
+
+            let max_len = encodings
                 .iter()
-                .map(|&m| m as f32)
-                .sum();
-            let denom = mask_sum.max(1e-9);
+                .map(|e| e.get_ids().len())
+                .max()
+                .unwrap_or(0);
 
-            // Mean pooling: sum(token_vec * mask) / sum(mask)
-            let mut pooled = vec![0f32; dim];
-            for j in 0..seq_len {
-                let mask_val = if j < max_len {
-                    attention_mask[i * max_len + j] as f32
-                } else {
-                    0.0
-                };
-                if mask_val > 0.0 {
-                    let base = (i * seq_len + j) * dim;
-                    for k in 0..dim {
-                        pooled[k] += hidden_data[base + k] * mask_val;
+            // Build flat i64 buffers: input_ids, attention_mask, token_type_ids
+            let mut input_ids = vec![0i64; batch_size * max_len];
+            let mut attention_mask = vec![0i64; batch_size * max_len];
+            let mut token_type_ids = vec![0i64; batch_size * max_len];
+
+            for (i, enc) in encodings.iter().enumerate() {
+                let ids = enc.get_ids();
+                let mask = enc.get_attention_mask();
+                let type_ids = enc.get_type_ids();
+                for j in 0..ids.len() {
+                    input_ids[i * max_len + j] = ids[j] as i64;
+                    attention_mask[i * max_len + j] = mask[j] as i64;
+                    token_type_ids[i * max_len + j] = type_ids[j] as i64;
+                }
+            }
+
+            // Build TensorRef from (shape, &[T]) tuples — avoids ndarray version conflicts
+            let shape = [batch_size, max_len];
+            let ids_ref = TensorRef::<i64>::from_array_view((shape, input_ids.as_slice()))
+                .map_err(|e| EmbeddingError::Inference(e.to_string()))?;
+            let mask_ref = TensorRef::<i64>::from_array_view((shape, attention_mask.as_slice()))
+                .map_err(|e| EmbeddingError::Inference(e.to_string()))?;
+            let type_ref = TensorRef::<i64>::from_array_view((shape, token_type_ids.as_slice()))
+                .map_err(|e| EmbeddingError::Inference(e.to_string()))?;
+
+            let outputs = session
+                .run(ort::inputs![
+                    "input_ids" => ids_ref,
+                    "attention_mask" => mask_ref,
+                    "token_type_ids" => type_ref,
+                ])
+                .map_err(|e| EmbeddingError::Inference(e.to_string()))?;
+
+            // last_hidden_state shape: [batch, seq_len, 384]
+            // Use try_extract_tensor which returns (&Shape, &[f32]) — no ndarray needed
+            let (hidden_shape, hidden_data) = outputs["last_hidden_state"]
+                .try_extract_tensor::<f32>()
+                .map_err(|e| EmbeddingError::Inference(e.to_string()))?;
+
+            // hidden_shape is [batch, seq_len, dim]
+            let seq_len = hidden_shape[1] as usize;
+
+            for i in 0..batch_size {
+                let mask_sum: f32 = attention_mask[i * max_len..(i + 1) * max_len]
+                    .iter()
+                    .map(|&m| m as f32)
+                    .sum();
+                let denom = mask_sum.max(1e-9);
+
+                // Mean pooling: sum(token_vec * mask) / sum(mask)
+                let mut pooled = vec![0f32; dim];
+                for j in 0..seq_len {
+                    let mask_val = if j < max_len {
+                        attention_mask[i * max_len + j] as f32
+                    } else {
+                        0.0
+                    };
+                    if mask_val > 0.0 {
+                        let base = (i * seq_len + j) * dim;
+                        for k in 0..dim {
+                            pooled[k] += hidden_data[base + k] * mask_val;
+                        }
                     }
                 }
-            }
-            for v in &mut pooled {
-                *v /= denom;
-            }
-
-            // L2 normalize
-            let l2: f32 = pooled.iter().map(|x| x * x).sum::<f32>().sqrt();
-            if l2 > 0.0 {
                 for v in &mut pooled {
-                    *v /= l2;
+                    *v /= denom;
                 }
-            }
 
-            embeddings.push(pooled);
+                // L2 normalize
+                let l2: f32 = pooled.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if l2 > 0.0 {
+                    for v in &mut pooled {
+                        *v /= l2;
+                    }
+                }
+
+                embeddings.push(pooled);
+            }
         }
 
         Ok(embeddings)

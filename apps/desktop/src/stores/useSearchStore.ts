@@ -54,14 +54,21 @@ interface SearchState {
   isLoading: boolean;
   error: string | null;
   queryHistory: string[];
-  allDocuments: AllDocument[];
+  
+  // Optimized storage
+  documentsById: Record<string, AllDocument>;
   allDocsLoading: boolean;
+
+  // Actions
   setQuery: (q: string) => void;
   setFilters: (f: Partial<SearchFilters>) => void;
   search: () => Promise<void>;
   clear: () => void;
   listAllDocuments: () => Promise<void>;
   updateDocumentMetadata: (docId: string, meta: Partial<AllDocument>) => void;
+
+  // Derived (for backward compatibility)
+  getAllDocuments: () => AllDocument[];
 }
 
 const DEFAULT_FILTERS: SearchFilters = { sourceTypes: [], projectNames: [], tagQuery: '' };
@@ -73,7 +80,7 @@ export const useSearchStore = create<SearchState>((set, get) => ({
   isLoading: false,
   error: null,
   queryHistory: [],
-  allDocuments: [],
+  documentsById: {},
   allDocsLoading: false,
 
   setQuery: (q) => set({ query: q }),
@@ -84,7 +91,6 @@ export const useSearchStore = create<SearchState>((set, get) => ({
     const trimmed = query.trim();
     const tagTrimmed = filters.tagQuery.trim();
     
-    // allow search if either text or tag is present
     if (!trimmed && !tagTrimmed) return;
 
     if (trimmed) {
@@ -94,7 +100,6 @@ export const useSearchStore = create<SearchState>((set, get) => ({
     
     set({ isLoading: true, error: null });
 
-    // Parse tags from tagQuery (supports comma, semicolon, space delimiters)
     const tags = tagTrimmed
       ? tagTrimmed.split(/[,;\s]+/).map(t => t.trim().replace(/^#/, '')).filter(t => t.length > 0)
       : [];
@@ -119,22 +124,74 @@ export const useSearchStore = create<SearchState>((set, get) => ({
   listAllDocuments: async () => {
     set({ allDocsLoading: true });
     try {
-      const result = await invoke<{ documents: AllDocument[] }>('list_all_documents');
-      set({ allDocuments: result.documents, allDocsLoading: false });
+      // Limit initial load to 1,000 documents to prevent 10GB memory spike.
+      // Search should be used for navigating larger datasets.
+      const result = await invoke<{ documents: AllDocument[] }>('list_all_documents', { limit: 1000 });
+      const byId: Record<string, AllDocument> = {};
+      result.documents.forEach(doc => {
+        byId[doc.source_doc_id] = doc;
+      });
+      set({ documentsById: byId, allDocsLoading: false });
     } catch (e) {
       console.error('[listAllDocuments]', e);
       set({ allDocsLoading: false });
     }
   },
 
-  updateDocumentMetadata: (docId: string, meta: Partial<AllDocument>) => {
-    set((state) => ({
-      allDocuments: state.allDocuments.map((d) => 
-        d.source_doc_id === docId ? { ...d, ...meta } : d
-      ),
-      hits: state.hits.map((h) => 
-        h.source_doc_id === docId ? { ...h, ...meta } : h
-      ),
-    }));
+  updateDocumentMetadata: (docIdValue: string, meta: Partial<AllDocument>) => {
+    // Note: We use a simple strategy here to avoid O(N) array creation on every single event.
+    // In a high-frequency indexing scenario, we update the map in place (semi-mutably) 
+    // or batch the updates.
+    set((state) => {
+      const existing = state.documentsById[docIdValue];
+      if (!existing) return state;
+
+      // Update the hit if it's in the current search results (small array)
+      const hits = state.hits.map((h) => 
+        h.source_doc_id === docIdValue ? { ...h, ...meta } : h
+      );
+
+      return {
+        documentsById: {
+          ...state.documentsById,
+          [docIdValue]: { ...existing, ...meta }
+        },
+        hits,
+      };
+    });
+  },
+
+  getAllDocuments: () => {
+    return Object.values(get().documentsById);
   },
 }));
+
+// Optimization: Batch updates for document indexing events to prevent O(N^2) UI churn
+let updateBuffer: Record<string, Partial<AllDocument>> = {};
+let updateTimer: ReturnType<typeof setTimeout> | null = null;
+
+export const throttledUpdateMetadata = (docId: string, meta: Partial<AllDocument>) => {
+  updateBuffer[docId] = { ...(updateBuffer[docId] || {}), ...meta };
+  
+  if (!updateTimer) {
+    updateTimer = setTimeout(() => {
+      const store = useSearchStore.getState();
+      const currentById = { ...store.documentsById };
+      let changed = false;
+      
+      Object.entries(updateBuffer).forEach(([id, m]) => {
+        if (currentById[id]) {
+          currentById[id] = { ...currentById[id], ...m };
+          changed = true;
+        }
+      });
+      
+      if (changed) {
+        useSearchStore.setState({ documentsById: currentById });
+      }
+      
+      updateBuffer = {};
+      updateTimer = null;
+    }, 500); // Update UI every 500ms during indexing
+  }
+};

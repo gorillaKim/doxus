@@ -253,52 +253,104 @@ impl SearchEngine {
 
     pub async fn index_documents_batch_async(
         &self,
-        requests: Vec<BatchIndexingRequest>,
+        mut requests: Vec<BatchIndexingRequest>,
     ) -> Result<(), SearchError> {
         if requests.is_empty() { return Ok(()); }
-        let num_requests = requests.len();
-        let project_id = requests[0].project_id;
-        
-        let mut all_chunks = Vec::new();
-        let mut flat_texts = Vec::new();
-        let mut chunk_counts = Vec::with_capacity(num_requests);
 
-        for req in requests.iter() {
-            let chunks = crate::chunker::split_chunks(&req.content, crate::chunker::ChunkConfig { title: Some(req.title.clone()), ..Default::default() });
-            chunk_counts.push(chunks.len());
-            for chunk in chunks {
-                flat_texts.push(chunk.embedding_text.clone());
-                all_chunks.push(chunk);
+        // Process in smaller sub-batches (5 documents) to keep memory footprint extremely low.
+        // This prevents massive memory spikes (10GB+) during ONNX inference for large files.
+        //
+        // Memory notes:
+        //  - We drain() sub-batches out of the input Vec so we never hold the full input twice.
+        //  - After embeddings are produced, the text-only buffer (`sub_flat_texts`) is dropped
+        //    before spawn_blocking so the peak is not doubled across the await boundary.
+        //  - spawn_blocking only receives owned chunks, embeddings, and a lean document vec
+        //    (no redundant content copy beyond what the DB write itself needs).
+        const SUB_BATCH: usize = 5;
+        while !requests.is_empty() {
+            let take = SUB_BATCH.min(requests.len());
+            let sub_batch: Vec<BatchIndexingRequest> = requests.drain(..take).collect();
+
+            // Chunk each document and build the flat embedding-text list used only for embed().
+            let mut sub_chunks: Vec<crate::chunker::Chunk> = Vec::new();
+            let mut sub_chunk_counts: Vec<usize> = Vec::with_capacity(sub_batch.len());
+            {
+                let mut sub_flat_texts: Vec<String> = Vec::new();
+                for req in &sub_batch {
+                    let chunks = crate::chunker::split_chunks(
+                        &req.content,
+                        crate::chunker::ChunkConfig {
+                            title: Some(req.title.clone()),
+                            ..Default::default()
+                        },
+                    );
+                    sub_chunk_counts.push(chunks.len());
+                    for chunk in chunks {
+                        sub_flat_texts.push(chunk.embedding_text.clone());
+                        sub_chunks.push(chunk);
+                    }
+                }
+
+                if sub_flat_texts.is_empty() { continue; }
+
+                // Batch embed for the current sub-batch (capped to SUB_BATCH documents).
+                let text_refs: Vec<&str> = sub_flat_texts.iter().map(|s| s.as_str()).collect();
+                let embedding_vecs = self.embedder.embed(&text_refs).await?;
+                // Explicitly drop the text buffers before spawn_blocking to avoid 2x peak.
+                drop(text_refs);
+                drop(sub_flat_texts);
+
+                let mut sub_flat_embeddings: Vec<Vec<u8>> = Vec::with_capacity(embedding_vecs.len());
+                for emb in embedding_vecs {
+                    let quantized = crate::embedding::quantize_to_i8(&emb);
+                    let bytes: Vec<u8> = quantized.into_iter().map(|i| i as u8).collect();
+                    sub_flat_embeddings.push(bytes);
+                }
+
+                let conn = Arc::clone(&self.conn);
+                let sub_chunk_counts_moved = std::mem::take(&mut sub_chunk_counts);
+                let sub_chunks_moved = std::mem::take(&mut sub_chunks);
+
+                tokio::task::spawn_blocking(move || -> Result<(), SearchError> {
+                    let mut conn_guard = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
+                    let tx = conn_guard.transaction()?;
+
+                    let mut current_chunk_offset = 0;
+                    for (doc_idx, req) in sub_batch.into_iter().enumerate() {
+                        let num_chunks = sub_chunk_counts_moved[doc_idx];
+                        let doc_chunks = &sub_chunks_moved[current_chunk_offset..current_chunk_offset + num_chunks];
+                        let doc_embeddings = &sub_flat_embeddings[current_chunk_offset..current_chunk_offset + num_chunks];
+
+                        let strategy: String = tx
+                            .query_row(
+                                "SELECT storage_strategy FROM projects WHERE id = ?1",
+                                params![req.project_id],
+                                |r| r.get(0),
+                            )
+                            .unwrap_or_else(|_| "full".to_string());
+
+                        index_document_sync(
+                            &tx,
+                            req.project_id,
+                            &req.source_doc_id,
+                            &req.title,
+                            &req.content,
+                            doc_chunks,
+                            doc_embeddings,
+                            &req.meta,
+                            &strategy,
+                        )?;
+                        current_chunk_offset += num_chunks;
+                    }
+                    tx.commit()?;
+                    conn_guard.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+                    conn_guard.execute_batch("PRAGMA shrink_memory;")?;
+                    Ok(())
+                })
+                .await??;
             }
         }
 
-        if flat_texts.is_empty() { return Ok(()); }
-        let embedding_vecs = self.embedder.embed(&flat_texts.iter().map(|s| s.as_str()).collect::<Vec<_>>()).await?;
-        let mut flat_embeddings = Vec::new();
-        for emb in embedding_vecs {
-            let quantized = crate::embedding::quantize_to_i8(&emb);
-            let bytes: Vec<u8> = quantized.into_iter().map(|i| i as u8).collect();
-            flat_embeddings.push(bytes);
-        }
-
-        let conn = Arc::clone(&self.conn);
-        tokio::task::spawn_blocking(move || -> Result<(), SearchError> {
-            let mut conn_guard = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
-            let tx = conn_guard.transaction()?;
-            
-            let strategy: String = tx.query_row("SELECT storage_strategy FROM projects WHERE id = ?1", params![project_id], |r| r.get(0)).unwrap_or_else(|_| "full".to_string());
-
-            let mut current_chunk_offset = 0;
-            for (doc_idx, req) in requests.into_iter().enumerate() {
-                let num_chunks = chunk_counts[doc_idx];
-                let doc_chunks = &all_chunks[current_chunk_offset..current_chunk_offset + num_chunks];
-                let doc_embeddings = &flat_embeddings[current_chunk_offset..current_chunk_offset + num_chunks];
-                index_document_sync(&tx, req.project_id, &req.source_doc_id, &req.title, &req.content, doc_chunks, doc_embeddings, &req.meta, &strategy)?;
-                current_chunk_offset += num_chunks;
-            }
-            tx.commit()?;
-            Ok(())
-        }).await??;
         Ok(())
     }
 
@@ -447,8 +499,15 @@ pub(crate) fn index_document_sync(
         if base.starts_with("http") { Some(rel.clone()) }
         else {
             let path = std::path::PathBuf::from(base).join(rel);
-            if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
-            let _ = std::fs::write(&path, content);
+            // Only materialize a cache file when the source file is not already on disk.
+            // Obsidian vaults (and similar local sources) already own the file — overwriting
+            // on every index run wastes I/O, pollutes the OS page cache, and can clobber
+            // in-flight edits. For purely in-memory sources, we still cache so that
+            // snippet/highlight paths can read back the content by byte range.
+            if !path.exists() {
+                if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
+                let _ = std::fs::write(&path, content);
+            }
             Some(path.to_string_lossy().to_string())
         }
     } else { None };

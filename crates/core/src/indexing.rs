@@ -31,7 +31,7 @@ impl IndexingService {
 
     /// 프로젝트의 소스 타입 및 설정을 조회하여 인덱싱을 수행합니다.
     pub async fn index_project(&self, name: &str, full: bool) -> Result<usize, String> {
-        let (project_id, plugin_id, config_json, project_path, strategy, _policy) = self.get_project_config(name).await?;
+        let (project_id, plugin_id, config_json, project_path, _strategy, _policy) = self.get_project_config(name).await?;
         
         // 1. 플러그인 초기화
         let mut plugin = self.plugin_manager.get_source(&plugin_id)
@@ -88,35 +88,18 @@ impl IndexingService {
                 let docs = stream.documents;
                 if docs.is_empty() { break; }
 
-                for doc in docs {
+                let mut batch_requests = Vec::new();
+                for mut doc in docs {
                     let source_doc_id = doc.id.0.clone();
-
-                    let title = doc.title.as_deref()
-                        .map(|s| s.to_string())
-                        .filter(|s| !s.trim().is_empty())
-                        .or_else(|| {
-                            doc.relative_path.as_deref()
-                                .or(Some(&doc.id.0))
-                                .and_then(|p| {
-                                    p.split('/').last()
-                                        .map(|s| s.strip_suffix(".md").unwrap_or(s).to_string())
-                                })
-                        })
-                        .unwrap_or_else(|| "Untitled".to_string());
-
-                    // [최적화] 대규모 프로젝트에서 메모리 보호를 위해 HashSet 대신 
-                    // DB에서 개별적으로 재인덱싱 필요성을 확인합니다.
+                    
                     if !full && !self.needs_reindexing(project_id, &source_doc_id, doc.updated_at).await {
                         let _ = self.update_last_indexed(project_id, &source_doc_id, sync_start_time).await;
                         continue;
                     }
 
-                    // Content is empty (optimization from local plugins like Obsidian)
-                    // Fetch full document content only when we actually decide to index it
-                    let mut final_doc = doc;
-                    if final_doc.content.is_empty() {
-                        match plugin.fetch_document(&final_doc.id).await {
-                            Ok(full_doc) => { final_doc = full_doc; }
+                    if doc.content.is_empty() {
+                        match plugin.fetch_document(&doc.id).await {
+                            Ok(full_doc) => { doc = full_doc; }
                             Err(e) => {
                                 crate::log_d!("indexer", "[Core-Indexer] Failed to fetch full content for {}: {}", source_doc_id, e);
                                 continue;
@@ -124,16 +107,43 @@ impl IndexingService {
                         }
                     }
 
-                    match self.index_single_document(project_id, final_doc, &strategy).await {
-                        Ok(_) => { total += 1; }
+                    let title = doc.title.as_deref()
+                        .map(|s| s.to_string())
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or_else(|| "Untitled".to_string());
+
+                    // 링크 추출 및 메타데이터 준비
+                    let mut all_links = LinkExtractor::extract_links(&doc.content);
+                    all_links.extend(doc.links.clone());
+                    all_links.sort();
+                    all_links.dedup();
+
+                    let meta = DocMeta {
+                        url: doc.url.clone(),
+                        tags: doc.tags.clone(),
+                        metadata: doc.metadata.clone(),
+                        created_at: doc.created_at,
+                        updated_at: doc.updated_at,
+                        relative_path: doc.relative_path.clone(),
+                        links: all_links,
+                        ..Default::default()
+                    };
+
+                    batch_requests.push(crate::search::BatchIndexingRequest {
+                        project_id,
+                        source_doc_id,
+                        title,
+                        content: doc.content,
+                        meta,
+                    });
+                }
+
+                if !batch_requests.is_empty() {
+                    let count = batch_requests.len();
+                    match self.engine.index_documents_batch_async(batch_requests).await {
+                        Ok(_) => { total += count; }
                         Err(e) => {
-                            crate::log_d!("indexer", "[Core-Indexer] Error indexing '{}' ({}): {}", title, source_doc_id, e);
-                            if let Ok(conn) = self.conn.lock() {
-                                persist_audit(&conn, &AuditEvent::PluginError {
-                                    plugin_id: plugin_id.clone(),
-                                    message: format!("문서 '{}' ({}) 인덱싱 실패: {}", title, source_doc_id, e),
-                                });
-                            }
+                            crate::log_d!("indexer", "[Core-Indexer] Batch indexing error: {}", e);
                         }
                     }
                 }

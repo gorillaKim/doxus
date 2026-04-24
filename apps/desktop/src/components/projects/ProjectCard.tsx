@@ -5,9 +5,6 @@ interface ProjectCardProps {
   project: Project;
   isBusy: boolean;
   isIndexing: boolean;
-  isToggling: boolean;
-  isUpdating: boolean;
-  isRemoving: boolean;
   onIndex: () => void;
   onToggle: () => void;
   onSensitivityChange: (val: string) => void;
@@ -19,9 +16,6 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({
   project,
   isBusy,
   isIndexing,
-  isToggling,
-  isUpdating,
-  isRemoving,
   onIndex,
   onToggle,
   onSensitivityChange,
