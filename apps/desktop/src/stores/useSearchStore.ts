@@ -94,9 +94,9 @@ export const useSearchStore = create<SearchState>((set, get) => ({
     
     set({ isLoading: true, error: null });
 
-    // Parse tags from tagQuery (e.g. "#tag1 #tag2" -> ["tag1", "tag2"])
+    // Parse tags from tagQuery (supports comma, semicolon, space delimiters)
     const tags = tagTrimmed
-      ? tagTrimmed.split(/\s+/).filter(t => t.startsWith('#')).map(t => t.slice(1)).filter(t => t.length > 0)
+      ? tagTrimmed.split(/[,;\s]+/).map(t => t.trim().replace(/^#/, '')).filter(t => t.length > 0)
       : [];
 
     try {
@@ -106,6 +106,7 @@ export const useSearchStore = create<SearchState>((set, get) => ({
         source_types: filters.sourceTypes.length > 0 ? filters.sourceTypes : null,
         project_names: filters.projectNames.length > 0 ? filters.projectNames : null,
         tags: tags.length > 0 ? tags : null,
+        mode: trimmed ? undefined : 'fts',
       });
       set({ hits: result.hits, isLoading: false });
     } catch (e) {
