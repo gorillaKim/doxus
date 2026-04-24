@@ -145,6 +145,9 @@ static MIGRATIONS: &[(&str, &str)] = &[
     ("V31__add_title_to_fts", include_str!("migrations/V31__add_title_to_fts.sql")),
     ("V32__date_indexes", include_str!("migrations/V32__date_indexes.sql")),
     ("V33__reindex_history", include_str!("migrations/V33__reindex_history.sql")),
+    ("V34__scheduler", include_str!("migrations/V34__scheduler.sql")),
+    ("V35__document_freshness", include_str!("migrations/V35__document_freshness.sql")),
+    ("V36__freshness_config", include_str!("migrations/V36__freshness_config.sql")),
 ];
 
 // ── Test helper ──────────────────────────────────────────────────────────────
@@ -533,5 +536,138 @@ mod tests {
             "SELECT COUNT(*) FROM reindex_history WHERE project_id=?1", [pid], |r| r.get(0),
         ).unwrap();
         assert_eq!(count, 0, "프로젝트 삭제 시 reindex_history도 CASCADE 삭제");
+    }
+
+    // ── V34: 스케줄러 매니저 ───────────────────────────────────────────────
+
+    #[test]
+    fn v34_scheduler_tables_exist() {
+        let db = TestDb::new();
+        let count: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('scheduled_jobs', 'job_runs')",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 2, "scheduled_jobs, job_runs 테이블이 존재해야 함");
+    }
+
+    #[test]
+    fn v34_scheduled_jobs_cascade_delete() {
+        let db = TestDb::new();
+        db.conn.execute(
+            "INSERT INTO projects(name, display_name, path, created_at, updated_at)
+             VALUES ('sch-cascade', 'Sch Cascade', '/tmp', unixepoch(), unixepoch())",
+            [],
+        ).unwrap();
+        let pid: i64 = db.conn.query_row(
+            "SELECT id FROM projects WHERE name='sch-cascade'", [], |r| r.get(0),
+        ).unwrap();
+
+        db.conn.execute(
+            "INSERT INTO scheduled_jobs(project_id, job_name, executor, action, schedule_json, next_run_at, created_at)
+             VALUES (?1, 'test job', 'system', 'test_action', '{}', unixepoch(), unixepoch())",
+            [pid],
+        ).unwrap();
+        let job_id: i64 = db.conn.last_insert_rowid();
+
+        db.conn.execute(
+            "INSERT INTO job_runs(job_id, started_at) VALUES (?1, unixepoch())",
+            [job_id],
+        ).unwrap();
+
+        // CASCADE DELETE TEST
+        db.conn.execute("DELETE FROM projects WHERE id=?1", [pid]).unwrap();
+        
+        let job_count: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM scheduled_jobs WHERE project_id=?1", [pid], |r| r.get(0),
+        ).unwrap();
+        let run_count: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM job_runs WHERE job_id=?1", [job_id], |r| r.get(0),
+        ).unwrap();
+
+        assert_eq!(job_count, 0, "프로젝트 삭제 시 scheduled_jobs CASCADE 삭제");
+        assert_eq!(run_count, 0, "scheduled_jobs 삭제 시 job_runs CASCADE 삭제");
+    }
+
+    // ── V35, V36: 문서 신선도 관리 (Document Freshness) ────────────────
+
+    #[test]
+    fn v35_v36_freshness_tables_exist() {
+        let db = TestDb::new();
+        let count: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('document_freshness', 'document_change_log')",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 2, "document_freshness, document_change_log 테이블이 존재해야 함");
+    }
+
+    #[test]
+    fn v36_projects_has_freshness_policy_json() {
+        let db = TestDb::new();
+        // Insert dummy project to verify column existence
+        db.conn.execute(
+            "INSERT INTO projects(name, display_name, path, freshness_policy_json, created_at, updated_at)
+             VALUES ('fresh-test', 'Fresh Test', '/tmp', '{}', unixepoch(), unixepoch())",
+            [],
+        ).expect("freshness_policy_json column should exist in projects table");
+    }
+
+    #[test]
+    fn v35_freshness_trigger_works() {
+        let db = TestDb::new();
+        db.conn.execute(
+            "INSERT INTO projects(name, display_name, path, created_at, updated_at)
+             VALUES ('trigger-test', 'Trigger Test', '/tmp', unixepoch(), unixepoch())",
+            [],
+        ).unwrap();
+        let pid: i64 = db.conn.last_insert_rowid();
+
+        db.conn.execute(
+            "INSERT INTO documents(project_id, source_doc_id, content_hash) VALUES (?1, 'doc1', 'hash_v1')",
+            [pid],
+        ).unwrap();
+        let doc_id: i64 = db.conn.last_insert_rowid();
+
+        // 1. Initial freshness record manually
+        db.conn.execute(
+            "INSERT INTO document_freshness(document_id, freshness_score, status, retention_tier, first_seen_at, score_updated_at)
+             VALUES (?1, 50.0, 'aging', 'short', unixepoch(), unixepoch())",
+            [doc_id],
+        ).unwrap();
+
+        // 2. Trigger content_hash update
+        db.conn.execute(
+            "UPDATE documents SET content_hash = 'hash_v2' WHERE id = ?1",
+            [doc_id],
+        ).unwrap();
+
+        // 3. Verify trigger resets freshness and updates log
+        let score: f64 = db.conn.query_row(
+            "SELECT freshness_score FROM document_freshness WHERE document_id = ?1",
+            [doc_id],
+            |r| r.get(0),
+        ).unwrap();
+        let status: String = db.conn.query_row(
+            "SELECT status FROM document_freshness WHERE document_id = ?1",
+            [doc_id],
+            |r| r.get(0),
+        ).unwrap();
+        let changes: i64 = db.conn.query_row(
+            "SELECT change_count FROM document_freshness WHERE document_id = ?1",
+            [doc_id],
+            |r| r.get(0),
+        ).unwrap();
+
+        assert_eq!(score, 100.0, "Score should reset to 100.0");
+        assert_eq!(status, "fresh", "Status should reset to 'fresh'");
+        assert_eq!(changes, 1, "Change count should increment");
+
+        let log_count: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM document_change_log WHERE document_id = ?1 AND old_hash = 'hash_v1' AND new_hash = 'hash_v2'",
+            [doc_id],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(log_count, 1, "Log table should record the hash change");
     }
 }
