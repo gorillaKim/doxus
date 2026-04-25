@@ -155,22 +155,33 @@ fn handle_project(conn: &rusqlite::Connection, action: ProjectAction) -> Result<
             if n > 0 {
                 println!("✅ Removed project '{name}' (index only — original files untouched)");
             } else {
-                println!("⚠️  Project '{name}' not found");
+                eprintln!("⚠️  Project '{name}' not found");
+                std::process::exit(1);
             }
         }
         ProjectAction::Enable { name } => {
-            conn.execute(
+            let n = conn.execute(
                 "UPDATE projects SET status='active', updated_at=unixepoch() WHERE name=?1",
                 rusqlite::params![name],
             )?;
-            println!("✅ Enabled '{name}'");
+            if n > 0 {
+                println!("✅ Enabled '{name}'");
+            } else {
+                eprintln!("⚠️  Project '{name}' not found");
+                std::process::exit(1);
+            }
         }
         ProjectAction::Disable { name } => {
-            conn.execute(
+            let n = conn.execute(
                 "UPDATE projects SET status='disabled', updated_at=unixepoch() WHERE name=?1",
                 rusqlite::params![name],
             )?;
-            println!("✅ Disabled '{name}' (index preserved)");
+            if n > 0 {
+                println!("✅ Disabled '{name}' (index preserved)");
+            } else {
+                eprintln!("⚠️  Project '{name}' not found");
+                std::process::exit(1);
+            }
         }
     }
     Ok(())
@@ -265,6 +276,11 @@ async fn handle_search(
 ) -> Result<()> {
     use doxus_core::search::SearchEngine;
 
+    if query_text.trim().is_empty() {
+        eprintln!("Error: search query must not be empty");
+        std::process::exit(2);
+    }
+
     let project_ids: Vec<i64> = if let Some(ref name) = project {
         let id: i64 = conn
             .query_row("SELECT id FROM projects WHERE name=?1", rusqlite::params![name], |r| r.get(0))
@@ -325,10 +341,16 @@ fn handle_status(conn: &rusqlite::Connection) -> Result<()> {
     let chunk_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))?;
 
+    let embed_mode = match doxus_core::embedding::OnnxEmbedder::from_default_path() {
+        Ok(_) => "ONNX (multilingual-e5-small)".to_string(),
+        Err(_) => "FTS-only (no embedding model)".to_string(),
+    };
+
     println!("doxus status");
     println!("  Projects: {project_count}");
     println!("  Documents: {doc_count}");
     println!("  Chunks: {chunk_count}");
+    println!("  Embedding: {embed_mode}");
     Ok(())
 }
 
