@@ -4,6 +4,7 @@
 
 pub mod sync_loop;
 pub mod retry_tracker;
+pub mod http_server;
 
 pub mod types;
 pub use types::{McpRequest, McpResponse, McpError};

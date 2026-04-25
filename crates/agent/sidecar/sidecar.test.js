@@ -201,3 +201,45 @@ test('cancel stops processing', async () => {
   );
   assert.strictEqual(afterCancel.length, 0, 'no result/text messages should follow cancelled');
 });
+
+// ── close_session / camelCase tests ───────────────────────────────────────
+
+test('close_session removes session from map', async () => {
+  // Start a session, then close it, then send a message — should get "No active session" error
+  const outputs = await runSidecar([
+    { type: 'start', sessionId: 'close-1', prompt: 'hello' },
+    { type: 'close_session', sessionId: 'close-1' },
+    { type: 'message', content: 'should fail' },
+  ]);
+
+  const errors = outputs.filter((m) => m.type === 'error');
+  const noSessionError = errors.find(
+    (m) => m.message && m.message.includes('No active session'),
+  );
+  assert.ok(noSessionError, 'should get "No active session" error after close_session');
+});
+
+test('start message uses sessionId camelCase', async () => {
+  // Use camelCase sessionId instead of snake_case session_id.
+  // Verify that the session is registered (a subsequent message does NOT
+  // produce "No active session" error).
+  const outputs = await runSidecar([
+    { type: 'start', sessionId: 'camel-1', prompt: 'hello' },
+    { type: 'message', content: 'follow-up' },
+  ]);
+
+  const noSessionError = outputs.find(
+    (m) => m.type === 'error' && m.message && m.message.includes('No active session'),
+  );
+  assert.ok(!noSessionError, 'camelCase sessionId should register session (no "No active session" error)');
+});
+
+test('close_session on unknown session is noop', async () => {
+  // Sending close_session for a non-existent session should not produce an error
+  const outputs = await runSidecar([
+    { type: 'close_session', sessionId: 'nonexistent-session-xyz' },
+  ]);
+
+  const errors = outputs.filter((m) => m.type === 'error');
+  assert.strictEqual(errors.length, 0, 'close_session on unknown session should be a noop');
+});

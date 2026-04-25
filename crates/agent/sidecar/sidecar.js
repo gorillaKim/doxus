@@ -178,7 +178,8 @@ async function reply(sessionId, message) {
 async function handleMessage(msg) {
   switch (msg.type) {
     case 'start': {
-      currentSessionId = msg.session_id;
+      const sid = msg.sessionId ?? msg.session_id;
+      currentSessionId = sid;
       sessions.set(currentSessionId, { messages: [], cancelled: false });
       log(`Session started: ${currentSessionId}`);
       await reply(currentSessionId, msg.prompt);
@@ -186,21 +187,35 @@ async function handleMessage(msg) {
     }
 
     case 'message': {
-      if (!currentSessionId || !sessions.has(currentSessionId)) {
+      const sid = msg.sessionId ?? msg.session_id ?? currentSessionId;
+      if (!sid || !sessions.has(sid)) {
         send({ type: 'error', message: 'No active session. Send a start message first.' });
         return;
       }
-      await reply(currentSessionId, msg.content);
+      await reply(sid, msg.content);
       break;
     }
 
     case 'cancel': {
+      const cancelSid = msg.sessionId ?? msg.session_id ?? currentSessionId;
       log('Cancelled by host');
-      if (currentSessionId && sessions.has(currentSessionId)) {
-        sessions.get(currentSessionId).cancelled = true;
+      if (cancelSid && sessions.has(cancelSid)) {
+        sessions.get(cancelSid).cancelled = true;
       }
       send({ type: 'cancelled' });
-      currentSessionId = null;
+      if (currentSessionId === cancelSid) currentSessionId = null;
+      break;
+    }
+
+    case 'close_session': {
+      const sid = msg.sessionId ?? msg.session_id;
+      if (sid) {
+        sessions.delete(sid);
+        if (currentSessionId === sid) {
+          currentSessionId = null;
+        }
+        log(`Session closed: ${sid}`);
+      }
       break;
     }
 

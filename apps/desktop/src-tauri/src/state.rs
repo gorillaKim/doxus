@@ -57,6 +57,10 @@ pub struct AppState {
     pub sync_manager: Arc<SyncManager>,
     pub scheduler_manager: Arc<SchedulerManager>,
     pub collected_messages: Arc<Mutex<HashMap<String, String>>>,
+    // MCP HTTP server (앱 생애주기에 묶임)
+    pub mcp_process: Arc<Mutex<Option<std::process::Child>>>,
+    pub mcp_endpoint: Arc<Mutex<Option<String>>>,
+    pub mcp_token: Arc<Mutex<String>>,
 }
 
 impl AppState {
@@ -138,6 +142,9 @@ impl AppState {
                 sync_manager,
                 scheduler_manager,
                 collected_messages: Arc::new(Mutex::new(HashMap::new())),
+                mcp_process: Arc::new(Mutex::new(None)),
+                mcp_endpoint: Arc::new(Mutex::new(None)),
+                mcp_token: Arc::new(Mutex::new(String::new())),
             },
             rx
         )

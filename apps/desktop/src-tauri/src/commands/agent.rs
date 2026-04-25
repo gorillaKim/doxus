@@ -156,10 +156,24 @@ pub async fn chat_start_session_impl(
 
     let system_prompt = state.prompt_loader.build_system_prompt();
 
-    // doxus-mcp 경로 탐색 (선택적)
-    let mcp_servers = find_doxus_mcp()
-        .map(|p| serde_json::json!({ "doxus": { "type": "stdio", "command": p.to_string_lossy(), "args": [] } }))
-        .unwrap_or(serde_json::json!({}));
+    // MCP 서버 설정: HTTP 엔드포인트 우선, 없으면 stdio fallback
+    let mcp_servers = {
+        let endpoint = state.mcp_endpoint.lock().ok().and_then(|g| g.clone());
+        let token = state.mcp_token.lock().ok().map(|g| g.clone()).unwrap_or_default();
+        if let Some(url) = endpoint {
+            serde_json::json!({
+                "doxus": {
+                    "type": "http",
+                    "url": url,
+                    "headers": { "Authorization": format!("Bearer {}", token) }
+                }
+            })
+        } else {
+            find_doxus_mcp()
+                .map(|p| serde_json::json!({ "doxus": { "type": "stdio", "command": p.to_string_lossy(), "args": [] } }))
+                .unwrap_or(serde_json::json!({}))
+        }
+    };
 
     let bridge_token = std::env::var("DOXUS_BRIDGE_TOKEN").unwrap_or_default();
 
@@ -235,6 +249,19 @@ pub fn chat_cancel(
     session_id: String,
 ) -> Result<(), String> {
     let req = serde_json::json!({ "type": "cancel", "sessionId": session_id });
+    state.sidecar.send_request(&req)
+}
+
+/// 세션 종료 및 sidecar 상태 정리.
+#[tauri::command]
+pub fn chat_close_session(
+    state: tauri::State<'_, Arc<crate::AppState>>,
+    session_id: String,
+) -> Result<(), String> {
+    let req = serde_json::json!({
+        "type": "close_session",
+        "sessionId": session_id
+    });
     state.sidecar.send_request(&req)
 }
 
@@ -372,9 +399,12 @@ pub async fn get_claude_mcp_config() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
-pub async fn upsert_claude_mcp_config(target: String) -> Result<(), String> {
+pub async fn upsert_claude_mcp_config(
+    state: tauri::State<'_, std::sync::Arc<crate::AppState>>,
+    target: String,
+) -> Result<(), String> {
     let home = std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
-    
+
     let paths = match target.as_str() {
         "desktop" => vec![get_claude_config_file_path()?],
         "cli" => vec![
@@ -384,10 +414,36 @@ pub async fn upsert_claude_mcp_config(target: String) -> Result<(), String> {
         _ => return Err("Invalid target".to_string()),
     };
 
-    let mcp_path = find_doxus_mcp()
-        .ok_or_else(|| "doxus-mcp binary not found. Please ensure the app is correctly installed.".to_string())?
-        .to_string_lossy()
+    // HTTP 엔드포인트 우선, 없으면 stdio fallback
+    let endpoint = state.mcp_endpoint.lock().ok().and_then(|g| g.clone());
+    let token = state.mcp_token.lock().ok().map(|g| g.clone()).unwrap_or_default();
+
+    let mcp_entry = if let Some(url) = endpoint {
+        serde_json::json!({
+            "type": "http",
+            "url": url,
+            "headers": { "Authorization": format!("Bearer {}", token) }
+        })
+    } else {
+        let mcp_path = find_doxus_mcp()
+            .ok_or_else(|| "doxus-mcp not found and HTTP server not running.".to_string())?
+            .to_string_lossy()
+            .to_string();
+        let bridge_token = std::fs::read_to_string(
+            std::path::PathBuf::from(&home).join(".doxus/.bridge_token"),
+        )
+        .unwrap_or_default()
+        .trim()
         .to_string();
+        let db_path = std::env::var("DOXUS_DB_PATH")
+            .unwrap_or_else(|_| format!("{}/.doxus/db/doxus.db", home));
+        serde_json::json!({
+            "command": mcp_path,
+            "args": [],
+            "env": { "DOXUS_BRIDGE_TOKEN": bridge_token, "DOXUS_DB_PATH": db_path },
+            "type": "stdio"
+        })
+    };
 
     for path in paths {
         if let Some(parent) = path.parent() {
@@ -401,7 +457,6 @@ pub async fn upsert_claude_mcp_config(target: String) -> Result<(), String> {
             serde_json::json!({})
         };
 
-        // Ensure mcpServers exists
         if config.get("mcpServers").is_none() {
             if let Some(obj) = config.as_object_mut() {
                 obj.insert("mcpServers".to_string(), serde_json::json!({}));
@@ -409,23 +464,7 @@ pub async fn upsert_claude_mcp_config(target: String) -> Result<(), String> {
         }
 
         if let Some(mcp_servers) = config.get_mut("mcpServers").and_then(|m| m.as_object_mut()) {
-            let bridge_token = std::fs::read_to_string(std::path::PathBuf::from(&home).join(".doxus/.bridge_token"))
-                .unwrap_or_default()
-                .trim()
-                .to_string();
-            let db_path = std::env::var("DOXUS_DB_PATH").unwrap_or_else(|_| {
-                format!("{}/.doxus/db/doxus.db", home)
-            });
-
-            mcp_servers.insert("doxus".to_string(), serde_json::json!({
-                "command": mcp_path.clone(),
-                "args": [],
-                "env": {
-                    "DOXUS_BRIDGE_TOKEN": bridge_token,
-                    "DOXUS_DB_PATH": db_path
-                },
-                "type": "stdio"
-            }));
+            mcp_servers.insert("doxus".to_string(), mcp_entry.clone());
         }
 
         // Special for CLI-related files: ensure "doxus" is in enabledMcpjsonServers if it exists

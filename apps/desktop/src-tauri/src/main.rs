@@ -154,6 +154,81 @@ fn ensure_bridge_token() -> String {
     token
 }
 
+/// doxus-mcp 바이너리 경로 탐색
+fn find_doxus_mcp_bin() -> Option<std::path::PathBuf> {
+    // 1. 실행 파일 옆 (프로덕션 번들)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let c = dir.join("doxus-mcp");
+            if c.exists() { return Some(c); }
+        }
+    }
+    // 2. cargo 빌드 결과물 (dev 모드)
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.as_path();
+        loop {
+            if dir.file_name().map(|n| n == "target").unwrap_or(false) {
+                let d = dir.join("debug/doxus-mcp");
+                if d.exists() { return Some(d); }
+                let r = dir.join("release/doxus-mcp");
+                if r.exists() { return Some(r); }
+                break;
+            }
+            match dir.parent() { Some(p) => dir = p, None => break }
+        }
+    }
+    // 3. PATH 탐색
+    std::env::var_os("PATH").and_then(|p| {
+        std::env::split_paths(&p).find_map(|d| {
+            let c = d.join("doxus-mcp");
+            if c.exists() { Some(c) } else { None }
+        })
+    })
+}
+
+/// doxus-mcp를 HTTP 모드로 실행하고 실제 포트를 반환
+fn spawn_mcp_http_server(
+    bin: &std::path::Path,
+    token: &str,
+) -> Result<(std::process::Child, u16), String> {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new(bin)
+        .args(["--http", "0"])
+        .env("DOXUS_MCP_TOKEN", token)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|e| format!("spawn failed: {e}"))?;
+
+    // stdout에서 "PORT=<num>" 읽기 — 별도 스레드 + 채널로 블로킹 방지 (최대 2초)
+    let stdout = child.stdout.take().ok_or("no stdout")?;
+    let (tx, rx) = std::sync::mpsc::channel::<u16>();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        while let Ok(n) = reader.read_line(&mut line) {
+            if n == 0 { break; }
+            if let Some(p) = line.trim().strip_prefix("PORT=") {
+                if let Ok(port) = p.parse::<u16>() {
+                    let _ = tx.send(port);
+                    break;
+                }
+            }
+            line.clear();
+        }
+    });
+
+    match rx.recv_timeout(std::time::Duration::from_secs(2)) {
+        Ok(p) => Ok((child, p)),
+        Err(_) => {
+            let _ = child.kill();
+            Err("doxus-mcp did not print PORT= within timeout".into())
+        }
+    }
+}
+
 fn get_macos_idle_seconds() -> Result<f64, String> {
     use std::process::Command;
     let output = Command::new("ioreg")
@@ -228,6 +303,26 @@ fn main() {
         let _ = doxus_desktop_lib::commands::settings::save_settings_to_path(&settings, &config_path);
     }
     state_arc.sidecar.set_debug(doxus_core::observability::is_debug_enabled("agent"));
+
+    // doxus-mcp HTTP 서버 시작 (앱 생애주기에 묶임)
+    {
+        let mcp_token = bridge_token.clone();
+        if let Some(mcp_bin) = find_doxus_mcp_bin() {
+            match spawn_mcp_http_server(&mcp_bin, &mcp_token) {
+                Ok((child, port)) => {
+                    let endpoint = format!("http://127.0.0.1:{}/mcp", port);
+                    eprintln!("[mcp] HTTP server started on {}", endpoint);
+                    *state_arc.mcp_process.lock().unwrap() = Some(child);
+                    *state_arc.mcp_endpoint.lock().unwrap() = Some(endpoint);
+                    *state_arc.mcp_token.lock().unwrap() = mcp_token;
+                }
+                Err(e) => eprintln!("[mcp] Failed to start HTTP server: {}", e),
+            }
+        } else {
+            eprintln!("[mcp] doxus-mcp binary not found, HTTP server disabled");
+        }
+    }
+
     let conn_arc = state_arc.conn.clone();
 
     let state_for_tauri = state_arc.clone();
@@ -324,12 +419,32 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let tauri::WindowEvent::Focused(true) = event {
-                let state = window.state::<Arc<AppState>>();
-                let manager = state.sync_manager.clone();
-                tauri::async_runtime::spawn(async move {
-                    manager.trigger(doxus_core::sync_manager::SyncTrigger::Focus).await;
-                });
+            match event {
+                tauri::WindowEvent::Focused(true) => {
+                    let state = window.state::<Arc<AppState>>();
+                    let manager = state.sync_manager.clone();
+                    tauri::async_runtime::spawn(async move {
+                        manager.trigger(doxus_core::sync_manager::SyncTrigger::Focus).await;
+                    });
+                }
+                tauri::WindowEvent::Destroyed => {
+                    // inner().clone()으로 소유권 있는 Arc 획득
+                    let app_state: Arc<AppState> = window.state::<Arc<AppState>>().inner().clone();
+                    std::thread::spawn(move || {
+                        // sidecar graceful shutdown
+                        let _ = app_state.sidecar.send_request(
+                            &serde_json::json!({"type": "close"})
+                        );
+                        // MCP HTTP 서버 종료
+                        if let Ok(mut proc) = app_state.mcp_process.lock() {
+                            if let Some(ref mut child) = *proc {
+                                let _ = child.kill();
+                                eprintln!("[mcp] HTTP server stopped");
+                            }
+                        }
+                    });
+                }
+                _ => {}
             }
         })
         .manage(state_for_tauri)
@@ -372,6 +487,7 @@ fn main() {
             doxus_desktop_lib::commands::agent::chat_start_session,
             doxus_desktop_lib::commands::agent::chat_send_message,
             doxus_desktop_lib::commands::agent::chat_cancel,
+            doxus_desktop_lib::commands::agent::chat_close_session,
             doxus_desktop_lib::commands::agent::agent_status,
             doxus_desktop_lib::commands::agent::detect_cli_path,
             doxus_desktop_lib::commands::agent::get_claude_mcp_config,

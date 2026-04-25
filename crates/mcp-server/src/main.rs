@@ -1,5 +1,5 @@
 use anyhow::Result;
-use doxus_mcp::{sync_loop::spawn_sync_loop, McpRequest, McpResponse, McpServer};
+use doxus_mcp::{http_server::build_router, sync_loop::spawn_sync_loop, McpRequest, McpResponse, McpServer};
 use serde_json::json;
 use std::io::{BufRead, Write};
 use std::sync::{Arc, Mutex};
@@ -100,6 +100,50 @@ async fn main() -> Result<()> {
         tracing::info!("[MCP] Background sync disabled in sidecar.");
         None
     };
+
+    // Parse --http [PORT] and --token TOKEN flags
+    let args: Vec<String> = std::env::args().collect();
+    let http_port = args
+        .windows(2)
+        .find(|w| w[0] == "--http")
+        .and_then(|w| w[1].parse::<u16>().ok());
+    let token = args
+        .windows(2)
+        .find(|w| w[0] == "--token")
+        .map(|w| w[1].clone())
+        .or_else(|| std::env::var("DOXUS_MCP_TOKEN").ok())
+        .unwrap_or_default();
+
+    if let Some(port) = http_port {
+        let server = Arc::new(server);
+        // Bind early so we can report the actual port before blocking on serve.
+        let listener =
+            tokio::net::TcpListener::bind(format!("127.0.0.1:{port}")).await?;
+        let actual_port = listener.local_addr()?.port();
+
+        // Print PORT= line so callers (e.g. Tauri) can discover the bound port.
+        println!("PORT={actual_port}");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+
+        tracing::info!("doxus-mcp HTTP server listening on port {actual_port}");
+
+        let app = build_router(Arc::clone(&server), token);
+
+        // Graceful shutdown of sync loop on ctrl-c.
+        tokio::select! {
+            r = axum::serve(listener, app) => {
+                r?;
+            }
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("ctrl-c received, shutting down HTTP server");
+            }
+        }
+
+        if let Some(h) = sync_handle_opt {
+            h.shutdown().await;
+        }
+        return Ok(());
+    }
 
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();

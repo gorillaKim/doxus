@@ -52,7 +52,7 @@ interface ChatState {
 
   createSession: (provider: AiProvider, model: string) => Promise<void>;
   selectSession: (id: string) => void;
-  deleteSession: (id: string) => void;
+  deleteSession: (id: string) => Promise<void>;
 
   addMessage: (role: ChatMessage['role'], content: string) => void;
   sendMessage: (content: string) => Promise<void>;
@@ -120,7 +120,14 @@ export const useChatStore = create<ChatState>()(
 
       selectSession: (id) => set({ activeSessionId: id }),
 
-      deleteSession: (id) =>
+      deleteSession: async (id) => {
+        // 백엔드 정리 먼저 (실패해도 UI는 진행)
+        try {
+          await invoke('chat_close_session', { sessionId: id });
+        } catch {
+          // ignore — sidecar가 없을 수도 있음
+        }
+        get()._registeredSessions.delete(id);
         set((s) => {
           const sessions = s.sessions.filter((sess) => sess.id !== id);
           const activeSessionId =
@@ -128,7 +135,8 @@ export const useChatStore = create<ChatState>()(
               ? (sessions[sessions.length - 1]?.id ?? null)
               : s.activeSessionId;
           return { sessions, activeSessionId };
-        }),
+        });
+      },
 
       addMessage: (role, content) => {
         const { activeSessionId } = get();
