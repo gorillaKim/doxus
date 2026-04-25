@@ -14,17 +14,17 @@ import { stripFrontmatter, hitToEntry, allDocToEntry } from '../utils/searchUtil
 
 export function SearchPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const { 
-    query, filters, hits, isLoading, error, 
-    setQuery, setFilters, search, clear, 
-    documentsById, allDocsLoading, listAllDocuments, 
-    updateDocumentMetadata 
+  const {
+    query, filters, hits, isLoading, error,
+    setQuery, setFilters, search, clear,
+    documentsById, allDocsLoading, listAllDocuments,
+    updateDocumentMetadata
   } = useSearchStore();
 
   const allDocuments = useMemo(() => Object.values(documentsById), [documentsById]);
 
   const getEmoji = usePluginStore((s) => s.getEmoji);
-  
+
   const [inputValue, setInputValue] = useState(query);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [selectedDoc, setSelectedDoc] = useState<DocEntry | null>(null);
@@ -32,9 +32,9 @@ export function SearchPage() {
   const [previewMeta, setPreviewMeta] = useState<any | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
-  
+
   const processedDocIdRef = useRef<string | null>(null);
-  
+
   // Listeners for background updates
   useEffect(() => {
     const unlistenDoc = listen<{ source_doc_id: string; last_indexed: number }>('document-indexed', (e) => {
@@ -83,20 +83,20 @@ export function SearchPage() {
     if (docId && docId !== processedDocIdRef.current) {
       const numericId = parseInt(docId, 10);
       processedDocIdRef.current = docId;
-      
+
       invoke<any>('get_document_content', { documentId: numericId })
         .then(doc => {
           if (doc && selectedDoc?.document_id !== numericId) {
-             const entry = {
-               document_id: doc.document_id,
-               title: doc.title || 'Untitled',
-               file_path: doc.file_path,
-               content_hash: doc.content_hash,
-               source_doc_id: doc.source_doc_id,
-               source_type: doc.source_type,
-               last_indexed: doc.last_indexed,
-             } as any;
-             handleSelectDoc(entry);
+            const entry = {
+              document_id: doc.document_id,
+              title: doc.title || 'Untitled',
+              file_path: doc.file_path,
+              content_hash: doc.content_hash,
+              source_doc_id: doc.source_doc_id,
+              source_type: doc.source_type,
+              last_indexed: doc.last_indexed,
+            } as any;
+            handleSelectDoc(entry);
           }
         })
         .catch(console.error);
@@ -170,7 +170,7 @@ export function SearchPage() {
       });
       setPreviewContent(stripFrontmatter(result.content));
       setPreviewMeta(result);
-      
+
       const newMeta = {
         title: result.title || doc.title,
         tags: result.tags || [],
@@ -195,7 +195,7 @@ export function SearchPage() {
     processedDocIdRef.current = newId;
     setSearchParams({ docId: newId }, { replace: true });
     if (doc.document_id) {
-      invoke('increment_view_count', { documentId: doc.document_id }).catch(() => {});
+      invoke('increment_view_count', { documentId: doc.document_id }).catch(() => { });
     }
     await fetchPreview(doc);
   };

@@ -88,11 +88,10 @@ export const SearchSidebar = React.memo<SearchSidebarProps>(({
           <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-1">
             <button
               onClick={() => setActiveTab('all')}
-              className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase transition-all duration-300 ${
-                activeTab === 'all' 
-                  ? 'bg-white/10 text-white shadow-lg' 
+              className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase transition-all duration-300 ${activeTab === 'all'
+                  ? 'bg-white/10 text-white shadow-lg'
                   : 'text-gray-600 hover:text-gray-400'
-              }`}
+                }`}
             >
               All
             </button>
@@ -100,11 +99,10 @@ export const SearchSidebar = React.memo<SearchSidebarProps>(({
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase transition-all duration-300 ${
-                  activeTab === tab.id 
-                    ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 shadow-lg' 
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-[10px] font-black uppercase transition-all duration-300 ${activeTab === tab.id
+                    ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 shadow-lg'
                     : 'text-gray-600 hover:text-gray-400 border border-transparent'
-                }`}
+                  }`}
               >
                 <span>{tab.icon}</span>
                 <span>{tab.label}</span>
@@ -122,7 +120,7 @@ export const SearchSidebar = React.memo<SearchSidebarProps>(({
 
           return (
             <div key={projectName} className="mb-4">
-              <div 
+              <div
                 onClick={() => toggleProject(projectName)}
                 className="flex items-center gap-2 px-2 py-2 mb-1 sticky top-0 bg-gray-950/20 backdrop-blur-md z-10 cursor-pointer hover:bg-white/[0.03] transition-colors rounded-xl overflow-hidden group"
               >
@@ -131,7 +129,7 @@ export const SearchSidebar = React.memo<SearchSidebarProps>(({
                 <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest truncate group-hover:text-gray-200 transition-colors">{projectName}</span>
                 <span className="text-[9px] text-gray-700 ml-auto font-mono group-hover:text-gray-500">{group.docs.length}</span>
               </div>
-              
+
               {!isCollapsed && tree && (
                 <div className="flex flex-col gap-0.5 animate-in fade-in slide-in-from-top-1 duration-300">
                   {Array.from(tree.children.values()).map(child => (
