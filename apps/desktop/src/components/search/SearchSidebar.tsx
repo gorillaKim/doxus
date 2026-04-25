@@ -132,7 +132,7 @@ export const SearchSidebar = React.memo<SearchSidebarProps>(({
 
               {!isCollapsed && tree && (
                 <div className="flex flex-col gap-0.5 animate-in fade-in slide-in-from-top-1 duration-300">
-                  {Array.from(tree.children.values()).map(child => (
+                  {Array.from(tree.children.values()).map((child: any) => (
                     <TreeNodeView key={child.name} node={child} depth={0} selectedDoc={selectedDoc} onSelect={onSelect} />
                   ))}
                 </div>

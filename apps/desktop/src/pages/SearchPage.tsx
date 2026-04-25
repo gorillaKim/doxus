@@ -38,7 +38,7 @@ export function SearchPage() {
   // Listeners for background updates
   useEffect(() => {
     const unlistenDoc = listen<{ source_doc_id: string; last_indexed: number }>('document-indexed', (e) => {
-      throttledUpdateMetadata(e.payload.source_doc_id, { last_indexed: e.payload.last_indexed });
+      updateDocumentMetadata(e.payload.source_doc_id, { last_indexed: e.payload.last_indexed });
     });
     const unlistenProj = listen<{ indexed: number; project_name: string }>('project-indexed', (e) => {
       if (e.payload.indexed > 0) {
