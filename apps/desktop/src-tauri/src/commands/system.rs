@@ -42,14 +42,13 @@ pub async fn get_resource_usage() -> Result<ResourceUsage, String> {
     sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
     sys.refresh_memory();
 
-    let core_count = sys.cpus().len() as f32;
+    // sysinfo cpu_usage() returns 0..100*N_CORES scale; normalize with actual core count.
+    // sys.cpus() requires a separate refresh_cpu_list call, so use std instead.
+    let core_count = std::thread::available_parallelism()
+        .map(|n| n.get() as f32)
+        .unwrap_or(1.0);
     let (cpu_usage, memory_usage): (f32, u64) = if let Some(process) = sys.process(pid) {
-        // Normalize CPU usage to 0-100% range
-        let normalized = if core_count > 0.0 {
-            process.cpu_usage() / core_count
-        } else {
-            process.cpu_usage()
-        };
+        let normalized = (process.cpu_usage() / core_count).min(100.0);
         (normalized, process.memory())
     } else {
         (0.0, 0)
