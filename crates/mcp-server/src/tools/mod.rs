@@ -56,3 +56,46 @@ pub fn resolve_doc_id(
     }
 }
 
+/// `project`가 None이면 db_id (정수)로만 lookup — project 없이도 조회 가능.
+/// 문자열 id는 project None 시 명시적 에러 반환 (ambiguous).
+/// 성공 시 (db_id, source_doc_id, project_name) 반환.
+pub fn resolve_doc_id_optional_project(
+    conn: &rusqlite::Connection,
+    project: Option<&str>,
+    id_val: &Value,
+) -> Result<(i64, String, String), String> {
+    if let Some(proj) = project {
+        let (db_id, source_doc_id) = resolve_doc_id(conn, proj, id_val)?;
+        Ok((db_id, source_doc_id, proj.to_string()))
+    } else if let Some(n) = id_val.as_i64() {
+        match conn.query_row(
+            "SELECT d.id, d.source_doc_id, p.name FROM documents d JOIN projects p ON d.project_id = p.id WHERE d.id = ?1",
+            params![n],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        ) {
+            Ok(res) => Ok(res),
+            Err(_) => Err(format!(
+                "document with db_id {} not found. Tip: use numeric id from doxus_search to omit 'project'.", n
+            )),
+        }
+    } else if let Some(s) = id_val.as_str() {
+        if let Ok(n) = s.parse::<i64>() {
+            match conn.query_row(
+                "SELECT d.id, d.source_doc_id, p.name FROM documents d JOIN projects p ON d.project_id = p.id WHERE d.id = ?1",
+                params![n],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+            ) {
+                Ok(res) => Ok(res),
+                Err(_) => Err(format!("document with db_id {} not found.", n)),
+            }
+        } else {
+            Err(format!(
+                "string id '{}' requires 'project' arg; use numeric db_id from doxus_search to omit project.",
+                s
+            ))
+        }
+    } else {
+        Err("document ID must be a string (source_doc_id) or a number (db_id)".to_string())
+    }
+}
+

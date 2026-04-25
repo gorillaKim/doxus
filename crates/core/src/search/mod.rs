@@ -198,6 +198,7 @@ impl From<SearchHit> for Hit {
             context_content: sh.context_content,
             metadata_json: sh.metadata_json,
             last_indexed: sh.last_indexed,
+            project_name: sh.project_name,
             score: sh.score,
             created_at: sh.created_at,
             updated_at: sh.updated_at,
@@ -626,7 +627,8 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
                 d.url, d.metadata_json, d.last_indexed,
                 c.start_byte, c.end_byte, c.content,
                 d.created_at, d.updated_at,
-                (SELECT GROUP_CONCAT(tag) FROM document_tags WHERE document_id = d.id) as tags
+                (SELECT GROUP_CONCAT(tag) FROM document_tags WHERE document_id = d.id) as tags,
+                p.name AS project_name
          {}
          JOIN documents d ON d.id = c.document_id
          JOIN projects p ON p.id = d.project_id
@@ -648,7 +650,7 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
     let hits = stmt.query_map(param_refs.as_slice(), |row| {
         let tags_str: Option<String> = row.get(17)?;
         let tags = tags_str.map(|s| s.split(',').map(|t| t.to_string()).collect()).unwrap_or_default();
-        
+
         let mut hit = SearchHit {
             document_id: row.get(0)?,
             source_doc_id: row.get(1)?,
@@ -669,6 +671,7 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
             created_at: row.get(15)?,
             updated_at: row.get(16)?,
             tags,
+            project_name: row.get(18).ok(),
         };
 
         if let Some(ref path_str) = hit.file_path {
@@ -722,7 +725,8 @@ fn vector_search_sync(
 
     let sql = format!(
         "SELECT c.id, c.document_id, d.project_id, d.source_doc_id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path, c.content, knn.distance, d.url, d.metadata_json, d.last_indexed, c.start_byte, c.end_byte, d.created_at, d.updated_at,
-                (SELECT GROUP_CONCAT(tag) FROM document_tags WHERE document_id = d.id) as tags
+                (SELECT GROUP_CONCAT(tag) FROM document_tags WHERE document_id = d.id) as tags,
+                p.name AS project_name
          FROM (
              SELECT chunk_id, distance FROM chunk_embeddings
              WHERE vector MATCH vec_int8(?1) AND k = ?2
@@ -765,6 +769,7 @@ fn vector_search_sync(
             created_at: row.get(14)?,
             updated_at: row.get(15)?,
             tags,
+            project_name: row.get(17).ok(),
         };
 
         if let Some(ref path_str) = hit.file_path {

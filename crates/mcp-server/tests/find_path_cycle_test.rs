@@ -89,7 +89,7 @@ async fn find_path_no_false_positive_on_prefix_ids() {
     let resp = server.dispatch_tool(
         "doxus_find_path",
         json!(1),
-        &json!({"from": "doc-1", "to": "doc-100"}),
+        &json!({"project": "test", "from": "doc-1", "to": "doc-100"}),
     ).await;
 
     assert!(resp.error.is_none(), "find_path should succeed: {:?}", resp.error);
@@ -123,7 +123,7 @@ async fn find_path_detects_real_cycle_and_avoids_infinite_loop() {
     let resp = server.dispatch_tool(
         "doxus_find_path",
         json!(1),
-        &json!({"from": "doc-a", "to": "doc-c"}),
+        &json!({"project": "test", "from": "doc-a", "to": "doc-c"}),
     ).await;
  
     // Should return a response (not hang), with no path found

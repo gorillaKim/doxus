@@ -44,7 +44,7 @@ fn insert_document(conn: &Connection, project_id: i64, source_doc_id: &str, titl
 #[test]
 fn list_all_documents_returns_empty() {
     let conn = make_conn();
-    let result = list_all_documents_impl(&conn).unwrap();
+    let result = list_all_documents_impl(&conn, None, None).unwrap();
     let docs = result["documents"].as_array().unwrap();
     assert!(docs.is_empty());
 }
@@ -58,7 +58,7 @@ fn list_all_documents_returns_docs() {
     insert_document(&conn, pid, "notes/foo.md", "Foo Note");
     insert_document(&conn, pid, "notes/bar.md", "Bar Note");
 
-    let result = list_all_documents_impl(&conn).unwrap();
+    let result = list_all_documents_impl(&conn, None, None).unwrap();
     let docs = result["documents"].as_array().unwrap();
     assert_eq!(docs.len(), 2);
 
@@ -77,7 +77,7 @@ fn list_all_documents_excludes_disabled() {
     insert_document(&conn, active_pid, "a.md", "Active Doc");
     insert_document(&conn, disabled_pid, "b.md", "Disabled Doc");
 
-    let result = list_all_documents_impl(&conn).unwrap();
+    let result = list_all_documents_impl(&conn, None, None).unwrap();
     let docs = result["documents"].as_array().unwrap();
     assert_eq!(docs.len(), 1);
     assert_eq!(docs[0]["title"].as_str().unwrap(), "Active Doc");
@@ -93,7 +93,7 @@ fn list_all_documents_counts_distinct_source_docs() {
     insert_document(&conn, pid, "doc-b.md", "Doc B");
     insert_document(&conn, pid, "doc-c.md", "Doc C");
 
-    let result = list_all_documents_impl(&conn).unwrap();
+    let result = list_all_documents_impl(&conn, None, None).unwrap();
     let docs = result["documents"].as_array().unwrap();
     assert_eq!(docs.len(), 3);
 }
@@ -106,7 +106,7 @@ fn list_all_documents_groups_by_project() {
     let pid = insert_project(&conn, "my-vault", "active", Some("obsidian"));
     insert_document(&conn, pid, "test.md", "Test Doc");
 
-    let result = list_all_documents_impl(&conn).unwrap();
+    let result = list_all_documents_impl(&conn, None, None).unwrap();
     let docs = result["documents"].as_array().unwrap();
     assert_eq!(docs.len(), 1);
 

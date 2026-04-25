@@ -1,5 +1,5 @@
 use crate::server::McpServer;
-use crate::tools::resolve_doc_id;
+use crate::tools::{resolve_doc_id, resolve_doc_id_optional_project};
 use crate::types::McpResponse;
 use regex::Regex;
 use rusqlite::params;
@@ -71,6 +71,7 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
                     .map(|h| {
                         json!({
                             "id": h.document_id,
+                            "project": h.project_name,
                             "source_id": h.source_doc_id,
                             "title": h.title,
                             "heading": h.heading_path,
@@ -116,6 +117,7 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
                     .map(|h| {
                         json!({
                             "id": h.document_id,
+                            "project": h.project_name,
                             "source_id": h.source_doc_id,
                             "title": h.title,
                             "tags": h.tags,
@@ -141,22 +143,19 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
 }
 
 pub async fn get_document(server: &McpServer, id: Value, args: &Value) -> McpResponse {
-    let project = match args["project"].as_str() {
-        Some(p) => p,
-        None => return McpResponse::err(id, -32602, "missing required arg: project"),
-    };
-    let (_db_id, source_doc_id) = {
+    let project_opt = args["project"].as_str();
+    let (project_name_resolved, source_doc_id) = {
         let conn = server.conn();
         let conn_lock = match conn.lock() {
             Ok(l) => l,
             Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
         };
-
-        match resolve_doc_id(&conn_lock, project, &args["id"]) {
-            Ok(res) => res,
+        match resolve_doc_id_optional_project(&conn_lock, project_opt, &args["id"]) {
+            Ok((_db_id, sid, pname)) => (pname, sid),
             Err(e) => return McpResponse::err(id, -32602, e),
         }
-    }; // <- 락이 여기서 자동으로 해제(Drop)됩니다.
+    };
+    let project = project_name_resolved.as_str();
 
     let pm = server.plugin_manager();
     let service = doxus_core::document::DocumentService::new_with_path(server.db_path(), Some(pm.clone()));
@@ -226,19 +225,19 @@ pub async fn get_document(server: &McpServer, id: Value, args: &Value) -> McpRes
 }
 
 pub async fn get_toc(server: &McpServer, id: Value, args: &Value) -> McpResponse {
-    let project = match args["project"].as_str() {
-        Some(p) => p,
-        None => return McpResponse::err(id, -32602, "missing required arg: project"),
+    let project_opt = args["project"].as_str();
+    let (project_name_resolved, source_doc_id) = {
+        let conn = server.conn();
+        let conn_lock = match conn.lock() {
+            Ok(l) => l,
+            Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+        };
+        match resolve_doc_id_optional_project(&conn_lock, project_opt, &args["id"]) {
+            Ok((_db_id, sid, pname)) => (pname, sid),
+            Err(e) => return McpResponse::err(id, -32602, e),
+        }
     };
-    let conn = server.conn();
-    let conn_lock = match conn.lock() {
-        Ok(l) => l,
-        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
-    };
-    let (_db_id, source_doc_id) = match resolve_doc_id(&conn_lock, project, &args["id"]) {
-        Ok(res) => res,
-        Err(e) => return McpResponse::err(id, -32602, e),
-    };
+    let project = project_name_resolved.as_str();
 
     let pm = server.plugin_manager();
     let service = doxus_core::document::DocumentService::new_with_path(server.db_path(), Some(pm.clone()));
@@ -253,23 +252,23 @@ pub async fn get_toc(server: &McpServer, id: Value, args: &Value) -> McpResponse
 }
 
 pub async fn get_section(server: &McpServer, id: Value, args: &Value) -> McpResponse {
-    let project = match args["project"].as_str() {
-        Some(p) => p,
-        None => return McpResponse::err(id, -32602, "missing required arg: project"),
-    };
+    let project_opt = args["project"].as_str();
     let heading = match args["heading"].as_str() {
         Some(h) => h,
         None => return McpResponse::err(id, -32602, "missing required arg: heading"),
     };
-    let conn = server.conn();
-    let conn_lock = match conn.lock() {
-        Ok(l) => l,
-        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+    let (project_name_resolved, source_doc_id) = {
+        let conn = server.conn();
+        let conn_lock = match conn.lock() {
+            Ok(l) => l,
+            Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+        };
+        match resolve_doc_id_optional_project(&conn_lock, project_opt, &args["id"]) {
+            Ok((_db_id, sid, pname)) => (pname, sid),
+            Err(e) => return McpResponse::err(id, -32602, e),
+        }
     };
-    let (_db_id, source_doc_id) = match resolve_doc_id(&conn_lock, project, &args["id"]) {
-        Ok(res) => res,
-        Err(e) => return McpResponse::err(id, -32602, e),
-    };
+    let project = project_name_resolved.as_str();
 
     let pm = server.plugin_manager();
     let service = doxus_core::document::DocumentService::new_with_path(server.db_path(), Some(pm.clone()));
@@ -284,19 +283,17 @@ pub async fn get_section(server: &McpServer, id: Value, args: &Value) -> McpResp
 }
 
 pub fn get_metadata(server: &McpServer, id: Value, args: &Value) -> McpResponse {
-    let project = match args["project"].as_str() {
-        Some(p) => p,
-        None => return McpResponse::err(id, -32602, "missing required arg: project"),
-    };
+    let project_opt = args["project"].as_str();
     let conn = server.conn();
     let conn_lock = match conn.lock() {
         Ok(l) => l,
         Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
     };
-    let (db_id, source_doc_id) = match resolve_doc_id(&conn_lock, project, &args["id"]) {
+    let (db_id, source_doc_id, project_name_resolved) = match resolve_doc_id_optional_project(&conn_lock, project_opt, &args["id"]) {
         Ok(res) => res,
         Err(e) => return McpResponse::err(id, -32602, e),
     };
+    let project = project_name_resolved.as_str();
 
     let row: Result<(Option<String>, String, i64), _> = conn_lock.query_row(
         "SELECT title, content_hash, last_indexed FROM documents WHERE id = ?1",
@@ -692,6 +689,70 @@ mod tests {
         assert!(!hits.is_empty(), "FTS 결과가 있어야 함");
         assert_eq!(hits[0].created_at, Some(1111));
         assert_eq!(hits[0].updated_at, Some(2222));
+    }
+
+    #[test]
+    fn test_search_hit_has_project_name() {
+        let hit = doxus_core::db::schema::SearchHit {
+            project_name: None,
+            ..Default::default()
+        };
+        assert!(hit.project_name.is_none());
+    }
+
+    #[test]
+    fn test_hit_has_project_name() {
+        let hit = doxus_core::db::schema::Hit {
+            project_name: None,
+            ..Default::default()
+        };
+        assert!(hit.project_name.is_none());
+    }
+
+    #[test]
+    fn test_search_response_includes_project_name() {
+        let (server, pid) = setup_server();
+        insert_doc(&server, pid, "d1", "ProjectName Test", "content", 1111, 2222);
+
+        let conn = server.conn();
+        let c = conn.lock().unwrap();
+        let engine = SyncSearchEngine::from_conn(&c);
+        let q = doxus_core::search::SearchQuery::new("ProjectName Test");
+        let hits = engine.search(&q).unwrap();
+        assert!(!hits.is_empty(), "FTS results must be non-empty");
+        assert_eq!(hits[0].project_name.as_deref(), Some("tp"), "project_name should be 'tp'");
+    }
+
+    #[test]
+    fn test_get_document_without_project_numeric_id() {
+        // resolve_doc_id_optional_project: project=None + 정수 id 동작 테스트
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch("
+            CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, name TEXT NOT NULL, display_name TEXT NOT NULL, path TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0);
+            CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id), source_doc_id TEXT NOT NULL, title TEXT, content TEXT NOT NULL DEFAULT '', content_hash TEXT NOT NULL DEFAULT '', chunk_index INTEGER NOT NULL DEFAULT 0, last_indexed INTEGER NOT NULL DEFAULT 0);
+            INSERT INTO projects (id, name, display_name, path, status, created_at, updated_at) VALUES (1, 'test-proj', 'Test', '/tmp', 'active', 0, 0);
+            INSERT INTO documents (id, project_id, source_doc_id, title, content, content_hash, chunk_index, last_indexed) VALUES (42, 1, 'test/doc.md', 'Test Doc', 'hello', 'hash1', 0, 0);
+        ").unwrap();
+
+        let result = crate::tools::resolve_doc_id_optional_project(&conn, None, &serde_json::json!(42));
+        assert!(result.is_ok(), "numeric id without project should succeed: {:?}", result);
+        let (db_id, source_id, proj_name) = result.unwrap();
+        assert_eq!(db_id, 42);
+        assert_eq!(source_id, "test/doc.md");
+        assert_eq!(proj_name, "test-proj");
+    }
+
+    #[test]
+    fn test_get_document_string_id_without_project_fails() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let result = crate::tools::resolve_doc_id_optional_project(&conn, None, &serde_json::json!("some/path.md"));
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("requires 'project'"), "got: {}", err);
     }
 
     #[test]

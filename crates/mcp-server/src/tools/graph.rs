@@ -1,6 +1,6 @@
 
 use crate::server::McpServer;
-use crate::tools::resolve_doc_id;
+use crate::tools::{resolve_doc_id, resolve_doc_id_optional_project};
 use crate::types::McpResponse;
 use rusqlite::params;
 use serde_json::{json, Value};
@@ -15,17 +15,14 @@ pub fn get_links(server: &McpServer, id: Value, args: &Value) -> McpResponse {
 
 /// `outgoing=true` → forward links; `outgoing=false` → backlinks
 fn links(server: &McpServer, id: Value, args: &Value, outgoing: bool) -> McpResponse {
-    let project = match args["project"].as_str() {
-        Some(p) => p,
-        None => return McpResponse::err(id, -32602, "missing required arg: project"),
-    };
+    let project_opt = args["project"].as_str();
     let conn = server.conn();
     let conn_lock = match conn.lock() {
         Ok(l) => l,
         Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
     };
 
-    let (db_id, _) = match resolve_doc_id(&conn_lock, project, &args["id"]) {
+    let (db_id, _, _) = match resolve_doc_id_optional_project(&conn_lock, project_opt, &args["id"]) {
         Ok(res) => res,
         Err(e) => return McpResponse::err(id, -32602, e),
     };
@@ -88,7 +85,7 @@ fn links(server: &McpServer, id: Value, args: &Value, outgoing: bool) -> McpResp
 
 
 pub fn find_path(server: &McpServer, id: Value, args: &Value) -> McpResponse {
-    let project = args["project"].as_str().unwrap_or("Brain"); // Default to Brain or from args
+    let project_opt = args["project"].as_str();
     let from = &args["from"];
     let to = &args["to"];
     let max_hops = args["max_hops"].as_u64().unwrap_or(6) as usize;
@@ -99,15 +96,22 @@ pub fn find_path(server: &McpServer, id: Value, args: &Value) -> McpResponse {
         Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
     };
 
-    let (from_db_id, _) = match resolve_doc_id(&conn_lock, project, from) {
+    let (from_db_id, _, from_proj) = match resolve_doc_id_optional_project(&conn_lock, project_opt, from) {
         Ok(res) => res,
         Err(e) => return McpResponse::err(id, -32602, format!("'from' error: {e}")),
     };
-    
-    let (to_db_id, _) = match resolve_doc_id(&conn_lock, project, to) {
+
+    let (to_db_id, _, to_proj) = match resolve_doc_id_optional_project(&conn_lock, project_opt, to) {
         Ok(res) => res,
         Err(e) => return McpResponse::err(id, -32602, format!("'to' error: {e}")),
     };
+
+    if project_opt.is_none() && from_proj != to_proj {
+        return McpResponse::err(id, -32602, format!(
+            "'from' and 'to' are in different projects ('{}' vs '{}'). Specify 'project' to override.",
+            from_proj, to_proj
+        ));
+    }
 
     let table_exists: bool = conn_lock
         .query_row(
