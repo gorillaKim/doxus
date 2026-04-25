@@ -50,6 +50,7 @@ pub struct SyncManager {
     watcher_manager: Arc<Mutex<Option<Arc<crate::watcher::WatcherManager>>>>,
     active_tasks: Arc<Mutex<std::collections::HashMap<String, i64>>>,
     recent_triggers: Arc<Mutex<VecDeque<SyncTriggerSummary>>>,
+    event_tx: Arc<Mutex<Option<mpsc::Sender<(String, usize)>>>>,
 }
 
 impl SyncManager {
@@ -64,6 +65,7 @@ impl SyncManager {
                 watcher_manager: Arc::new(Mutex::new(None)),
                 active_tasks: Arc::new(Mutex::new(std::collections::HashMap::new())),
                 recent_triggers: Arc::new(Mutex::new(VecDeque::with_capacity(10))),
+                event_tx: Arc::new(Mutex::new(None)),
             },
             rx,
         )
@@ -97,6 +99,11 @@ impl SyncManager {
 
     pub fn indexer(&self) -> Arc<IndexingService> {
         Arc::clone(&self.indexing_service)
+    }
+
+    pub async fn set_event_sender(&self, tx: mpsc::Sender<(String, usize)>) {
+        let mut guard = self.event_tx.lock().await;
+        *guard = Some(tx);
     }
 
     pub async fn init_watchers(&self) {
@@ -187,10 +194,17 @@ impl SyncManager {
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().unwrap_or_default().as_secs() as i64;
             active.insert(project_name.to_string(), now);
         }
-        
-        let _ = self.indexing_service.index_project(project_name, full).await;
+
+        let result = self.indexing_service.index_project(project_name, full).await;
         self.update_last_sync(project_name).await;
-        
+
+        if let Ok(count) = result {
+            let guard = self.event_tx.lock().await;
+            if let Some(tx) = guard.as_ref() {
+                let _ = tx.send((project_name.to_string(), count)).await;
+            }
+        }
+
         {
             let mut active = self.active_tasks.lock().await;
             active.remove(project_name);

@@ -212,6 +212,15 @@ fn main() {
     let (state_arc, rx) = AppState::new(conn, plugins_dir, sidecar_script, embedder, keychain_migrated_init);
     let state_arc = Arc::new(state_arc);
     let manager = state_arc.sync_manager.clone();
+
+    // Create completion channel for SyncManager background indexing events
+    let (indexed_tx, mut indexed_rx) = tokio::sync::mpsc::channel::<(String, usize)>(32);
+    {
+        let manager_clone = manager.clone();
+        tauri::async_runtime::block_on(async move {
+            manager_clone.set_event_sender(indexed_tx).await;
+        });
+    }
     
     // If migration was triggered (flag was false), mark as done in config for next time
     if !keychain_migrated_init {
@@ -270,6 +279,18 @@ fn main() {
             tauri::async_runtime::spawn(async move {
                 manager_inner.init_watchers().await;
                 manager_inner.start_loop(rx).await;
+            });
+
+            // Forward SyncManager completion events to frontend as "project-indexed"
+            let handle_indexed = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                while let Some((project_name, count)) = indexed_rx.recv().await {
+                    handle_indexed.emit("project-indexed", serde_json::json!({
+                        "project_name": project_name,
+                        "indexed": count,
+                        "full": false
+                    })).ok();
+                }
             });
 
             // Start SchedulerManager tick loop
