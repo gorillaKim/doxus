@@ -28,18 +28,14 @@ export function ProjectsPage() {
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [removingId, setRemovingId] = useState<string | null>(null);
   const [updatingId, setUpdatingId] = useState<number | null>(null);
-  const [indexResult, setIndexResult] = useState<{ name: string; message: string } | null>(null);
 
   useEffect(() => { fetch(); }, [fetch]);
 
   const handleIndex = async (name: string) => {
     try {
-      const result = await indexProject(name);
-      setIndexResult({ name, message: result.message });
-      setTimeout(() => setIndexResult(null), 5000);
-    } catch (e) {
-      setIndexResult({ name, message: `오류: ${String(e)}` });
-      setTimeout(() => setIndexResult(null), 5000);
+      await indexProject(name);
+    } catch {
+      // errors are surfaced via the project card's busy state
     }
   };
 
@@ -115,22 +111,6 @@ export function ProjectsPage() {
   return (
     <div className="w-full max-w-6xl mx-auto flex flex-col h-full overflow-hidden min-w-0">
       {showModal && <AddProjectModal onClose={() => setShowModal(false)} />}
-
-      {/* Modern Toast Notification */}
-      {indexResult && (
-        <div className="fixed bottom-10 right-10 z-[100] animate-in slide-in-from-right duration-500">
-          <div className="px-5 py-4 bg-gray-900/90 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl flex flex-col gap-1 min-w-[280px]">
-            <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
-              <span className="text-xs font-black text-indigo-400 uppercase tracking-tighter">Indexing Complete</span>
-            </div>
-            <div className="flex flex-col text-sm">
-              <span className="font-bold text-white uppercase">{indexResult.name}</span>
-              <p className="text-xs text-gray-400 mt-1">{indexResult.message}</p>
-            </div>
-          </div>
-        </div>
-      )}
 
       <div className="flex-shrink-0 min-w-0">
         <ProjectHeader onAddClick={() => setShowModal(true)} projectCount={projects.length} />

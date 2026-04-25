@@ -17,6 +17,8 @@ import { ModelDownloadModal } from "./components/ModelDownloadModal";
 export default function App() {
   const [cacheToast, setCacheToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [indexToast, setIndexToast] = useState<{ name: string; message: string } | null>(null);
+  const indexToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const unlisten = listen<{ count: number }>("cache:cleanup", (event) => {
@@ -24,6 +26,17 @@ export default function App() {
       if (toastTimer.current) clearTimeout(toastTimer.current);
       setCacheToast(`캐시 정리 완료 — 만료된 항목 ${count}개 제거됨`);
       toastTimer.current = setTimeout(() => setCacheToast(null), 4000);
+    });
+    return () => { unlisten.then(fn => fn()); };
+  }, []);
+
+  useEffect(() => {
+    const unlisten = listen<{ project_name: string; indexed: number }>("project-indexed", (event) => {
+      const { project_name, indexed } = event.payload;
+      const message = indexed === 0 ? "이미 최신 상태입니다" : `${indexed}개 문서 인덱싱 완료`;
+      if (indexToastTimer.current) clearTimeout(indexToastTimer.current);
+      setIndexToast({ name: project_name, message });
+      indexToastTimer.current = setTimeout(() => setIndexToast(null), 5000);
     });
     return () => { unlisten.then(fn => fn()); };
   }, []);
@@ -48,6 +61,21 @@ export default function App() {
       {cacheToast && (
         <div className="fixed bottom-6 right-6 z-50 px-4 py-3 bg-gray-900 border border-gray-700 rounded-xl shadow-xl text-sm text-gray-200 max-w-xs">
           🗑️ {cacheToast}
+        </div>
+      )}
+
+      {indexToast && (
+        <div className="fixed bottom-10 right-10 z-[100] animate-in slide-in-from-right duration-500">
+          <div className="px-5 py-4 bg-gray-900/90 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl flex flex-col gap-1 min-w-[280px]">
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" />
+              <span className="text-xs font-black text-indigo-400 uppercase tracking-tighter">Indexing Complete</span>
+            </div>
+            <div className="flex flex-col text-sm">
+              <span className="font-bold text-white uppercase">{indexToast.name}</span>
+              <p className="text-xs text-gray-400 mt-1">{indexToast.message}</p>
+            </div>
+          </div>
         </div>
       )}
 
