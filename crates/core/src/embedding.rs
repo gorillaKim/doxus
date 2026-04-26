@@ -116,11 +116,16 @@ impl OnnxEmbedder {
             .expect("failed to set truncation");
         }
         
+        let cpu_threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .min(8);
+
         let session = Session::builder()
             .map_err(|e| EmbeddingError::ModelLoad(e.to_string()))?
-            .with_optimization_level(GraphOptimizationLevel::Level1)
+            .with_optimization_level(GraphOptimizationLevel::Level3)
             .map_err(|e| EmbeddingError::ModelLoad(e.to_string()))?
-            .with_intra_threads(1)
+            .with_intra_threads(cpu_threads)
             .map_err(|e| EmbeddingError::ModelLoad(e.to_string()))?
             .commit_from_file(&path)
             .map(Mutex::new)
