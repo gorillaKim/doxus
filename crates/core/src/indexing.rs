@@ -31,6 +31,16 @@ impl IndexingService {
 
     /// 프로젝트의 소스 타입 및 설정을 조회하여 인덱싱을 수행합니다.
     pub async fn index_project(&self, name: &str, full: bool) -> Result<usize, String> {
+        self.index_project_with_progress(name, full, |_, _| {}).await
+    }
+
+    /// Like `index_project` but calls `on_progress(docs_done, total_docs)` after each batch.
+    pub async fn index_project_with_progress(
+        &self,
+        name: &str,
+        full: bool,
+        on_progress: impl Fn(usize, usize) + Send,
+    ) -> Result<usize, String> {
         let (project_id, plugin_id, config_json, project_path, _strategy, _policy) = self.get_project_config(name).await?;
         
         // 1. 플러그인 초기화
@@ -141,7 +151,10 @@ impl IndexingService {
                 if !batch_requests.is_empty() {
                     let count = batch_requests.len();
                     match self.engine.index_documents_batch_async(batch_requests).await {
-                        Ok(_) => { total += count; }
+                        Ok(_) => {
+                            total += count;
+                            on_progress(total, 0);
+                        }
                         Err(e) => {
                             crate::log_d!("indexer", "[Core-Indexer] Batch indexing error: {}", e);
                         }

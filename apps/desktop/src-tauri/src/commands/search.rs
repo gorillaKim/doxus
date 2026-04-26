@@ -787,7 +787,15 @@ pub async fn index_project(
         Some(format!("User requested {}indexing", if is_full { "full " } else { "" }))
     ).await;
 
-    let total = indexing_service.index_project(&name, is_full).await?;
+    let app_handle_progress = app_handle.clone();
+    let name_progress = name.clone();
+    let total = indexing_service.index_project_with_progress(&name, is_full, move |docs_done, _| {
+        use tauri::Emitter;
+        let _ = app_handle_progress.emit("index_progress", serde_json::json!({
+            "project_name": name_progress,
+            "docs_indexed": docs_done,
+        }));
+    }).await?;
 
     let message = if total == 0 {
         if is_full { "문서가 없는 프로젝트이거나 인덱싱에 실패했습니다".to_string() }
