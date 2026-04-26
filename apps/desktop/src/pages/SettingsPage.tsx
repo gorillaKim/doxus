@@ -187,34 +187,21 @@ export default function SettingsPage() {
       'index_progress',
       (e) => {
         setSyncStatus((prev) => {
-          if (!prev) return prev;
-          const exists = prev.active_tasks.some(t => t.project_name === e.payload.project_name);
-          if (exists) {
-            return {
-              ...prev,
-              active_tasks: prev.active_tasks.map((t) =>
-                t.project_name === e.payload.project_name
-                  ? { ...t, docs_indexed: e.payload.docs_indexed }
-                  : t
-              ),
-            };
-          }
-          return {
-            ...prev,
-            active_tasks: [
-              ...prev.active_tasks,
-              { project_name: e.payload.project_name, started_at: Math.floor(Date.now() / 1000), docs_indexed: e.payload.docs_indexed },
-            ],
-          };
+          const tasks = prev?.active_tasks ?? [];
+          const exists = tasks.some(t => t.project_name === e.payload.project_name);
+          const newTasks = exists
+            ? tasks.map(t => t.project_name === e.payload.project_name ? { ...t, docs_indexed: e.payload.docs_indexed } : t)
+            : [...tasks, { project_name: e.payload.project_name, started_at: Math.floor(Date.now() / 1000), docs_indexed: e.payload.docs_indexed }];
+          return { active_tasks: newTasks, recent_triggers: prev?.recent_triggers ?? [] };
         });
       }
     );
 
     const unlistenComplete = listen<{ project_name: string }>('project-indexed', (e) => {
-      setSyncStatus((prev) => {
-        if (!prev) return prev;
-        return { ...prev, active_tasks: prev.active_tasks.filter(t => t.project_name !== e.payload.project_name) };
-      });
+      setSyncStatus((prev) => ({
+        active_tasks: (prev?.active_tasks ?? []).filter(t => t.project_name !== e.payload.project_name),
+        recent_triggers: prev?.recent_triggers ?? [],
+      }));
     });
 
     return () => {
