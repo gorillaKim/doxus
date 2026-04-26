@@ -376,6 +376,21 @@ fn main() {
                 manager_inner.start_loop(rx).await;
             });
 
+            // Register SyncManager progress callback to emit index_progress events
+            {
+                let handle_progress = app.handle().clone();
+                let manager_progress = state_arc.sync_manager.clone();
+                tauri::async_runtime::block_on(async move {
+                    manager_progress.set_progress_callback(move |project_name, docs_done| {
+                        use tauri::Emitter;
+                        let _ = handle_progress.emit("index_progress", serde_json::json!({
+                            "project_name": project_name,
+                            "docs_indexed": docs_done,
+                        }));
+                    }).await;
+                });
+            }
+
             // Forward SyncManager completion events to frontend as "project-indexed"
             let handle_indexed = app.handle().clone();
             tauri::async_runtime::spawn(async move {

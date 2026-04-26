@@ -51,6 +51,7 @@ pub struct SyncManager {
     active_tasks: Arc<Mutex<std::collections::HashMap<String, i64>>>,
     recent_triggers: Arc<Mutex<VecDeque<SyncTriggerSummary>>>,
     event_tx: Arc<Mutex<Option<mpsc::Sender<(String, usize)>>>>,
+    progress_callback: Arc<Mutex<Option<Box<dyn Fn(String, usize) + Send + Sync>>>>,
 }
 
 impl SyncManager {
@@ -66,6 +67,7 @@ impl SyncManager {
                 active_tasks: Arc::new(Mutex::new(std::collections::HashMap::new())),
                 recent_triggers: Arc::new(Mutex::new(VecDeque::with_capacity(10))),
                 event_tx: Arc::new(Mutex::new(None)),
+                progress_callback: Arc::new(Mutex::new(None)),
             },
             rx,
         )
@@ -104,6 +106,11 @@ impl SyncManager {
     pub async fn set_event_sender(&self, tx: mpsc::Sender<(String, usize)>) {
         let mut guard = self.event_tx.lock().await;
         *guard = Some(tx);
+    }
+
+    pub async fn set_progress_callback(&self, cb: impl Fn(String, usize) + Send + Sync + 'static) {
+        let mut guard = self.progress_callback.lock().await;
+        *guard = Some(Box::new(cb));
     }
 
     pub async fn init_watchers(&self) {
@@ -195,7 +202,26 @@ impl SyncManager {
             active.insert(project_name.to_string(), now);
         }
 
-        let result = self.indexing_service.index_project(project_name, full).await;
+        let cb = {
+            let guard = self.progress_callback.lock().await;
+            guard.as_ref().map(|_| {
+                let progress_callback = Arc::clone(&self.progress_callback);
+                let name = project_name.to_string();
+                move |done: usize, _total: usize| {
+                    let cb_clone = Arc::clone(&progress_callback);
+                    let n = name.clone();
+                    tokio::spawn(async move {
+                        let guard = cb_clone.lock().await;
+                        if let Some(f) = guard.as_ref() { f(n, done); }
+                    });
+                }
+            })
+        };
+        let result = if let Some(on_progress) = cb {
+            self.indexing_service.index_project_with_progress(project_name, full, on_progress).await
+        } else {
+            self.indexing_service.index_project(project_name, full).await
+        };
         self.update_last_sync(project_name).await;
 
         if let Ok(count) = result {
