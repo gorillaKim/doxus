@@ -188,19 +188,39 @@ export default function SettingsPage() {
       (e) => {
         setSyncStatus((prev) => {
           if (!prev) return prev;
+          const exists = prev.active_tasks.some(t => t.project_name === e.payload.project_name);
+          if (exists) {
+            return {
+              ...prev,
+              active_tasks: prev.active_tasks.map((t) =>
+                t.project_name === e.payload.project_name
+                  ? { ...t, docs_indexed: e.payload.docs_indexed }
+                  : t
+              ),
+            };
+          }
           return {
             ...prev,
-            active_tasks: prev.active_tasks.map((t) =>
-              t.project_name === e.payload.project_name
-                ? { ...t, docs_indexed: e.payload.docs_indexed }
-                : t
-            ),
+            active_tasks: [
+              ...prev.active_tasks,
+              { project_name: e.payload.project_name, started_at: Math.floor(Date.now() / 1000), docs_indexed: e.payload.docs_indexed },
+            ],
           };
         });
       }
     );
 
-    return () => { unlistenProgress.then((f) => f()); };
+    const unlistenComplete = listen<{ project_name: string }>('project-indexed', (e) => {
+      setSyncStatus((prev) => {
+        if (!prev) return prev;
+        return { ...prev, active_tasks: prev.active_tasks.filter(t => t.project_name !== e.payload.project_name) };
+      });
+    });
+
+    return () => {
+      unlistenProgress.then((f) => f());
+      unlistenComplete.then((f) => f());
+    };
   }, []);
 
   const handleSaveSettings = async () => {
