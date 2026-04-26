@@ -375,7 +375,15 @@ pub const MULTILINGUAL_E5_SMALL_SHA256: &str = "ca456c06b3a9505ddfd9131408916dd7
 /// Each candidate is accepted only if both the `.onnx` file and `tokenizer.json`
 /// exist in the same directory.
 pub fn resolve_model_path() -> Option<std::path::PathBuf> {
-    let model_name = "multilingual-e5-small.onnx";
+    // Prefer int8-quantized model (~120MB) over fp32 (~448MB) for faster CPU inference.
+    let model_name = if {
+        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+        home.join(".doxus/models/multilingual-e5-small-int8.onnx").exists()
+    } {
+        "multilingual-e5-small-int8.onnx"
+    } else {
+        "multilingual-e5-small.onnx"
+    };
 
     // Helper: accept path only if both model and tokenizer.json exist alongside it
     let valid = |p: &std::path::PathBuf| -> bool {
