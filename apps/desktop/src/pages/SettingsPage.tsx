@@ -233,7 +233,6 @@ export default function SettingsPage() {
 
   useEffect(() => {
     const id = setInterval(async () => {
-      if (!activeTasksRef.current.length) return;
       try {
         const sync = await invoke<SyncStatus>('get_sync_status');
         setSyncStatus((prev) => ({
