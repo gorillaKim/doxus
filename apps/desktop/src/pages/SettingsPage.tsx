@@ -227,6 +227,27 @@ export default function SettingsPage() {
     await fetchStatus();
   };
 
+  // Poll sync status every 2s while component is mounted on diagnostics tab
+  const activeTasksRef = useRef<ActiveTaskSummary[]>([]);
+  activeTasksRef.current = syncStatus?.active_tasks ?? [];
+
+  useEffect(() => {
+    const id = setInterval(async () => {
+      if (!activeTasksRef.current.length) return;
+      try {
+        const sync = await invoke<SyncStatus>('get_sync_status');
+        setSyncStatus((prev) => ({
+          ...sync,
+          active_tasks: sync.active_tasks.map((t) => {
+            const existing = prev?.active_tasks.find((e) => e.project_name === t.project_name);
+            return { ...t, docs_indexed: existing?.docs_indexed };
+          }),
+        }));
+      } catch { /* ignore */ }
+    }, 2000);
+    return () => clearInterval(id);
+  }, []);
+
   const handleDbTest = async () => {
     setDbTestLoading(true);
     setDbTestResult(null);
