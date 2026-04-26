@@ -41,6 +41,7 @@ interface SyncStatus {
 interface ActiveTaskSummary {
   project_name: string;
   started_at: number;
+  docs_indexed?: number;
 }
 
 type StatusLevel = 'ok' | 'warn' | 'error' | 'unknown';
@@ -181,6 +182,25 @@ export default function SettingsPage() {
     invoke<{ status: string; message: string }>('check_gemini_status')
       .then((res) => setGeminiStatus(res.status as 'ok' | 'warn' | 'unknown'))
       .catch(() => setGeminiStatus('warn'));
+
+    const unlistenProgress = listen<{ project_name: string; docs_indexed: number }>(
+      'index_progress',
+      (e) => {
+        setSyncStatus((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            active_tasks: prev.active_tasks.map((t) =>
+              t.project_name === e.payload.project_name
+                ? { ...t, docs_indexed: e.payload.docs_indexed }
+                : t
+            ),
+          };
+        });
+      }
+    );
+
+    return () => { unlistenProgress.then((f) => f()); };
   }, []);
 
   const handleSaveSettings = async () => {
@@ -424,9 +444,16 @@ export default function SettingsPage() {
                         return (
                           <div key={task.project_name} className="flex items-center justify-between bg-blue-950/20 border border-blue-900/30 p-2 rounded-lg">
                             <span className="text-xs font-mono text-blue-300">{task.project_name}</span>
-                            <span className="text-[10px] text-blue-500 font-medium whitespace-nowrap">
-                              {elapsed > 60 ? `${Math.floor(elapsed / 60)}분 ${elapsed % 60}초` : `${elapsed}초`} 전 시작
-                            </span>
+                            <div className="flex items-center gap-3">
+                              {task.docs_indexed !== undefined && (
+                                <span className="text-[10px] text-emerald-400 font-medium">
+                                  {task.docs_indexed}개 완료
+                                </span>
+                              )}
+                              <span className="text-[10px] text-blue-500 font-medium whitespace-nowrap">
+                                {elapsed > 60 ? `${Math.floor(elapsed / 60)}분 ${elapsed % 60}초` : `${elapsed}초`} 전 시작
+                              </span>
+                            </div>
                           </div>
                         );
                       })}
