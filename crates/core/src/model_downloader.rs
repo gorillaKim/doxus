@@ -10,18 +10,21 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tokio::io::AsyncWriteExt;
 
-use crate::embedding::MULTILINGUAL_E5_SMALL_SHA256;
 
-/// HuggingFace URL for the ONNX model file.
+/// HuggingFace URL for the int8-quantized ONNX model (primary — 4x smaller, 2-4x faster on CPU).
 pub const DEFAULT_MODEL_URL: &str =
+    "https://huggingface.co/intfloat/multilingual-e5-small/resolve/main/onnx/model_quantized.onnx";
+
+/// HuggingFace URL for the fp32 ONNX model (fallback if quantized is unavailable).
+pub const DEFAULT_MODEL_FP32_URL: &str =
     "https://huggingface.co/intfloat/multilingual-e5-small/resolve/main/onnx/model.onnx";
 
 /// HuggingFace URL for the tokenizer.
 pub const DEFAULT_TOKENIZER_URL: &str =
     "https://huggingface.co/intfloat/multilingual-e5-small/resolve/main/tokenizer.json";
 
-/// File name of the model on disk (matches `resolve_model_path`).
-pub const MODEL_FILE_NAME: &str = "multilingual-e5-small.onnx";
+/// File name of the int8 model on disk (matches `resolve_model_path` int8 preference).
+pub const MODEL_FILE_NAME: &str = "multilingual-e5-small-int8.onnx";
 
 /// File name of the tokenizer on disk.
 pub const TOKENIZER_FILE_NAME: &str = "tokenizer.json";
@@ -75,7 +78,8 @@ impl Default for ModelDownloadOptions {
         Self {
             model_url: DEFAULT_MODEL_URL.to_string(),
             tokenizer_url: DEFAULT_TOKENIZER_URL.to_string(),
-            model_sha256: Some(MULTILINGUAL_E5_SMALL_SHA256.to_string()),
+            // int8 quantized model: no pinned checksum (official HuggingFace file, no fp32 hash)
+            model_sha256: None,
         }
     }
 }
