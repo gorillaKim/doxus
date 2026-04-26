@@ -162,6 +162,10 @@ impl EmbeddingProvider for OnnxEmbedder {
         // Process in mini-batches to keep peak tensor memory bounded.
         // A single call with hundreds of chunks would allocate
         // `batch * max_len * dim * 4 bytes` which can reach hundreds of MB.
+        //
+        // block_in_place signals tokio that this thread will perform CPU-bound blocking
+        // work (ONNX inference), allowing the runtime to move other tasks to free threads.
+        tokio::task::block_in_place(|| -> Result<(), EmbeddingError> {
         for chunk in texts.chunks(EMBED_BATCH_SIZE) {
             let batch_size = chunk.len();
 
@@ -255,6 +259,8 @@ impl EmbeddingProvider for OnnxEmbedder {
                 embeddings.push(pooled);
             }
         }
+        Ok(())
+        })?;
 
         Ok(embeddings)
     }

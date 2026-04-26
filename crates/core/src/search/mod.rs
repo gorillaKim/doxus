@@ -344,13 +344,23 @@ impl SearchEngine {
                         current_chunk_offset += num_chunks;
                     }
                     tx.commit()?;
-                    conn_guard.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
-                    conn_guard.execute_batch("PRAGMA shrink_memory;")?;
                     Ok(())
                 })
                 .await??;
             }
         }
+
+        // Single WAL checkpoint after all sub-batches complete — avoids per-batch
+        // lock contention and blocking the conn for multiple checkpoint cycles.
+        let conn = Arc::clone(&self.conn);
+        tokio::task::spawn_blocking(move || {
+            if let Ok(c) = conn.lock() {
+                let _ = c.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+                let _ = c.execute_batch("PRAGMA shrink_memory;");
+            }
+        })
+        .await
+        .ok();
 
         Ok(())
     }
