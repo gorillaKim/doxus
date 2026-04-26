@@ -380,7 +380,7 @@ fn main() {
             {
                 let handle_progress = app.handle().clone();
                 let manager_progress = state_arc.sync_manager.clone();
-                tauri::async_runtime::block_on(async move {
+                tauri::async_runtime::spawn(async move {
                     manager_progress.set_progress_callback(move |project_name, docs_done| {
                         use tauri::Emitter;
                         let _ = handle_progress.emit("index_progress", serde_json::json!({
