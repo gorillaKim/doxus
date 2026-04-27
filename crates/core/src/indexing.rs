@@ -96,7 +96,10 @@ impl IndexingService {
 
         let result = async {
             loop {
+                tracing::debug!("[Core-Indexer][fetch_all] 페이지 요청: cursor={:?}", cursor);
                 let stream = plugin.fetch_all(FetchAllOpts { cursor, page_size: 50 }).await.map_err(|e| e.to_string())?;
+                tracing::debug!("[Core-Indexer][fetch_all] 응답: docs={}, next_cursor={:?}, estimated_total={:?}",
+                    stream.documents.len(), stream.next_cursor, stream.estimated_total);
                 if estimated_total == 0 {
                     if let Some(hint) = stream.estimated_total {
                         estimated_total = hint as usize;
@@ -107,7 +110,7 @@ impl IndexingService {
                 if docs.is_empty() {
                     consecutive_empty += 1;
                     if consecutive_empty >= 5 {
-                        crate::log_d!("indexer", "[Core-Indexer] 연속 {}회 빈 페이지 — 루프 종료", consecutive_empty);
+                        tracing::debug!("[Core-Indexer] 연속 {}회 빈 페이지 — 루프 종료", consecutive_empty);
                         break;
                     }
                     cursor = stream.next_cursor;
@@ -127,9 +130,11 @@ impl IndexingService {
                         None
                     };
                     if !full && !self.needs_reindexing_with_hash(project_id, &source_doc_id, doc.updated_at, content_hash_for_check.as_deref()).await {
+                        tracing::debug!("[Core-Indexer][skip] source_doc_id={} updated_at={:?}", source_doc_id, doc.updated_at);
                         let _ = self.update_last_indexed(project_id, &source_doc_id, sync_start_time).await;
                         continue;
                     }
+                    tracing::info!("[Core-Indexer][reindex] source_doc_id={} updated_at={:?}", source_doc_id, doc.updated_at);
 
                     if doc.content.is_empty() {
                         match plugin.fetch_document(&doc.id).await {
@@ -243,7 +248,7 @@ impl IndexingService {
         }
 
         let since = last_fetched_at.unwrap();
-        crate::log_d!("indexer", "[Core-Indexer] 증분 인덱싱 시작: {} (since={})", name, since);
+        tracing::info!("[Core-Indexer] 증분 인덱싱 시작: {} (since={})", name, since);
 
         let mut total = 0usize;
         let mut cursor: Option<String> = None;
@@ -253,7 +258,7 @@ impl IndexingService {
             let changeset = match plugin.fetch_changes(opts).await {
                 Ok(cs) => cs,
                 Err(e) => {
-                    crate::log_d!("indexer", "[Core-Indexer] fetch_changes 오류, fetch_all로 폴백: {}", e);
+                    tracing::info!("[Core-Indexer] fetch_changes 오류, fetch_all로 폴백: {}", e);
                     return self.index_project_with_progress(name, false, on_progress).await;
                 }
             };

@@ -78,3 +78,62 @@ Confluence 대용량 인덱싱(500+ 문서) 환경에서 발생하는 버그 2�
 
 - [[Confluence 검색 점수 0.00 버그 수정 — 표시 버그 + 문서 청킹 구현]]
 - [[doxus UX 개선 — 캐시 토스트, 플러그인 이모지 시스템, MarketPage 인증 폼 접힘]]
+
+---
+
+## 2026-04-27 세션 2 — 설정 페이지 인덱싱 진행률 표시 및 재인덱싱 버그 수정
+
+<!-- docsmith: auto-generated 2026-04-27 -->
+
+### 주요작업
+
+#### 설정 페이지 인덱싱 진행률 X/Y개 표시 추가 `[medium]`
+
+- **변경 파일**: `crates/plugins/confluence/src/lib.rs`, `crates/core/src/indexing.rs`, `crates/core/src/sync_manager.rs`, `apps/desktop/src-tauri/src/commands/search.rs`, `apps/desktop/src/pages/SettingsPage.tsx`
+- **결과**: ConfluenceCqlResult.totalSize → DocumentStream.estimated_total → on_progress(total_docs) → index_progress 이벤트 → UI X/Y개 형식 표시까지 전체 파이프라인 연결 완료
+
+#### 강제 재인덱싱 시 active task 미표시 버그 수정 `[medium]`
+
+- **변경 파일**: `apps/desktop/src-tauri/src/commands/search.rs`, `crates/core/src/sync_manager.rs`
+- **결과**: trigger_reindex에서 force_mark_task_started를 즉시 호출하고 run_task에서 중복 체크 제거
+
+#### init_watchers/start_loop 동시 실행 버그 도입 및 수정 `[hard]`
+
+- **변경 파일**: `apps/desktop/src-tauri/src/main.rs`, `crates/core/src/sync_manager.rs`
+- **결과**: 독립 task 분리 시도 → 동시 인덱싱 2x 카운팅 발생 → 순차 실행 + 선등록 방식으로 올바르게 수정
+
+#### sqlite-vec chunk_embeddings COUNT(*) 항상 0 반환 버그 수정 `[easy]`
+
+- **변경 파일**: `apps/desktop/src-tauri/src/commands/market.rs`
+- **결과**: chunks 테이블 카운트로 교체하여 정확한 청크 수 반환
+
+#### build-dmg.sh에 Confluence WASM 자동 빌드 추가 `[easy]`
+
+- **변경 파일**: `scripts/build-dmg.sh`
+- **결과**: DMG 빌드 시 WASM 플러그인 자동 재빌드 포함
+
+### 이슈
+
+| 이슈 | severity | 해결 | 해결방법 |
+|------|----------|------|---------|
+| init_watchers와 start_loop를 독립 task로 분리 시 동시 인덱싱으로 문서 수 2배 카운팅 | high | true | 순차 실행으로 되돌리고 trigger_reindex에서 force_mark_task_started로 선등록 |
+| sqlite-vec 가상 테이블 COUNT(*)가 항상 0 반환 | medium | true | chunks 테이블 카운트로 교체 |
+| 강제 재인덱싱 후 UI active task 즉시 미표시 | medium | true | trigger_reindex 호출 시점에 force_mark_task_started 선등록 |
+
+### 배운점
+
+- sqlite-vec 가상 테이블은 COUNT(*)가 정상 동작하지 않으므로 실제 데이터 테이블 카운트 사용 필요
+- 비동기 task를 독립 실행으로 분리할 때 동일 리소스 경쟁 조건 반드시 검토 필요
+- Confluence CQL API totalSize 필드로 전체 문서 수 파악 가능, estimated_total로 진행률 UI 활용
+
+### 개선할점
+
+- SyncManager task 상태 전이 로직이 분산되어 있어 상태 머신 패턴 리팩토링 고려
+- sync_manager 병렬 실행 시나리오에 대한 통합 테스트 추가 필요
+- progress_callback 타입을 구조체로 래핑하면 향후 필드 추가 시 변경 범위 감소
+
+### 하네스 개선 제안
+
+<!-- rule_candidate: sqlite-vec 가상 테이블 COUNT(*) 문제가 database.md 규칙에 미문서화 -->
+**제안**: database.md에 'sqlite-vec 가상 테이블 COUNT(*) 사용 금지' 규칙 추가
+**근거**: chunk_embeddings COUNT(*) → chunks COUNT 교체 패턴으로 실제 문제 확인됨

@@ -54,11 +54,18 @@ async fn fetch_all_returns_pages_from_api() {
     Mock::given(method("GET")).and(path("/api/v2/pages")).respond_with(ResponseTemplate::new(200).set_body_json(&fixture)).mount(&server).await;
     
     // 개별 페이지 조회 Mock 추가 (인덱서 검증 로직 대응)
-    for id in ["1", "2", "3"] {
-        Mock::given(method("GET")).and(path(format!("/api/v2/pages/{}", id))).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "id": id, "title": format!("Page {}", id), "parentId": null, "_links": {"webui": format!("/p{}", id)}
-        }))).mount(&server).await;
-    }
+    Mock::given(method("GET")).and(path("/api/v2/pages")).and(query_param("id", "1")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "results": [{"id": "1", "title": "Page 1", "parentId": null, "_links": {"webui": "/p1"}}],
+        "_links": {"next": null}
+    }))).mount(&server).await;
+    Mock::given(method("GET")).and(path("/api/v2/pages")).and(query_param("id", "2")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "results": [{"id": "2", "title": "Page 2", "parentId": null, "_links": {"webui": "/p2"}}],
+        "_links": {"next": null}
+    }))).mount(&server).await;
+    Mock::given(method("GET")).and(path("/api/v2/pages")).and(query_param("id", "3")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "results": [{"id": "3", "title": "Page 3", "parentId": null, "_links": {"webui": "/p3"}}],
+        "_links": {"next": null}
+    }))).mount(&server).await;
 
     let plugin = make_plugin(&server, "TEAM");
     let stream = plugin.fetch_all(FetchAllOpts { cursor: None, page_size: 25 }).await.unwrap();
@@ -72,26 +79,43 @@ async fn fetch_all_paginates_with_cursor() {
 
     let res1 = serde_json::json!({
         "results": [{"id": "1", "title": "A", "_links": {"webui": "/a"}}],
-        "_links": {"next": "/next"}
+        "_links": {"next": "/api/v2/pages?cursor=page2&limit=25"}
     });
     let res2 = serde_json::json!({
         "results": [{"id": "2", "title": "B", "_links": {"webui": "/b"}}],
         "_links": {"next": null}
     });
 
-    Mock::given(method("GET")).and(path("/api/v2/pages")).and(query_param("offset", "0")).respond_with(ResponseTemplate::new(200).set_body_json(&res1)).mount(&server).await;
-    Mock::given(method("GET")).and(path("/api/v2/pages")).and(query_param("offset", "25")).respond_with(ResponseTemplate::new(200).set_body_json(&res2)).mount(&server).await;
-    
+    Mock::given(method("GET"))
+        .and(path("/api/v2/pages"))
+        .and(|req: &wiremock::Request| !req.url.query_pairs().any(|(k, _)| k == "cursor"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&res1))
+        .mount(&server).await;
+
     // 개별 페이지 조회 Mock 추가
-    for id in ["1", "2"] {
-        Mock::given(method("GET")).and(path(format!("/api/v2/pages/{}", id))).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "id": id, "title": format!("Page {}", id), "parentId": null, "_links": {"webui": format!("/p{}", id)}
-        }))).mount(&server).await;
-    }
+    Mock::given(method("GET")).and(path("/api/v2/pages")).and(query_param("id", "1")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "results": [{"id": "1", "title": "Page 1", "parentId": null, "_links": {"webui": "/p1"}}],
+        "_links": {"next": null}
+    }))).mount(&server).await;
+    Mock::given(method("GET")).and(path("/api/v2/pages")).and(query_param("id", "2")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "results": [{"id": "2", "title": "Page 2", "parentId": null, "_links": {"webui": "/p2"}}],
+        "_links": {"next": null}
+    }))).mount(&server).await;
 
     let plugin = make_plugin(&server, "TEAM");
     let p1 = plugin.fetch_all(FetchAllOpts { cursor: None, page_size: 25 }).await.unwrap();
-    assert_eq!(p1.next_cursor.as_deref(), Some("25"));
+    assert_eq!(p1.next_cursor.as_deref(), Some("/api/v2/pages?cursor=page2&limit=25"));
+
+    // 2페이지용 Mock: 커서 경로 전체 매칭
+    Mock::given(method("GET"))
+        .and(path("/api/v2/pages"))
+        .and(query_param("cursor", "page2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&res2))
+        .mount(&server).await;
+    
+    let p2 = plugin.fetch_all(FetchAllOpts { cursor: p1.next_cursor, page_size: 25 }).await.unwrap();
+    assert_eq!(p2.documents.len(), 1);
+    assert_eq!(p2.documents[0].id.0, "2");
 }
 
 #[tokio::test]
@@ -105,14 +129,18 @@ async fn fetch_changes_returns_updated_pages() {
     });
 
     Mock::given(method("GET")).and(path("/rest/api/content/search")).respond_with(ResponseTemplate::new(200).set_body_json(&body)).mount(&server).await;
-    Mock::given(method("GET")).and(path("/api/v2/pages/200")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-        "id": "200", "title": "Updated", "parentId": null, "_links": {"webui": "/w"}
+    Mock::given(method("GET")).and(path("/api/v2/pages")).and(query_param("id", "200")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "results": [{"id": "200", "title": "Updated", "parentId": null, "_links": {"webui": "/w"}}],
+        "_links": {"next": null}
     }))).mount(&server).await;
 
-    // [Doxus Fix] 부모 페이지 조회 시도 시 404 방지용 Mock
+    // [Doxus Fix] 부모 페이지 조회 시도 시 404 방지용 Mock (fetch_document 사용)
     Mock::given(method("GET")).and(path("/api/v2/pages/123")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
         "id": "123", "title": "Ancestor", "parentId": null, "_links": {"webui": "/anc"}
     }))).mount(&server).await;
+
+    // Health check mock
+    Mock::given(method("GET")).and(path("/rest/api/content")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"results": []}))).mount(&server).await;
 
     let plugin = make_plugin(&server, "TEAM");
     let cs = plugin.fetch_changes(FetchChangesOpts { since: 0, cursor: None, page_size: 25, known_ids: vec![] }).await.unwrap();
@@ -124,6 +152,7 @@ async fn health_check_ancestor_only_config_returns_healthy() {
     let server = MockServer::start().await;
     mock_v2_basics(&server, "TEAM", "123", "Team Space").await;
 
+    Mock::given(method("GET")).and(path("/rest/api/content")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"results": []}))).mount(&server).await;
     Mock::given(method("GET")).and(path("/api/v2/pages/4667998225")).respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
         "id": "4667998225", "title": "Root", "_links": {"webui": "/r"}, "parentId": null
     }))).mount(&server).await;
@@ -136,7 +165,7 @@ async fn health_check_ancestor_only_config_returns_healthy() {
 async fn health_check_ancestor_only_returns_unhealthy_on_404() {
     let server = MockServer::start().await;
     mock_v2_basics(&server, "TEAM", "123", "Team Space").await;
-    Mock::given(method("GET")).and(path("/api/v2/pages/999")).respond_with(ResponseTemplate::new(404)).mount(&server).await;
+    Mock::given(method("GET")).and(path("/rest/api/content")).respond_with(ResponseTemplate::new(404)).mount(&server).await;
     let plugin = make_ancestor_plugin(&server, "999");
     assert!(!plugin.health_check().await.healthy);
 }

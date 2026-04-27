@@ -231,6 +231,8 @@ struct ConfluenceCqlResult {
     size: i64,
     #[serde(rename = "totalSize", default)]
     total_size: Option<i64>,
+    #[serde(rename = "_links", default)]
+    links: ConfluenceLinks,
 }
 
 #[allow(dead_code)]
@@ -240,7 +242,7 @@ struct ConfluencePage {
     title: String,
     #[serde(rename = "type", default = "default_page_type")]
     content_type: String,
-    #[serde(rename = "_links")]
+    #[serde(rename = "_links", default)]
     links: ConfluenceLinks,
     body: Option<ConfluenceBody>,
     version: Option<ConfluenceVersion>,
@@ -259,8 +261,11 @@ struct ConfluenceAncestor {
 fn default_page_type() -> String { "page".to_string() }
 
 #[allow(dead_code)]
-#[derive(Deserialize)]
-struct ConfluenceLinks { webui: Option<String> }
+#[derive(Deserialize, Default)]
+struct ConfluenceLinks { 
+    webui: Option<String>,
+    next: Option<String>,
+}
 #[allow(dead_code)]
 #[derive(Deserialize)]
 struct ConfluenceBody { storage: Option<ConfluenceStorage> }
@@ -436,15 +441,26 @@ pub(crate) fn fetch_all_impl(opts: FetchAllOptsWasm) -> FnResult<DocumentStreamW
     
     let mut hierarchy = get_full_hierarchy(&mut state, &base_url, &space_info.id)?;
     
-    let start = opts.cursor.and_then(|c| c.parse::<i64>().ok()).unwrap_or(0);
+    let start = opts.cursor.as_ref().and_then(|c| c.parse::<i64>().ok()).unwrap_or(0);
     let limit = opts.page_size as i64;
     
     let mut doc_tags = HashMap::new();
     let ancestor_id = state.get_config_string("ancestor_id");
-    let (pages_results, has_next, cql_total) = if let Some(aid) = &ancestor_id {
-        let cql = format!("ancestor = \"{}\" ORDER BY id ASC", aid);
-        let url = format!("{base_url}/rest/api/content/search?cql={}&expand=metadata.labels&start={start}&limit={limit}", urlencoding::encode(&cql));
-        log_d!("confluence", "[Confluence-Debug] CQL URL: {}", url);
+    let (pages_results, next_cursor_val, cql_total) = if let Some(aid) = &ancestor_id {
+
+        
+        let url = if let Some(c) = &opts.cursor {
+            if c.starts_with('/') {
+                format!("{base_url}{}", c)
+            } else {
+                let cql = format!("ancestor = \"{}\" ORDER BY id ASC", aid);
+                format!("{base_url}/rest/api/content/search?cql={}&expand=metadata.labels&start={}&limit={limit}", urlencoding::encode(&cql), c)
+            }
+        } else {
+            let cql = format!("ancestor = \"{}\" ORDER BY id ASC", aid);
+            format!("{base_url}/rest/api/content/search?cql={}&expand=metadata.labels&start=0&limit={limit}", urlencoding::encode(&cql))
+        };
+
 
         let resp = request_with_auth(&state, "GET", &url, None)?;
         let r: ConfluenceCqlResult = serde_json::from_slice(&resp.body())?;
@@ -452,9 +468,7 @@ pub(crate) fn fetch_all_impl(opts: FetchAllOptsWasm) -> FnResult<DocumentStreamW
 
         let mut details = Vec::new();
         if !r.results.is_empty() {
-            // Filter only pages (exclude folder type if it appeared)
             let page_ids: Vec<String> = r.results.iter()
-                .inspect(|p| log_d!("confluence", "[Confluence-Debug] - Result ID: {}, Type: {}", p.id, p.content_type))
                 .filter(|p| p.content_type.to_lowercase() == "page")
                 .map(|p| {
                     let tags: Vec<String> = p.metadata.as_ref()
@@ -466,31 +480,52 @@ pub(crate) fn fetch_all_impl(opts: FetchAllOptsWasm) -> FnResult<DocumentStreamW
                 })
                 .collect();
 
-
             if !page_ids.is_empty() {
                 let ids_str = page_ids.join(",");
-                // body-format=storage: version.createdAt(updated_at)이 이 파라미터 없이는 반환되지 않음
                 let v2_url = format!("{base_url}/api/v2/pages?id={}&body-format=storage&limit={}", ids_str, page_ids.len());
-                log_d!("confluence", "[Confluence-Debug] V2 Detail URL: {}", v2_url);
                 let v2_resp = request_with_auth(&state, "GET", &v2_url, None)?;
                 let v2_list: ConfluenceV2ListResponse<ConfluencePageV2> = serde_json::from_slice(&v2_resp.body())?;
-                log_d!("confluence", "[Confluence-Debug] Received {} V2 details", v2_list.results.len());
                 details = v2_list.results;
             }
         }
-        (details, r.results.len() as i64 >= r.limit, total_hint)
+        
+        // V1에서도 next 링크가 있으면 그것을 우선 사용
+        let next_cursor = if let Some(next) = r.links.next {
+            Some(next)
+        } else if r.results.len() as i64 >= r.limit {
+            // 링크는 없는데 데이터가 더 있을 것 같으면 오프셋 기반 폴백
+            Some((start + limit).to_string())
+        } else {
+            None
+        };
+        
+        (details, next_cursor, total_hint)
     } else {
-        let pages_url = format!("{base_url}/api/v2/pages?spaceKey={space_key}&limit={limit}&offset={start}&body-format=storage");
+
+        
+        let pages_url = if let Some(c) = &opts.cursor {
+            if c.starts_with('/') {
+                format!("{base_url}{}", c)
+            } else {
+                format!("{base_url}/api/v2/pages?spaceKey={space_key}&limit={limit}&body-format=storage&cursor={}", c)
+            }
+        } else {
+            format!("{base_url}/api/v2/pages?spaceKey={space_key}&limit={limit}&body-format=storage")
+        };
+        
+
         let resp = request_with_auth(&state, "GET", &pages_url, None)?;
         let r: ConfluenceV2ListResponse<ConfluencePageV2> = serde_json::from_slice(&resp.body())?;
-        (r.results, r.links.next.is_some(), None)
+        
+        let next_cursor = r.links.next.clone();
+        (r.results, next_cursor, None)
     };
 
     for p in &pages_results {
         hierarchy.insert(p.id.clone(), (p.title.clone(), p.parent_id.clone()));
     }
 
-    let next_cursor = if has_next { Some((start + limit).to_string()) } else { None };
+    let next_cursor = next_cursor_val;
 
     let mut documents: Vec<RawDocumentWasm> = pages_results.into_iter()
         .map(|p| {
@@ -1055,15 +1090,13 @@ fn get_full_hierarchy(
         
         if let Ok(resp) = request_with_auth(state, "GET", &pages_url, None) {
             if let Ok(list) = serde_json::from_slice::<ConfluenceV2ListResponse<ConfluencePageV2>>(&resp.body()) {
-                let current_batch_size = list.results.len();
+                let _current_batch_size = list.results.len();
                 for p in list.results {
                     hierarchy.insert(p.id, (p.title, p.parent_id));
                 }
                 
                 if let Some(next) = list.links.next {
                     pages_url = if next.starts_with("http") { next } else { format!("{}{}", base_url, next) };
-                } else if current_batch_size >= 250 {
-                   pages_url = format!("{base_url}/api/v2/spaces/{space_id}/pages?limit=250&offset={}", pages_count * 250);
                 } else { break; }
             } else { break; }
         } else { break; }
@@ -1447,14 +1480,17 @@ impl DocSource for ConfluencePlugin {
     }
 
     async fn health_check(&self) -> HealthStatus {
-        if let Err(e) = self.setup_state() {
-            return HealthStatus { healthy: false, message: Some(format!("Failed to setup test state: {}", e)) };
-        }
-        let res = health_check_impl();
-        match res {
-            Ok(msg) => HealthStatus { healthy: true, message: Some(msg) },
-            Err(e) => HealthStatus { healthy: false, message: Some(e.to_string()) },
-        }
+        let this = self.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = this.setup_state() {
+                return HealthStatus { healthy: false, message: Some(format!("Failed to setup test state: {}", e)) };
+            }
+            let res = health_check_impl();
+            match res {
+                Ok(msg) => HealthStatus { healthy: true, message: Some(msg) },
+                Err(e) => HealthStatus { healthy: false, message: Some(e.to_string()) },
+            }
+        }).await.unwrap_or(HealthStatus { healthy: false, message: Some("Task panicked".to_string()) })
     }
 
     fn supports_write(&self) -> bool {
@@ -1523,3 +1559,5 @@ fn wasm_to_native_doc(w: RawDocumentWasm) -> RawDocument {
         relative_path: w.relative_path,
     }
 }
+
+
