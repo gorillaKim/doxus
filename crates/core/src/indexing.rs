@@ -7,7 +7,7 @@ use crate::plugin::PluginManager;
 use crate::search::{SearchEngine, DocMeta};
 use crate::auth::inject_keychain_auth;
 use crate::links::{LinkExtractor, LinkResolver};
-use doxus_plugin_sdk::{FetchAllOpts, PluginConfig, PluginSecrets, SyncPolicy};
+use doxus_plugin_sdk::{FetchAllOpts, FetchChangesOpts, PluginConfig, PluginSecrets, SyncPolicy};
 use crate::observability::{persist_audit, AuditEvent};
 
 pub struct IndexingService {
@@ -204,6 +204,115 @@ impl IndexingService {
             Ok(_) => Ok(total),
             Err(e) => Err(e),
         }
+    }
+
+    /// 증분 인덱싱: last_fetched_at 기준으로 fetch_changes를 호출해 변경 문서만 처리합니다.
+    /// last_fetched_at이 없거나 플러그인이 incremental_sync를 미지원하면 fetch_all 방식으로 폴백합니다.
+    pub async fn index_project_changes(
+        &self,
+        name: &str,
+        on_progress: impl Fn(usize, usize) + Send,
+    ) -> Result<usize, String> {
+        let last_fetched_at: Option<i64> = {
+            let conn = self.conn.lock().map_err(|_| "db lock poisoned".to_string())?;
+            conn.query_row(
+                "SELECT last_fetched_at FROM projects WHERE name = ?1",
+                params![name],
+                |r| r.get(0),
+            ).ok().flatten()
+        };
+
+        let (project_id, plugin_id, config_json, project_path, _strategy, _policy) = self.get_project_config(name).await?;
+
+        let mut plugin = self.plugin_manager.get_source(&plugin_id)
+            .ok_or_else(|| format!("플러그인을 찾을 수 없습니다: {plugin_id}"))?;
+
+        let mut config_fields = self.parse_config(&config_json);
+        let mut secrets = PluginSecrets::default();
+        if !project_path.is_empty() {
+            config_fields.insert("path".to_string(), serde_json::Value::String(project_path));
+        }
+        let mut final_config = PluginConfig { fields: config_fields };
+        inject_keychain_auth(&plugin_id, &mut final_config, &mut secrets).await;
+
+        plugin.initialize(final_config, secrets).await
+            .map_err(|e| format!("플러그인 초기화 실패: {e}"))?;
+
+        if !plugin.capabilities().incremental_sync || last_fetched_at.is_none() {
+            return self.index_project_with_progress(name, false, on_progress).await;
+        }
+
+        let since = last_fetched_at.unwrap();
+        crate::log_d!("indexer", "[Core-Indexer] 증분 인덱싱 시작: {} (since={})", name, since);
+
+        let mut total = 0usize;
+        let mut cursor: Option<String> = None;
+
+        loop {
+            let opts = FetchChangesOpts { since, cursor: cursor.clone(), page_size: 100, known_ids: vec![] };
+            let changeset = match plugin.fetch_changes(opts).await {
+                Ok(cs) => cs,
+                Err(e) => {
+                    crate::log_d!("indexer", "[Core-Indexer] fetch_changes 오류, fetch_all로 폴백: {}", e);
+                    return self.index_project_with_progress(name, false, on_progress).await;
+                }
+            };
+
+            if !changeset.updated.is_empty() {
+                let mut batch_requests = Vec::new();
+                for doc in changeset.updated {
+                    let title = doc.title.as_deref()
+                        .map(|s| s.to_string())
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or_else(|| "Untitled".to_string());
+                    let mut all_links = LinkExtractor::extract_links(&doc.content);
+                    all_links.extend(doc.links.clone());
+                    all_links.sort();
+                    all_links.dedup();
+                    let meta = DocMeta {
+                        url: doc.url.clone(),
+                        tags: doc.tags.clone(),
+                        metadata: doc.metadata.clone(),
+                        created_at: doc.created_at,
+                        updated_at: doc.updated_at,
+                        relative_path: doc.relative_path.clone(),
+                        links: all_links,
+                        ..Default::default()
+                    };
+                    batch_requests.push(crate::search::BatchIndexingRequest {
+                        project_id,
+                        source_doc_id: doc.id.0,
+                        title,
+                        content: doc.content,
+                        meta,
+                    });
+                }
+                if !batch_requests.is_empty() {
+                    let count = batch_requests.len();
+                    if self.engine.index_documents_batch_async(batch_requests).await.is_ok() {
+                        total += count;
+                        on_progress(total, 0);
+                    }
+                }
+            }
+
+            cursor = changeset.next_cursor;
+            if cursor.is_none() { break; }
+        }
+
+        // last_fetched_at 갱신
+        if let Ok(conn) = self.conn.lock() {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            let _ = conn.execute(
+                "UPDATE projects SET last_fetched_at = ?1 WHERE name = ?2",
+                params![now, name],
+            );
+        }
+
+        Ok(total)
     }
 
     /// 단일 문서를 인덱싱합니다. (청킹, 임베딩, DB 저장 포함)

@@ -345,7 +345,7 @@ impl DocSource for WasmDocSourceAdapter {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
-            incremental_sync: false,
+            incremental_sync: true,
             oauth: false,
             native_search: false,
             sync_policy: doxus_plugin_sdk::SyncPolicy::Interval { seconds: 7200 },

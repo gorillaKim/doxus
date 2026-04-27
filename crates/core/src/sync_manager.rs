@@ -242,10 +242,16 @@ impl SyncManager {
                 }
             })
         };
-        let result = if let Some(on_progress) = cb {
-            self.indexing_service.index_project_with_progress(project_name, full, on_progress).await
+        let result = if full {
+            if let Some(on_progress) = cb {
+                self.indexing_service.index_project_with_progress(project_name, true, on_progress).await
+            } else {
+                self.indexing_service.index_project(project_name, true).await
+            }
+        } else if let Some(on_progress) = cb {
+            self.indexing_service.index_project_changes(project_name, on_progress).await
         } else {
-            self.indexing_service.index_project(project_name, full).await
+            self.indexing_service.index_project_changes(project_name, |_, _| {}).await
         };
         self.update_last_sync(project_name).await;
 
