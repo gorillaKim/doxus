@@ -145,8 +145,7 @@ impl SyncManager {
         let active_projects = self.get_active_projects().unwrap_or_default();
         for project_name in active_projects {
             crate::log_d!("sync", "[SyncManager] Running initial Catch-up scan for {}", project_name);
-            let _ = self.indexing_service.index_project(&project_name, false).await;
-            self.update_last_sync(&project_name).await;
+            self.run_task(&project_name, false).await;
         }
 
         let wm = Arc::new(crate::watcher::WatcherManager::new(
