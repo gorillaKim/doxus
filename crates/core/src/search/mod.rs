@@ -303,7 +303,7 @@ impl SearchEngine {
                 drop(text_refs);
                 drop(sub_flat_texts);
 
-                let mut sub_flat_embeddings: Vec<Vec<u8>> = Vec::with_capacity(embedding_vecs.len());
+                sub_flat_embeddings = Vec::with_capacity(embedding_vecs.len());
                 for emb in embedding_vecs {
                     let quantized = crate::embedding::quantize_to_i8(&emb);
                     let bytes: Vec<u8> = quantized.into_iter().map(|i| i as u8).collect();

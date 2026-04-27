@@ -378,7 +378,7 @@ impl IndexingService {
             Err(_) => return true,
         };
 
-        let (old_updated_at, last_indexed, chunk_count, old_content_hash): (Option<i64>, Option<i64>, i64, Option<String>) = conn.query_row(
+        let (old_updated_at, last_indexed, _chunk_count, old_content_hash): (Option<i64>, Option<i64>, i64, Option<String>) = conn.query_row(
             "SELECT d.updated_at, d.last_indexed, COUNT(c.id), d.content_hash
              FROM documents d
              LEFT JOIN chunks c ON d.id = c.document_id
