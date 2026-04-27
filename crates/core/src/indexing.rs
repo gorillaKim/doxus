@@ -120,7 +120,13 @@ impl IndexingService {
                 for mut doc in docs {
                     let source_doc_id = doc.id.0.clone();
 
-                    if !full && !self.needs_reindexing(project_id, &source_doc_id, doc.updated_at).await {
+                    let content_hash_for_check = if !doc.content.is_empty() {
+                        use sha2::{Sha256, Digest};
+                        Some(format!("{:x}", Sha256::digest(doc.content.as_bytes())))
+                    } else {
+                        None
+                    };
+                    if !full && !self.needs_reindexing_with_hash(project_id, &source_doc_id, doc.updated_at, content_hash_for_check.as_deref()).await {
                         let _ = self.update_last_indexed(project_id, &source_doc_id, sync_start_time).await;
                         continue;
                     }
@@ -234,41 +240,51 @@ impl IndexingService {
 
     /// 특정 문서가 재인덱싱이 필요한지 확인합니다.
     pub async fn needs_reindexing(&self, project_id: i64, source_doc_id: &str, new_updated_at: Option<i64>) -> bool {
+        self.needs_reindexing_with_hash(project_id, source_doc_id, new_updated_at, None).await
+    }
+
+    pub async fn needs_reindexing_with_hash(
+        &self,
+        project_id: i64,
+        source_doc_id: &str,
+        new_updated_at: Option<i64>,
+        new_content_hash: Option<&str>,
+    ) -> bool {
         let conn = match self.conn.lock() {
             Ok(c) => c,
             Err(_) => return true,
         };
 
-        let (old_updated_at, last_indexed, chunk_count, current_title): (Option<i64>, Option<i64>, i64, String) = conn.query_row(
-            "SELECT d.updated_at, d.last_indexed, COUNT(c.id), d.title
-             FROM documents d 
+        let (old_updated_at, last_indexed, chunk_count, old_content_hash): (Option<i64>, Option<i64>, i64, Option<String>) = conn.query_row(
+            "SELECT d.updated_at, d.last_indexed, COUNT(c.id), d.content_hash
+             FROM documents d
              LEFT JOIN chunks c ON d.id = c.document_id
              WHERE d.project_id = ?1 AND d.source_doc_id = ?2
              GROUP BY d.id",
             params![project_id, source_doc_id],
             |r| Ok((
-                r.get(0).ok().flatten(), 
-                r.get(1).ok().flatten(), 
+                r.get(0).ok().flatten(),
+                r.get(1).ok().flatten(),
                 r.get::<_, i64>(2)?,
-                r.get::<_, String>(3).unwrap_or_default()
+                r.get(3).ok().flatten(),
             ))
-        ).unwrap_or((None, None, 0, String::new()));
+        ).unwrap_or((None, None, 0, None));
 
         // 1. 인덱싱된 기록이 아예 없거나 청크가 0개인 경우
         if last_indexed.is_none() || chunk_count == 0 {
             return true;
         }
 
-        // 2. 제목이 'Untitled'인 경우 강제 재인덱싱 (데이터 복구용)
-        if current_title == "Untitled" {
-            return true;
-        }
-
-        // 3. 타임스탬프 비교
+        // 2. 타임스탬프 비교 — None이면 content_hash로 fallback
         match (new_updated_at, old_updated_at) {
             (Some(new), Some(old)) => new != old,
-            (None, _) => true, // 새로운 타임스탬프 정보가 없다면 안전하게 재인덱싱
-            (_, None) => true,
+            _ => {
+                // 타임스탬프 정보 없음 → content_hash로 변경 감지
+                match (new_content_hash, old_content_hash.as_deref()) {
+                    (Some(new_h), Some(old_h)) => new_h != old_h,
+                    _ => true, // hash도 없으면 안전하게 재인덱싱
+                }
+            }
         }
     }
 
@@ -436,6 +452,70 @@ mod tests {
 
         // 4. 새로운 문서인 경우 -> true
         assert!(indexer.needs_reindexing(1, "new_doc", Some(100)).await);
+    }
+
+    #[tokio::test]
+    async fn test_untitled_doc_not_force_reindexed_when_timestamp_matches() {
+        // Bug B: "Untitled" 제목이어도 타임스탬프가 동일하면 재인덱싱하면 안 됨
+        let db = TestDb::new();
+        let conn = Arc::new(std::sync::Mutex::new(db.conn));
+        let pm = Arc::new(PluginManager::new(std::path::PathBuf::from("/tmp/plugins")));
+        let engine = Arc::new(SearchEngine::with_embedder(conn.clone(), Arc::new(crate::embedding::NoOpEmbedder)));
+        let indexer = IndexingService::new(conn.clone(), pm, engine);
+
+        conn.lock().unwrap().execute(
+            "INSERT INTO projects (id, name, display_name, path, created_at, updated_at) \
+             VALUES (1, 'test', 'Test', '/tmp', 0, 0)",
+            [],
+        ).unwrap();
+        conn.lock().unwrap().execute(
+            "INSERT INTO documents (project_id, source_doc_id, title, content_hash, updated_at, last_indexed) \
+             VALUES (1, 'untitled-doc', 'Untitled', 'hash_abc', 100, 100)",
+            [],
+        ).unwrap();
+        conn.lock().unwrap().execute(
+            "INSERT INTO chunks (document_id, content, chunk_index) \
+             SELECT id, 'content', 0 FROM documents WHERE source_doc_id = 'untitled-doc'",
+            [],
+        ).unwrap();
+
+        // 동일 타임스탬프 → 변경 없음 → 재인덱싱 안 해야 함
+        assert!(!indexer.needs_reindexing(1, "untitled-doc", Some(100)).await,
+            "Untitled + 동일 타임스탬프인 경우 재인덱싱하지 않아야 함");
+    }
+
+    #[tokio::test]
+    async fn test_needs_reindexing_uses_content_hash_when_timestamp_missing() {
+        // Bug C: updated_at=None이어도 content_hash가 동일하면 재인덱싱하면 안 됨
+        let db = TestDb::new();
+        let conn = Arc::new(std::sync::Mutex::new(db.conn));
+        let pm = Arc::new(PluginManager::new(std::path::PathBuf::from("/tmp/plugins")));
+        let engine = Arc::new(SearchEngine::with_embedder(conn.clone(), Arc::new(crate::embedding::NoOpEmbedder)));
+        let indexer = IndexingService::new(conn.clone(), pm, engine);
+
+        conn.lock().unwrap().execute(
+            "INSERT INTO projects (id, name, display_name, path, created_at, updated_at) \
+             VALUES (1, 'test', 'Test', '/tmp', 0, 0)",
+            [],
+        ).unwrap();
+        conn.lock().unwrap().execute(
+            "INSERT INTO documents (project_id, source_doc_id, title, content_hash, updated_at, last_indexed) \
+             VALUES (1, 'no-ts-doc', 'SomeTitle', 'stable_hash', NULL, 100)",
+            [],
+        ).unwrap();
+        conn.lock().unwrap().execute(
+            "INSERT INTO chunks (document_id, content, chunk_index) \
+             SELECT id, 'content', 0 FROM documents WHERE source_doc_id = 'no-ts-doc'",
+            [],
+        ).unwrap();
+
+        // updated_at=None이지만 content_hash 동일 → 재인덱싱 안 해야 함
+        assert!(!indexer.needs_reindexing_with_hash(1, "no-ts-doc", None, Some("stable_hash")).await,
+            "타임스탬프 없어도 content_hash 동일하면 재인덱싱하지 않아야 함");
+
+        // content_hash 변경 → 재인덱싱 해야 함
+        assert!(indexer.needs_reindexing_with_hash(1, "no-ts-doc", None, Some("new_hash")).await,
+            "content_hash 변경 시 재인덱싱해야 함");
     }
 
     #[tokio::test]
