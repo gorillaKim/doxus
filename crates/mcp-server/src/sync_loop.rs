@@ -369,8 +369,8 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
                                             current_chunk_count += estimated_chunks;
 
                                             if current_chunk_count >= MAX_CHUNKS_PER_BATCH {
-                                                tracing::info!(instance_id = inst.id, batch_size = current_batch.len(), "sync_loop: triggering batch indexing");
-                                                if let Err(e) = engine.index_documents_batch_async(std::mem::take(&mut current_batch)).await {
+                                                let sync_start_time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().unwrap_or_default().as_secs() as i64;
+                                                if let Err(e) = engine.index_documents_batch_async(std::mem::take(&mut current_batch), sync_start_time).await {
                                                     tracing::error!(instance_id = inst.id, error = %e, "sync_loop: batch indexing failed");
                                                 }
                                                 current_chunk_count = 0;
@@ -379,8 +379,8 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
 
                                         // 남은 배치 처리
                                         if !current_batch.is_empty() {
-                                            tracing::info!(instance_id = inst.id, batch_size = current_batch.len(), "sync_loop: triggering final batch indexing");
-                                            if let Err(e) = engine.index_documents_batch_async(current_batch).await {
+                                            let sync_start_time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().unwrap_or_default().as_secs() as i64;
+                                            if let Err(e) = engine.index_documents_batch_async(current_batch, sync_start_time).await {
                                                 tracing::error!(instance_id = inst.id, error = %e, "sync_loop: final batch indexing failed");
                                             }
                                         }
