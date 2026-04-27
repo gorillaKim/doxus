@@ -442,7 +442,7 @@ pub(crate) fn fetch_all_impl(opts: FetchAllOptsWasm) -> FnResult<DocumentStreamW
     let mut doc_tags = HashMap::new();
     let ancestor_id = state.get_config_string("ancestor_id");
     let (pages_results, has_next, cql_total) = if let Some(aid) = &ancestor_id {
-        let cql = format!("ancestor = \"{}\" ORDER BY created ASC", aid);
+        let cql = format!("ancestor = \"{}\" ORDER BY id ASC", aid);
         let url = format!("{base_url}/rest/api/content/search?cql={}&expand=metadata.labels&start={start}&limit={limit}", urlencoding::encode(&cql));
         log_d!("confluence", "[Confluence-Debug] CQL URL: {}", url);
 
@@ -478,7 +478,7 @@ pub(crate) fn fetch_all_impl(opts: FetchAllOptsWasm) -> FnResult<DocumentStreamW
                 details = v2_list.results;
             }
         }
-        (details, r.size >= r.limit, total_hint)
+        (details, r.results.len() as i64 >= r.limit, total_hint)
     } else {
         let pages_url = format!("{base_url}/api/v2/pages?spaceKey={space_key}&limit={limit}&offset={start}&body-format=storage");
         let resp = request_with_auth(&state, "GET", &pages_url, None)?;
@@ -577,7 +577,7 @@ pub(crate) fn fetch_changes_impl(opts: FetchChangesOptsWasm) -> FnResult<ChangeS
     let resp = request_with_auth(&state, "GET", &url, None)?;
     let r: ConfluenceCqlResult = serde_json::from_slice(&resp.body())?;
 
-    let next_cursor = if r.size >= r.limit { Some((r.start + r.limit).to_string()) } else { None };
+    let next_cursor = if r.results.len() as i64 >= r.limit { Some((r.start + r.limit).to_string()) } else { None };
 
     let space_url = format!("{base_url}/api/v2/spaces?keys={space_key}");
     let space_resp = request_with_auth(&state, "GET", &space_url, None)?;
