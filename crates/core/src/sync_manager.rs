@@ -224,10 +224,9 @@ impl SyncManager {
     }
 
     async fn run_task(&self, project_name: &str, full: bool) {
-        if !self.mark_task_started(project_name).await {
-            crate::log_d!("sync", "[SyncManager] Task for {} already running, skipping", project_name);
-            return;
-        }
+        // force_mark_task_started: trigger_reindex may have pre-registered the task for UI visibility;
+        // always update the start time and proceed rather than skipping.
+        self.force_mark_task_started(project_name).await;
 
         let cb = {
             let guard = self.progress_callback.lock().await;

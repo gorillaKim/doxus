@@ -369,16 +369,11 @@ fn main() {
                 }
             });
 
-            // Start SyncManager background loop immediately (do NOT await init_watchers first)
-            let manager_loop = manager.clone();
+            // Start SyncManager background loop (init_watchers runs first, then loop starts)
+            let manager_inner = manager.clone();
             tauri::async_runtime::spawn(async move {
-                manager_loop.start_loop(rx).await;
-            });
-
-            // Run initial catch-up scan in a separate task so start_loop is not blocked
-            let manager_init = manager.clone();
-            tauri::async_runtime::spawn(async move {
-                manager_init.init_watchers().await;
+                manager_inner.init_watchers().await;
+                manager_inner.start_loop(rx).await;
             });
 
             // Register SyncManager progress callback to emit index_progress events

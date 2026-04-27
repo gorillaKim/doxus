@@ -850,7 +850,10 @@ pub async fn trigger_reindex(
         rows.filter_map(|r| r.ok()).collect()
     };
 
-    // 3. 백그라운드 큐(SyncManager)에 순차적으로 등록
+    // 3. UI에 즉시 표시되도록 active_tasks에 선등록 후 큐에 전달
+    for name in &names {
+        state.sync_manager.force_mark_task_started(name).await;
+    }
     for name in names {
         let _ = state.sync_manager.trigger_full_indexing_by_name(&name, is_full).await;
     }
