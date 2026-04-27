@@ -252,9 +252,10 @@ fn get_macos_idle_seconds() -> Result<f64, String> {
 }
 
 fn main() {
+    doxus_core::observability::init_tracing();
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     let config_path = std::path::PathBuf::from(&home).join(".doxus/config.toml");
-    
+
     // Load settings and initialize debug tags
     let mut settings = doxus_desktop_lib::commands::settings::load_settings_from_path(&config_path)
         .unwrap_or_default();
