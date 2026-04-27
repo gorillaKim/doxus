@@ -51,7 +51,7 @@ pub struct SyncManager {
     active_tasks: Arc<Mutex<std::collections::HashMap<String, i64>>>,
     recent_triggers: Arc<Mutex<VecDeque<SyncTriggerSummary>>>,
     event_tx: Arc<Mutex<Option<mpsc::Sender<(String, usize)>>>>,
-    progress_callback: Arc<Mutex<Option<Box<dyn Fn(String, usize) + Send + Sync>>>>,
+    progress_callback: Arc<Mutex<Option<Box<dyn Fn(String, usize, usize) + Send + Sync>>>>,
 }
 
 impl SyncManager {
@@ -136,7 +136,7 @@ impl SyncManager {
         *guard = Some(tx);
     }
 
-    pub async fn set_progress_callback(&self, cb: impl Fn(String, usize) + Send + Sync + 'static) {
+    pub async fn set_progress_callback(&self, cb: impl Fn(String, usize, usize) + Send + Sync + 'static) {
         let mut guard = self.progress_callback.lock().await;
         *guard = Some(Box::new(cb));
     }
@@ -234,12 +234,12 @@ impl SyncManager {
             guard.as_ref().map(|_| {
                 let progress_callback = Arc::clone(&self.progress_callback);
                 let name = project_name.to_string();
-                move |done: usize, _total: usize| {
+                move |done: usize, total: usize| {
                     let cb_clone = Arc::clone(&progress_callback);
                     let n = name.clone();
                     tokio::spawn(async move {
                         let guard = cb_clone.lock().await;
-                        if let Some(f) = guard.as_ref() { f(n, done); }
+                        if let Some(f) = guard.as_ref() { f(n, done, total); }
                     });
                 }
             })

@@ -369,11 +369,16 @@ fn main() {
                 }
             });
 
-            // Start SyncManager background loop
-            let manager_inner = manager.clone();
+            // Start SyncManager background loop immediately (do NOT await init_watchers first)
+            let manager_loop = manager.clone();
             tauri::async_runtime::spawn(async move {
-                manager_inner.init_watchers().await;
-                manager_inner.start_loop(rx).await;
+                manager_loop.start_loop(rx).await;
+            });
+
+            // Run initial catch-up scan in a separate task so start_loop is not blocked
+            let manager_init = manager.clone();
+            tauri::async_runtime::spawn(async move {
+                manager_init.init_watchers().await;
             });
 
             // Register SyncManager progress callback to emit index_progress events
@@ -381,11 +386,12 @@ fn main() {
                 let handle_progress = app.handle().clone();
                 let manager_progress = state_arc.sync_manager.clone();
                 tauri::async_runtime::spawn(async move {
-                    manager_progress.set_progress_callback(move |project_name, docs_done| {
+                    manager_progress.set_progress_callback(move |project_name, docs_done, total_docs| {
                         use tauri::Emitter;
                         let _ = handle_progress.emit("index_progress", serde_json::json!({
                             "project_name": project_name,
                             "docs_indexed": docs_done,
+                            "total_docs": if total_docs > 0 { serde_json::json!(total_docs) } else { serde_json::Value::Null },
                         }));
                     }).await;
                 });

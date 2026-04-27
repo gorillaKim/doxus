@@ -242,7 +242,7 @@ pub async fn get_embedding_status(
         .query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))
         .unwrap_or(0);
     let embedded_chunks: i64 = conn
-        .query_row("SELECT COUNT(*) FROM chunk_embeddings", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))
         .unwrap_or(0);
     let model_loaded = info.dimension > 0;
     let model = if model_loaded { format!("ONNX ({})", info.name) } else { "미활성 (모델 로드 실패)".to_string() };
