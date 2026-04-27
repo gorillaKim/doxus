@@ -9,6 +9,12 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DESKTOP_DIR="$ROOT_DIR/apps/desktop"
 TAURI_SRC="$DESKTOP_DIR/src-tauri"
 
+# Confluence WASM 플러그인 빌드 (tauri resources에 번들됨)
+echo "▶ Building Confluence WASM plugin..."
+cargo build --release --manifest-path "$ROOT_DIR/crates/plugins/confluence/Cargo.toml" --target wasm32-unknown-unknown
+cp "$ROOT_DIR/crates/plugins/confluence/target/wasm32-unknown-unknown/release/doxus_plugin_confluence.wasm" \
+   "$ROOT_DIR/crates/plugins/confluence/confluence.wasm"
+
 # doxus-mcp 바이너리 빌드 (externalBin 필요)
 echo "▶ Building doxus-mcp binary..."
 cargo build --release -p doxus-mcp --manifest-path "$ROOT_DIR/Cargo.toml"
