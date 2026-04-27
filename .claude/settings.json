@@ -96,12 +96,25 @@
       "WebFetch(domain:www.junia.ai)",
       "Bash(pnpm --filter desktop tauri dev)",
       "Bash(xargs -r kill -9)",
-      "Bash(pkill -9 -f \"vite\\\\|tauri\\\\|doxus\")"
+      "Bash(pkill -9 -f \"vite\\\\|tauri\\\\|doxus\")",
+      "mcp__plugin_serena_serena__initial_instructions",
+      "Bash(/usr/bin/grep -rn \"list_all_documents\\\\|fn list_all\\\\|trigger_reindex\" /Users/madup/gorillaProject/doxus/apps/desktop/src-tauri/src/commands/ /Users/madup/gorillaProject/doxus/apps/desktop/src-tauri/src/main.rs)",
+      "Bash(/usr/bin/grep -rn \"invoke<.*list_all_documents\\\\|invoke.*'trigger_reindex'\\\\|invoke.*\\\\\"trigger_reindex\\\\\"\\\\|sync_project\\\\|index_project'\" /Users/madup/gorillaProject/doxus/apps/desktop/src/)",
+      "Bash(/usr/bin/grep -n \"fn index_project\\\\|pub async fn index_project\\\\|index_project\\(\" /Users/madup/gorillaProject/doxus/apps/desktop/src-tauri/src/commands/search.rs /Users/madup/gorillaProject/doxus/apps/desktop/src-tauri/src/commands/projects.rs /Users/madup/gorillaProject/doxus/apps/desktop/src-tauri/src/commands/market.rs)",
+      "Bash(/usr/bin/grep -rn \"pub async fn index_project\\\\b\" /Users/madup/gorillaProject/doxus/apps/desktop/src-tauri/src/)",
+      "Bash(/usr/bin/grep -rn \"fn index_project\\\\|.invoke.*'index_project'\\\\|invoke.*\\\\\"index_project\\\\\"\" /Users/madup/gorillaProject/doxus/apps/desktop/)",
+      "mcp__doxus__doxus_index_project",
+      "mcp__doxus__doxus_list_projects",
+      "Bash(bash scripts/build-dmg.sh)",
+      "Bash(./scripts/build-dmg.sh)",
+      "Bash(kill 91349)"
     ],
     "additionalDirectories": [
       "/Users/madup/.doxus/agents/librarian",
       "/Users/madup/.doxus/db",
-      "/Users/madup/gorillaProject/doxus/.claude/skills"
+      "/Users/madup/gorillaProject/doxus/.claude/skills",
+      "/Users/madup/gorillaProject/doxus/target/wasm32-unknown-unknown/debug",
+      "/Users/madup/gorillaProject/doxus/crates/plugins/confluence/target/wasm32-unknown-unknown/debug"
     ]
   }
 }

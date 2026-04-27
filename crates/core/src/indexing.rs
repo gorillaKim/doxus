@@ -96,9 +96,9 @@ impl IndexingService {
 
         let result = async {
             loop {
-                tracing::debug!("[Core-Indexer][fetch_all] 페이지 요청: cursor={:?}", cursor);
+                crate::log_d!("indexer", "[Core-Indexer][fetch_all] 페이지 요청: cursor={:?}", cursor);
                 let stream = plugin.fetch_all(FetchAllOpts { cursor, page_size: 50 }).await.map_err(|e| e.to_string())?;
-                tracing::debug!("[Core-Indexer][fetch_all] 응답: docs={}, next_cursor={:?}, estimated_total={:?}",
+                crate::log_d!("indexer", "[Core-Indexer][fetch_all] 응답: docs={}, next_cursor={:?}, estimated_total={:?}",
                     stream.documents.len(), stream.next_cursor, stream.estimated_total);
                 if estimated_total == 0 {
                     if let Some(hint) = stream.estimated_total {
@@ -110,7 +110,7 @@ impl IndexingService {
                 if docs.is_empty() {
                     consecutive_empty += 1;
                     if consecutive_empty >= 5 {
-                        tracing::debug!("[Core-Indexer] 연속 {}회 빈 페이지 — 루프 종료", consecutive_empty);
+                        crate::log_d!("indexer", "[Core-Indexer] 연속 {}회 빈 페이지 — 루프 종료", consecutive_empty);
                         break;
                     }
                     cursor = stream.next_cursor;
@@ -130,11 +130,12 @@ impl IndexingService {
                         None
                     };
                     if !full && !self.needs_reindexing_with_hash(project_id, &source_doc_id, doc.updated_at, content_hash_for_check.as_deref()).await {
-                        tracing::debug!("[Core-Indexer][skip] source_doc_id={} updated_at={:?}", source_doc_id, doc.updated_at);
+                        crate::log_d!("indexer", "[Core-Indexer][skip] source_doc_id={} updated_at={:?}", source_doc_id, doc.updated_at);
                         let _ = self.update_last_indexed(project_id, &source_doc_id, sync_start_time).await;
                         continue;
                     }
-                    tracing::info!("[Core-Indexer][reindex] source_doc_id={} updated_at={:?}", source_doc_id, doc.updated_at);
+                    crate::log_d!("indexer", "[Core-Indexer][index] 재인덱싱 시작: source_doc_id={}", source_doc_id);
+                    crate::log_d!("indexer", "[Core-Indexer][reindex] source_doc_id={} updated_at={:?}", source_doc_id, doc.updated_at);
 
                     if doc.content.is_empty() {
                         match plugin.fetch_document(&doc.id).await {
@@ -178,7 +179,7 @@ impl IndexingService {
 
                 if !batch_requests.is_empty() {
                     let count = batch_requests.len();
-                    match self.engine.index_documents_batch_async(batch_requests).await {
+                    match self.engine.index_documents_batch_async(batch_requests, sync_start_time).await {
                         Ok(_) => {
                             total += count;
                             on_progress(total, estimated_total);
@@ -248,7 +249,7 @@ impl IndexingService {
         }
 
         let since = last_fetched_at.unwrap();
-        tracing::info!("[Core-Indexer] 증분 인덱싱 시작: {} (since={})", name, since);
+        crate::log_d!("indexer", "[Core-Indexer] 증분 인덱싱 시작: {} (since={})", name, since);
 
         let mut total = 0usize;
         let mut cursor: Option<String> = None;
@@ -258,7 +259,7 @@ impl IndexingService {
             let changeset = match plugin.fetch_changes(opts).await {
                 Ok(cs) => cs,
                 Err(e) => {
-                    tracing::info!("[Core-Indexer] fetch_changes 오류, fetch_all로 폴백: {}", e);
+                    crate::log_d!("indexer", "[Core-Indexer] fetch_changes 오류, fetch_all로 폴백: {}", e);
                     return self.index_project_with_progress(name, false, on_progress).await;
                 }
             };
@@ -294,9 +295,15 @@ impl IndexingService {
                 }
                 if !batch_requests.is_empty() {
                     let count = batch_requests.len();
-                    if self.engine.index_documents_batch_async(batch_requests).await.is_ok() {
-                        total += count;
-                        on_progress(total, 0);
+                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+                    match self.engine.index_documents_batch_async(batch_requests, now).await {
+                        Ok(_) => {
+                            total += count;
+                            on_progress(total, 0);
+                        }
+                        Err(e) => {
+                            crate::log_d!("indexer", "[Core-Indexer] Incremental batch indexing error: {}", e);
+                        }
                     }
                 }
             }
@@ -342,13 +349,15 @@ impl IndexingService {
             ..Default::default()
         };
 
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
         self.engine.index_document_async_with_meta(
             project_id,
             &doc.id.0,
             title,
             &doc.content,
             meta,
-            strategy
+            strategy,
+            now
         ).await.map_err(|e| format!("Indexing error: {e}"))
     }
 
@@ -384,19 +393,38 @@ impl IndexingService {
             ))
         ).unwrap_or((None, None, 0, None));
 
-        // 1. 인덱싱된 기록이 아예 없거나 청크가 0개인 경우
-        if last_indexed.is_none() || chunk_count == 0 {
+        // 1. 인덱싱된 기록이 아예 없는 경우
+        if last_indexed.is_none() {
+            crate::log_d!("indexer", "[Core-Indexer][decision] {} -> 재인덱싱 (기록 없음)", source_doc_id);
             return true;
         }
 
         // 2. 타임스탬프 비교 — None이면 content_hash로 fallback
         match (new_updated_at, old_updated_at) {
-            (Some(new), Some(old)) => new != old,
+            (Some(new), Some(old)) => {
+                if new != old {
+                    crate::log_d!("indexer", "[Core-Indexer][decision] {} -> 재인덱싱 (시간 다름)", source_doc_id);
+                    true
+                } else {
+                    false
+                }
+            }
             _ => {
                 // 타임스탬프 정보 없음 → content_hash로 변경 감지
                 match (new_content_hash, old_content_hash.as_deref()) {
-                    (Some(new_h), Some(old_h)) => new_h != old_h,
-                    _ => true, // hash도 없으면 안전하게 재인덱싱
+                    (Some(new_h), Some(old_h)) => {
+                        if new_h != old_h {
+                            crate::log_d!("indexer", "[Core-Indexer][decision] {} -> 재인덱싱 (해시 다름)", source_doc_id);
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    _ => {
+                        crate::log_d!("indexer", "[Core-Indexer][decision] {} -> 재인덱싱 (정보 부족: updated_at={:?}, hash={:?})", 
+                            source_doc_id, old_updated_at, old_content_hash);
+                        true
+                    }
                 }
             }
         }

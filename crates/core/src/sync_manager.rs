@@ -223,7 +223,7 @@ impl SyncManager {
     }
 
     async fn run_task(&self, project_name: &str, full: bool) {
-        tracing::debug!("[SyncManager][run_task] 시작: project={} full={}", project_name, full);
+        tracing::info!("[SyncManager][run_task] 시작: project={} full={}", project_name, full);
         // force_mark_task_started: trigger_reindex may have pre-registered the task for UI visibility;
         // always update the start time and proceed rather than skipping.
         self.force_mark_task_started(project_name).await;
@@ -257,8 +257,8 @@ impl SyncManager {
         self.update_last_sync(project_name).await;
 
         match &result {
-            Ok(count) => tracing::debug!("[SyncManager][run_task] 완료: project={} indexed={}", project_name, count),
-            Err(e)    => tracing::debug!("[SyncManager][run_task] 실패: project={} err={}", project_name, e),
+            Ok(count) => tracing::info!("[SyncManager][run_task] 완료: project={} indexed={}", project_name, count),
+            Err(e)    => tracing::info!("[SyncManager][run_task] 실패: project={} err={}", project_name, e),
         }
 
         if let Ok(count) = result {

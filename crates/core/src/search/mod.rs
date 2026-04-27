@@ -7,6 +7,7 @@ use sha2::{Sha256, Digest};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::collections::hash_map::Entry;
+use tracing;
 use thiserror::Error;
 
 pub mod highlighter;
@@ -249,12 +250,14 @@ impl SearchEngine {
         content: &str,
         strategy: &str,
     ) -> Result<(), SearchError> {
-        self.index_document_async_with_meta(project_id, source_doc_id, title, content, DocMeta::default(), strategy).await
+        let now = chrono::Utc::now().timestamp();
+        self.index_document_async_with_meta(project_id, source_doc_id, title, content, DocMeta::default(), strategy, now).await
     }
 
     pub async fn index_documents_batch_async(
         &self,
         mut requests: Vec<BatchIndexingRequest>,
+        last_indexed: i64,
     ) -> Result<(), SearchError> {
         if requests.is_empty() { return Ok(()); }
 
@@ -292,9 +295,8 @@ impl SearchEngine {
                     }
                 }
 
-                if sub_flat_texts.is_empty() { continue; }
-
-                // Batch embed for the current sub-batch (capped to SUB_BATCH documents).
+                let mut sub_flat_embeddings: Vec<Vec<u8>> = Vec::new();
+                if !sub_flat_texts.is_empty() {
                 let text_refs: Vec<&str> = sub_flat_texts.iter().map(|s| s.as_str()).collect();
                 let embedding_vecs = self.embedder.embed(&text_refs).await?;
                 // Explicitly drop the text buffers before spawn_blocking to avoid 2x peak.
@@ -306,6 +308,7 @@ impl SearchEngine {
                     let quantized = crate::embedding::quantize_to_i8(&emb);
                     let bytes: Vec<u8> = quantized.into_iter().map(|i| i as u8).collect();
                     sub_flat_embeddings.push(bytes);
+                }
                 }
 
                 let conn = Arc::clone(&self.conn);
@@ -340,6 +343,7 @@ impl SearchEngine {
                             doc_embeddings,
                             &req.meta,
                             &strategy,
+                            last_indexed,
                         )?;
                         current_chunk_offset += num_chunks;
                     }
@@ -373,6 +377,7 @@ impl SearchEngine {
         content: &str,
         meta: DocMeta,
         strategy: &str,
+        last_indexed: i64,
     ) -> Result<(), SearchError> {
         let strategy = strategy.to_string();
         let chunks = crate::chunker::split_chunks(content, crate::chunker::ChunkConfig { title: Some(title.to_string()), ..Default::default() });
@@ -394,7 +399,7 @@ impl SearchEngine {
 
         tokio::task::spawn_blocking(move || -> Result<(), SearchError> {
             let conn = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
-            index_document_sync(&conn, project_id, &source_doc_id, &title, &content, &chunks, &chunk_embeddings, &meta, &strategy)?;
+            index_document_sync(&conn, project_id, &source_doc_id, &title, &content, &chunks, &chunk_embeddings, &meta, &strategy, last_indexed)?;
             Ok(())
         }).await??;
         Ok(())
@@ -493,9 +498,15 @@ pub(crate) fn index_document_sync(
     chunk_embeddings: &[Vec<u8>],
     meta: &DocMeta,
     strategy: &str,
+    last_indexed: i64,
 ) -> Result<(), SearchError> {
     let is_reference = strategy == "reference";
-    if content.trim().is_empty() { return Ok(()); }
+    // Even if content is empty, we should persist the document record to avoid repeated re-indexing.
+    // We only skip if both content AND title are effectively empty.
+    if content.trim().is_empty() && title.trim().is_empty() { 
+        tracing::debug!("[Search-Engine][index] Skipping empty document: source_doc_id={}", source_doc_id);
+        return Ok(()); 
+    }
 
     let content_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
     let metadata_json = serde_json::to_string(&meta.metadata).unwrap_or_else(|_| "{}".to_string());
@@ -525,14 +536,14 @@ pub(crate) fn index_document_sync(
 
     conn.execute(
         "INSERT INTO documents (project_id, source_doc_id, title, url, content_hash, last_indexed, created_at, updated_at, metadata_json, file_path)
-         VALUES (?1, ?2, ?3, ?4, ?5, unixepoch(), ?6, ?7, ?8, ?9)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?10, ?6, ?7, ?8, ?9)
          ON CONFLICT(project_id, source_doc_id) DO UPDATE SET
             last_indexed = excluded.last_indexed,
             title = excluded.title, url = excluded.url, content_hash = excluded.content_hash,
             created_at = COALESCE(documents.created_at, excluded.created_at),
             updated_at = COALESCE(excluded.updated_at, documents.updated_at),
             metadata_json = excluded.metadata_json, file_path = COALESCE(excluded.file_path, documents.file_path)",
-        params![project_id, source_doc_id, title, meta.url, content_hash, created_at, updated_at, metadata_json, full_file_path],
+        params![project_id, source_doc_id, title, meta.url, content_hash, created_at, updated_at, metadata_json, full_file_path, last_indexed],
     )?;
 
     let doc_id: i64 = conn.query_row("SELECT id FROM documents WHERE project_id = ?1 AND source_doc_id = ?2", params![project_id, source_doc_id], |row| row.get(0))?;
@@ -861,7 +872,7 @@ impl<'a> SyncSearchEngine<'a> {
             updated_at: meta.updated_at.or(Some(now)),
             ..meta.clone()
         };
-        index_document_sync(self.conn, project_id, sid, title, content, &chunks, &[], &meta, strategy)
+        index_document_sync(self.conn, project_id, sid, title, content, &chunks, &[], &meta, strategy, now)
     }
     pub fn search(&self, query: &SearchQuery) -> Result<Vec<SearchHit>, SearchError> {
         fts_search_sync(self.conn, query)
