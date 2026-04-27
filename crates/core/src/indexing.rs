@@ -90,18 +90,36 @@ impl IndexingService {
         // 2. 인덱싱 루프 및 오류 처리
         let sync_start_time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
         let mut total = 0;
+        let mut estimated_total: usize = 0;
         let mut cursor = None;
+        let mut consecutive_empty = 0;
 
         let result = async {
             loop {
                 let stream = plugin.fetch_all(FetchAllOpts { cursor, page_size: 50 }).await.map_err(|e| e.to_string())?;
+                if estimated_total == 0 {
+                    if let Some(hint) = stream.estimated_total {
+                        estimated_total = hint as usize;
+                    }
+                }
                 let docs = stream.documents;
-                if docs.is_empty() { break; }
+                // 빈 페이지: cursor 있으면 계속, 연속 5회면 API 버그로 간주하고 종료
+                if docs.is_empty() {
+                    consecutive_empty += 1;
+                    if consecutive_empty >= 5 {
+                        crate::log_d!("indexer", "[Core-Indexer] 연속 {}회 빈 페이지 — 루프 종료", consecutive_empty);
+                        break;
+                    }
+                    cursor = stream.next_cursor;
+                    if cursor.is_none() { break; }
+                    continue;
+                }
+                consecutive_empty = 0;
 
                 let mut batch_requests = Vec::new();
                 for mut doc in docs {
                     let source_doc_id = doc.id.0.clone();
-                    
+
                     if !full && !self.needs_reindexing(project_id, &source_doc_id, doc.updated_at).await {
                         let _ = self.update_last_indexed(project_id, &source_doc_id, sync_start_time).await;
                         continue;
@@ -122,7 +140,6 @@ impl IndexingService {
                         .filter(|s| !s.trim().is_empty())
                         .unwrap_or_else(|| "Untitled".to_string());
 
-                    // 링크 추출 및 메타데이터 준비
                     let mut all_links = LinkExtractor::extract_links(&doc.content);
                     all_links.extend(doc.links.clone());
                     all_links.sort();
@@ -153,7 +170,7 @@ impl IndexingService {
                     match self.engine.index_documents_batch_async(batch_requests).await {
                         Ok(_) => {
                             total += count;
-                            on_progress(total, 0);
+                            on_progress(total, estimated_total);
                         }
                         Err(e) => {
                             crate::log_d!("indexer", "[Core-Indexer] Batch indexing error: {}", e);

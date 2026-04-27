@@ -789,13 +789,23 @@ pub async fn index_project(
 
     let app_handle_progress = app_handle.clone();
     let name_progress = name.clone();
-    let total = indexing_service.index_project_with_progress(&name, is_full, move |docs_done, _| {
+    
+    // 수동 인덱싱은 항상 실행 (SyncManager 진행 중이더라도 강제 등록)
+    state.sync_manager.force_mark_task_started(&name).await;
+
+    let result = indexing_service.index_project_with_progress(&name, is_full, move |docs_done, total_docs| {
         use tauri::Emitter;
         let _ = app_handle_progress.emit("index_progress", serde_json::json!({
             "project_name": name_progress,
             "docs_indexed": docs_done,
+            "total_docs": if total_docs > 0 { serde_json::json!(total_docs) } else { serde_json::Value::Null },
         }));
-    }).await?;
+    }).await;
+
+    // 추가: SyncManager에서 태스크 해제 (성공/실패 무관)
+    state.sync_manager.mark_task_done(&name).await;
+
+    let total = result?;
 
     let message = if total == 0 {
         if is_full { "문서가 없는 프로젝트이거나 인덱싱에 실패했습니다".to_string() }

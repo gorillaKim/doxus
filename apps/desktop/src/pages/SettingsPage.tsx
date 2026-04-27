@@ -42,6 +42,7 @@ interface ActiveTaskSummary {
   project_name: string;
   started_at: number;
   docs_indexed?: number;
+  total_docs?: number;
 }
 
 type StatusLevel = 'ok' | 'warn' | 'error' | 'unknown';
@@ -183,15 +184,17 @@ export default function SettingsPage() {
       .then((res) => setGeminiStatus(res.status as 'ok' | 'warn' | 'unknown'))
       .catch(() => setGeminiStatus('warn'));
 
-    const unlistenProgress = listen<{ project_name: string; docs_indexed: number }>(
+    const unlistenProgress = listen<{ project_name: string; docs_indexed: number; total_docs?: number }>(
       'index_progress',
       (e) => {
         setSyncStatus((prev) => {
           const tasks = prev?.active_tasks ?? [];
           const exists = tasks.some(t => t.project_name === e.payload.project_name);
           const newTasks = exists
-            ? tasks.map(t => t.project_name === e.payload.project_name ? { ...t, docs_indexed: e.payload.docs_indexed } : t)
-            : [...tasks, { project_name: e.payload.project_name, started_at: Math.floor(Date.now() / 1000), docs_indexed: e.payload.docs_indexed }];
+            ? tasks.map(t => t.project_name === e.payload.project_name
+                ? { ...t, docs_indexed: e.payload.docs_indexed, total_docs: e.payload.total_docs ?? t.total_docs }
+                : t)
+            : [...tasks, { project_name: e.payload.project_name, started_at: Math.floor(Date.now() / 1000), docs_indexed: e.payload.docs_indexed, total_docs: e.payload.total_docs }];
           return { active_tasks: newTasks, recent_triggers: prev?.recent_triggers ?? [] };
         });
       }
@@ -239,7 +242,7 @@ export default function SettingsPage() {
           ...sync,
           active_tasks: sync.active_tasks.map((t) => {
             const existing = prev?.active_tasks.find((e) => e.project_name === t.project_name);
-            return { ...t, docs_indexed: existing?.docs_indexed };
+            return { ...t, docs_indexed: existing?.docs_indexed, total_docs: existing?.total_docs };
           }),
         }));
       } catch { /* ignore */ }
@@ -474,7 +477,9 @@ export default function SettingsPage() {
                             <div className="flex items-center gap-3">
                               {task.docs_indexed !== undefined && (
                                 <span className="text-[10px] text-emerald-400 font-medium">
-                                  {task.docs_indexed}개 완료
+                                  {task.total_docs
+                                    ? `${task.docs_indexed}/${task.total_docs}개`
+                                    : `${task.docs_indexed}개`} 완료
                                 </span>
                               )}
                               <span className="text-[10px] text-blue-500 font-medium whitespace-nowrap">

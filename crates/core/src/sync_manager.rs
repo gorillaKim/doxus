@@ -99,6 +99,34 @@ impl SyncManager {
         Ok(())
     }
 
+    pub async fn mark_task_started(&self, project_name: &str) -> bool {
+        let mut active = self.active_tasks.lock().await;
+        if active.contains_key(project_name) {
+            return false;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        active.insert(project_name.to_string(), now);
+        true
+    }
+
+    /// 중복 여부와 관계없이 태스크를 강제 등록. 수동 인덱싱 커맨드에서 사용.
+    pub async fn force_mark_task_started(&self, project_name: &str) {
+        let mut active = self.active_tasks.lock().await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        active.insert(project_name.to_string(), now);
+    }
+
+    pub async fn mark_task_done(&self, project_name: &str) {
+        let mut active = self.active_tasks.lock().await;
+        active.remove(project_name);
+    }
+
     pub fn indexer(&self) -> Arc<IndexingService> {
         Arc::clone(&self.indexing_service)
     }
@@ -196,10 +224,9 @@ impl SyncManager {
     }
 
     async fn run_task(&self, project_name: &str, full: bool) {
-        {
-            let mut active = self.active_tasks.lock().await;
-            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().unwrap_or_default().as_secs() as i64;
-            active.insert(project_name.to_string(), now);
+        if !self.mark_task_started(project_name).await {
+            crate::log_d!("sync", "[SyncManager] Task for {} already running, skipping", project_name);
+            return;
         }
 
         let cb = {
@@ -231,10 +258,7 @@ impl SyncManager {
             }
         }
 
-        {
-            let mut active = self.active_tasks.lock().await;
-            active.remove(project_name);
-        }
+        self.mark_task_done(project_name).await;
     }
 
     async fn run_global_sync(&self, trigger: SyncTrigger) {
@@ -405,5 +429,29 @@ mod tests {
 
         // Just synced -> false
         assert!(!mgr.should_sync("proj1", &SyncTrigger::Periodic).await);
+    }
+
+    #[tokio::test]
+    async fn test_manual_task_marking() {
+        let (mgr, _) = setup_manager().await;
+        let project = "manual_proj";
+
+        // 1. Initial state
+        let status = mgr.get_status().await;
+        assert!(status.active_tasks.is_empty());
+
+        // 2. Mark started
+        assert!(mgr.mark_task_started(project).await);
+        let status = mgr.get_status().await;
+        assert_eq!(status.active_tasks.len(), 1);
+        assert_eq!(status.active_tasks[0].project_name, project);
+
+        // 2-1. Duplicate start should return false
+        assert!(!mgr.mark_task_started(project).await);
+
+        // 3. Mark done
+        mgr.mark_task_done(project).await;
+        let status = mgr.get_status().await;
+        assert!(status.active_tasks.is_empty());
     }
 }

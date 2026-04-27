@@ -40,16 +40,28 @@ export function SearchPage() {
     const unlistenDoc = listen<{ source_doc_id: string; last_indexed: number }>('document-indexed', (e) => {
       updateDocumentMetadata(e.payload.source_doc_id, { last_indexed: e.payload.last_indexed });
     });
+
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
     const unlistenProj = listen<{ indexed: number; project_name: string }>('project-indexed', (e) => {
       if (e.payload.indexed > 0) {
-        // search();
+        if (refreshTimer) clearTimeout(refreshTimer);
+        refreshTimer = setTimeout(() => {
+          listAllDocuments();
+          // 검색어가 있는 경우 hits도 갱신
+          const { query: q, filters: f, search: runSearch } = useSearchStore.getState();
+          if (q.trim() || f.tagQuery.trim()) {
+            runSearch();
+          }
+        }, 300);
       }
     });
+
     return () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
       unlistenDoc.then(f => f());
       unlistenProj.then(f => f());
     };
-  }, [updateDocumentMetadata]);
+  }, [updateDocumentMetadata, listAllDocuments]);
 
   // Load documents on mount (Limited to 1,000 in store)
   useEffect(() => { listAllDocuments(); }, [listAllDocuments]);

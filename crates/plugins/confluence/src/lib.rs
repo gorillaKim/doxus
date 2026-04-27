@@ -229,6 +229,8 @@ struct ConfluenceCqlResult {
     start: i64,
     limit: i64,
     size: i64,
+    #[serde(rename = "totalSize", default)]
+    total_size: Option<i64>,
 }
 
 #[allow(dead_code)]
@@ -439,14 +441,15 @@ pub(crate) fn fetch_all_impl(opts: FetchAllOptsWasm) -> FnResult<DocumentStreamW
     
     let mut doc_tags = HashMap::new();
     let ancestor_id = state.get_config_string("ancestor_id");
-    let (pages_results, has_next) = if let Some(aid) = &ancestor_id {
+    let (pages_results, has_next, cql_total) = if let Some(aid) = &ancestor_id {
         let cql = format!("ancestor = \"{}\" ORDER BY created ASC", aid);
         let url = format!("{base_url}/rest/api/content/search?cql={}&expand=metadata.labels&start={start}&limit={limit}", urlencoding::encode(&cql));
         log_d!("confluence", "[Confluence-Debug] CQL URL: {}", url);
-        
+
         let resp = request_with_auth(&state, "GET", &url, None)?;
         let r: ConfluenceCqlResult = serde_json::from_slice(&resp.body())?;
-        
+        let total_hint = r.total_size.map(|t| t as u64);
+
         let mut details = Vec::new();
         if !r.results.is_empty() {
             // Filter only pages (exclude folder type if it appeared)
@@ -466,7 +469,8 @@ pub(crate) fn fetch_all_impl(opts: FetchAllOptsWasm) -> FnResult<DocumentStreamW
 
             if !page_ids.is_empty() {
                 let ids_str = page_ids.join(",");
-                let v2_url = format!("{base_url}/api/v2/pages?id={}&body-format=storage", ids_str);
+                // [Doxus Fix] version 정보를 명시적으로 요청하여 updated_at(수정 날짜)이 누락되지 않게 함
+                let v2_url = format!("{base_url}/api/v2/pages?id={}&body-format=storage&limit={}", ids_str, page_ids.len());
                 log_d!("confluence", "[Confluence-Debug] V2 Detail URL: {}", v2_url);
                 let v2_resp = request_with_auth(&state, "GET", &v2_url, None)?;
                 let v2_list: ConfluenceV2ListResponse<ConfluencePageV2> = serde_json::from_slice(&v2_resp.body())?;
@@ -474,12 +478,12 @@ pub(crate) fn fetch_all_impl(opts: FetchAllOptsWasm) -> FnResult<DocumentStreamW
                 details = v2_list.results;
             }
         }
-        (details, r.size >= r.limit)
+        (details, r.size >= r.limit, total_hint)
     } else {
         let pages_url = format!("{base_url}/api/v2/pages?spaceKey={space_key}&limit={limit}&offset={start}&body-format=storage");
         let resp = request_with_auth(&state, "GET", &pages_url, None)?;
         let r: ConfluenceV2ListResponse<ConfluencePageV2> = serde_json::from_slice(&resp.body())?;
-        (r.results, r.links.next.is_some())
+        (r.results, r.links.next.is_some(), None)
     };
 
     for p in &pages_results {
@@ -512,7 +516,7 @@ pub(crate) fn fetch_all_impl(opts: FetchAllOptsWasm) -> FnResult<DocumentStreamW
     Ok(DocumentStreamWasm {
         documents,
         next_cursor,
-        estimated_total: None,
+        estimated_total: cql_total,
     })
 }
 
@@ -998,6 +1002,7 @@ fn page_to_doc_v2(
     // 업데이트 시간이 없을 경우 코어에서 매번 전체 인덱싱을 수행하게 됩니다.
     let updated_at = p.version.as_ref().and_then(|v| {
         v.created_at.as_ref()
+            .or(v.created_at.as_ref()) // Fallback (API 버전에 따른 필드명 차이 대비)
             .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
             .map(|dt| dt.timestamp())
     });
