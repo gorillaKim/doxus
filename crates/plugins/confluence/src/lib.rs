@@ -469,9 +469,8 @@ pub(crate) fn fetch_all_impl(opts: FetchAllOptsWasm) -> FnResult<DocumentStreamW
 
             if !page_ids.is_empty() {
                 let ids_str = page_ids.join(",");
-                // body-format 제거: 메타데이터(updated_at)만 가져와 needs_reindexing 판단
-                // 변경된 문서는 core가 fetch_document로 본문을 별도 요청함
-                let v2_url = format!("{base_url}/api/v2/pages?id={}&limit={}", ids_str, page_ids.len());
+                // body-format=storage: version.createdAt(updated_at)이 이 파라미터 없이는 반환되지 않음
+                let v2_url = format!("{base_url}/api/v2/pages?id={}&body-format=storage&limit={}", ids_str, page_ids.len());
                 log_d!("confluence", "[Confluence-Debug] V2 Detail URL: {}", v2_url);
                 let v2_resp = request_with_auth(&state, "GET", &v2_url, None)?;
                 let v2_list: ConfluenceV2ListResponse<ConfluencePageV2> = serde_json::from_slice(&v2_resp.body())?;
