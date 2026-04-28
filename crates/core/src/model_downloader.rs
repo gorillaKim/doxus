@@ -13,15 +13,15 @@ use tokio::io::AsyncWriteExt;
 
 /// HuggingFace URL for the int8-quantized ONNX model (primary — 4x smaller, 2-4x faster on CPU).
 pub const DEFAULT_MODEL_URL: &str =
-    "https://huggingface.co/intfloat/multilingual-e5-small/resolve/main/onnx/model_quantized.onnx";
+    "https://huggingface.co/Xenova/multilingual-e5-small/resolve/main/onnx/model_quantized.onnx";
 
 /// HuggingFace URL for the fp32 ONNX model (fallback if quantized is unavailable).
 pub const DEFAULT_MODEL_FP32_URL: &str =
-    "https://huggingface.co/intfloat/multilingual-e5-small/resolve/main/onnx/model.onnx";
+    "https://huggingface.co/Xenova/multilingual-e5-small/resolve/main/onnx/model.onnx";
 
 /// HuggingFace URL for the tokenizer.
 pub const DEFAULT_TOKENIZER_URL: &str =
-    "https://huggingface.co/intfloat/multilingual-e5-small/resolve/main/tokenizer.json";
+    "https://huggingface.co/Xenova/multilingual-e5-small/resolve/main/tokenizer.json";
 
 /// File name of the int8 model on disk (matches `resolve_model_path` int8 preference).
 pub const MODEL_FILE_NAME: &str = "multilingual-e5-small-int8.onnx";
