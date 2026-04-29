@@ -75,13 +75,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0.5.17
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # ED25519 signing key — generate with: npx @tauri-apps/cli signer generate
-          # Set TAURI_SIGNING_PRIVATE_KEY (required) and
-          # TAURI_SIGNING_PRIVATE_KEY_PASSWORD (optional) in:
-          # Settings → Secrets and variables → Actions
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # ORT download strategy avoids needing onnxruntime installed on the runner
           ORT_STRATEGY: download
         with:
           tagName: ${{ github.ref_name }}
@@ -91,3 +86,41 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           projectPath: apps/desktop
           args: --target aarch64-apple-darwin
+
+      # tauri-action sometimes fails to detect the .sig for latest.json.
+      # This step creates and uploads it manually as a reliable fallback.
+      - name: Upload update payload and latest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SIG_FILE=$(find target/aarch64-apple-darwin/release/bundle/macos -name "*.app.tar.gz.sig" | head -1)
+          TAR_FILE=$(find target/aarch64-apple-darwin/release/bundle/macos -name "*.app.tar.gz" | head -1)
+
+          if [ ! -s "$SIG_FILE" ]; then
+            echo "::error::Signature file is empty or missing — check TAURI_SIGNING_PRIVATE_KEY secret"
+            exit 1
+          fi
+
+          SIGNATURE=$(cat "$SIG_FILE")
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+          FILENAME=$(basename "$TAR_FILE")
+          URL="https://github.com/gorillaKim/doxus/releases/download/${TAG}/${FILENAME}"
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          cat > latest.json <<JSON
+          {
+            "version": "${VERSION}",
+            "notes": "See CHANGELOG for release notes.",
+            "pub_date": "${PUB_DATE}",
+            "platforms": {
+              "darwin-aarch64": {
+                "url": "${URL}",
+                "signature": "${SIGNATURE}"
+              }
+            }
+          }
+          JSON
+
+          gh release upload "${TAG}" "$TAR_FILE" --clobber
+          gh release upload "${TAG}" latest.json --clobber
