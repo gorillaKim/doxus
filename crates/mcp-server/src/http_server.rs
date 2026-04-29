@@ -51,13 +51,16 @@ async fn health_handler() -> impl IntoResponse {
 async fn mcp_handler(
     State(state): State<HttpState>,
     Json(req): Json<McpRequest>,
-) -> impl IntoResponse {
-    let id = req.id.clone();
+) -> Response {
+    // Notifications have no id — acknowledge with 204 No Content
+    let Some(id) = req.id.clone() else {
+        return StatusCode::NO_CONTENT.into_response();
+    };
     let response = state
         .server
         .dispatch(&req.method, id, req.params.as_ref())
         .await;
-    (StatusCode::OK, Json(response))
+    (StatusCode::OK, Json(response)).into_response()
 }
 
 async fn auth_middleware(

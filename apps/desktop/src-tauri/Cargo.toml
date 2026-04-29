@@ -16,6 +16,8 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-deep-link = "2"
 tauri-plugin-oauth = "2"
+tauri-plugin-updater = "2"
+semver = "1.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 doxus-core = { path = "../../../crates/core" }
@@ -45,6 +47,7 @@ async-trait = "0.1"
 [dev-dependencies]
 tempfile = { workspace = true }
 doxus-mcp = { path = "../../../crates/mcp-server" }
+doxus-core = { path = "../../../crates/core", features = ["test-helpers"] }
 doxus-plugin-obsidian = { path = "../../../crates/plugins/obsidian" }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 mockito = "1"

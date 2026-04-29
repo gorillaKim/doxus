@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
+import { checkForUpdates, downloadAndInstall, relaunchApp } from '../services/updateManager';
 
 interface AppSettings {
   embedding_model: 'onnx' | 'ollama';
@@ -146,6 +147,13 @@ export default function SettingsPage() {
   const [geminiTestResult, setGeminiTestResult] = useState<string | null>(null);
   const [geminiTestLoading, setGeminiTestLoading] = useState(false);
 
+  // 업데이트 상태
+  type UpdateState = 'idle' | 'checking' | 'available' | 'up-to-date' | 'downloading' | 'installed' | 'error';
+  const [updateState, setUpdateState] = useState<UpdateState>('idle');
+  const [updateInfo, setUpdateInfo] = useState<{ version: string; notes: string | null; date: string | null } | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState(0);
+  const [updateError, setUpdateError] = useState<string | null>(null);
+
   const fetchStatus = async () => {
     setIsLoading(true);
     try {
@@ -212,6 +220,52 @@ export default function SettingsPage() {
       unlistenComplete.then((f) => f());
     };
   }, []);
+
+  useEffect(() => {
+    const unlistenProgress = listen<{ percent: number }>('update:progress', (e) =>
+      setDownloadProgress(e.payload.percent),
+    );
+    const unlistenInstalled = listen('update:installed', () => setUpdateState('installed'));
+    return () => {
+      unlistenProgress.then((f) => f());
+      unlistenInstalled.then((f) => f());
+    };
+  }, []);
+
+  const handleCheckUpdate = async () => {
+    setUpdateState('checking');
+    setUpdateError(null);
+    setUpdateInfo(null);
+    try {
+      const info = await checkForUpdates({ silent: false, timeoutMs: 15_000 });
+      if (info) {
+        setUpdateInfo(info);
+        setUpdateState('available');
+      } else {
+        setUpdateState('up-to-date');
+      }
+    } catch (err) {
+      setUpdateState('error');
+      setUpdateError(String(err));
+    }
+  };
+
+  const handleDownloadInstall = async () => {
+    setUpdateState('downloading');
+    setDownloadProgress(0);
+    try {
+      await downloadAndInstall();
+    } catch (err) {
+      setUpdateState('error');
+      setUpdateError(String(err));
+    }
+  };
+
+  const handleRelaunch = async () => {
+    try {
+      await relaunchApp();
+    } catch { /* relaunch_app 플러그인 미등록 시 무시 */ }
+  };
 
   const handleSaveSettings = async () => {
     setSettingsSaving(true);
@@ -444,6 +498,110 @@ export default function SettingsPage() {
               <InfoRow label="현재 버전" value={sysStatus?.app.version ?? '0.1.0'} />
               <InfoRow label="구동 환경" value="macOS (Tauri v2 + Rust)" />
               <InfoRow label="데이터베이스(SQLite) 위치" value={sysStatus?.database.path ?? '—'} mono />
+            </div>
+          </section>
+
+          {/* 앱 업데이트 */}
+          <section className="flex flex-col gap-4">
+            <h2 className="text-sm font-semibold text-gray-400 tracking-tight">앱 업데이트</h2>
+            <div className="bg-gray-900/50 border border-gray-800 rounded-xl p-5 flex flex-col gap-4">
+              <div className="flex items-center justify-between">
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-sm font-medium text-gray-300">현재 버전</span>
+                  <span className="text-xs text-gray-500">{sysStatus?.app.version ?? '0.1.0'}</span>
+                </div>
+                {updateState === 'available' && updateInfo && (
+                  <span className="text-xs font-medium text-emerald-400 bg-emerald-900/20 border border-emerald-800/30 px-2.5 py-1 rounded-full">
+                    v{updateInfo.version} 업데이트 가능
+                  </span>
+                )}
+                {updateState === 'up-to-date' && (
+                  <span className="text-xs font-medium text-gray-500 bg-gray-800 border border-gray-700 px-2.5 py-1 rounded-full">
+                    최신 버전
+                  </span>
+                )}
+              </div>
+
+              {/* 상태 메시지 */}
+              {updateState === 'checking' && (
+                <p className="text-xs text-gray-400 flex items-center gap-1.5">
+                  <span className="inline-block w-3 h-3 border border-gray-600 border-t-gray-300 rounded-full animate-spin" />
+                  업데이트를 확인하는 중...
+                </p>
+              )}
+              {updateState === 'available' && updateInfo && (
+                <div className="bg-blue-950/20 border border-blue-900/30 rounded-lg p-3 flex flex-col gap-1.5">
+                  <p className="text-xs font-semibold text-blue-300">새 버전: {updateInfo.version}</p>
+                  {updateInfo.notes && (
+                    <p className="text-xs text-gray-400 leading-relaxed">{updateInfo.notes}</p>
+                  )}
+                  {updateInfo.date && (
+                    <p className="text-[10px] text-gray-600">출시일: {updateInfo.date}</p>
+                  )}
+                </div>
+              )}
+              {updateState === 'downloading' && (
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-gray-400">다운로드 및 설치 중...</span>
+                    <span className="text-xs text-gray-500 tabular-nums">{downloadProgress}%</span>
+                  </div>
+                  <div className="w-full bg-gray-800 rounded-full h-1.5 overflow-hidden">
+                    <div
+                      className="bg-blue-500 h-1.5 rounded-full transition-all duration-300 ease-out"
+                      style={{ width: `${downloadProgress}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+              {updateState === 'installed' && (
+                <p className="text-xs text-emerald-400">
+                  ✓ 업데이트 설치 완료. 변경 사항 적용을 위해 재시작해 주세요.
+                </p>
+              )}
+              {updateState === 'error' && (
+                <p className="text-xs text-red-400">
+                  ✗ {updateError ?? '업데이트 확인에 실패했습니다.'}
+                </p>
+              )}
+
+              {/* 액션 버튼 */}
+              <div className="flex items-center gap-3 pt-1 border-t border-gray-800/50">
+                {(updateState === 'idle' || updateState === 'up-to-date' || updateState === 'error') && (
+                  <button
+                    onClick={handleCheckUpdate}
+                    className="px-4 py-2 text-sm border border-gray-700 text-gray-300 rounded-lg hover:bg-gray-800 hover:text-white transition-colors"
+                  >
+                    업데이트 확인
+                  </button>
+                )}
+                {updateState === 'available' && (
+                  <button
+                    onClick={handleDownloadInstall}
+                    className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition-all shadow-sm active:scale-[0.98]"
+                  >
+                    다운로드 및 설치
+                  </button>
+                )}
+                {updateState === 'installed' && (
+                  <button
+                    onClick={handleRelaunch}
+                    className="px-4 py-2 text-sm bg-emerald-600 hover:bg-emerald-500 text-white font-medium rounded-lg transition-all shadow-sm active:scale-[0.98]"
+                  >
+                    지금 재시작
+                  </button>
+                )}
+                {updateState === 'checking' && (
+                  <button disabled className="px-4 py-2 text-sm border border-gray-700 text-gray-600 rounded-lg cursor-not-allowed">
+                    업데이트 확인 중...
+                  </button>
+                )}
+                {updateState === 'downloading' && (
+                  <button disabled className="px-4 py-2 text-sm border border-gray-700 text-gray-600 rounded-lg cursor-not-allowed">
+                    설치 중...
+                  </button>
+                )}
+              </div>
             </div>
           </section>
         </div>

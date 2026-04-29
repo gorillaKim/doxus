@@ -186,16 +186,79 @@ fn find_doxus_mcp_bin() -> Option<std::path::PathBuf> {
     })
 }
 
+/// 단일 공유 HTTP 서버 포트 (모든 Claude 세션이 이 포트를 공유)
+const DOXUS_MCP_HTTP_PORT: u16 = 1421;
+
+/// 지정한 포트가 이미 사용 중인지 확인 (bind 실패 = 사용 중)
+fn is_port_in_use(port: u16) -> bool {
+    std::net::TcpListener::bind(("127.0.0.1", port)).is_err()
+}
+
+/// doxus HTTP MCP 엔드포인트를 설정 파일에 기록 (테스트 가능한 내부 구현)
+fn write_doxus_http_config_to(port: u16, token: &str, config_path: &std::path::Path) {
+    let mut config: serde_json::Value = if config_path.exists() {
+        match std::fs::read_to_string(config_path) {
+            Ok(s) => serde_json::from_str(&s).unwrap_or_else(|_| serde_json::json!({})),
+            Err(e) => {
+                eprintln!("[mcp] Failed to read settings.json: {e}");
+                return;
+            }
+        }
+    } else {
+        serde_json::json!({})
+    };
+
+    let mcp_entry = serde_json::json!({
+        "type": "http",
+        "url": format!("http://127.0.0.1:{port}/mcp"),
+        "headers": { "Authorization": format!("Bearer {token}") }
+    });
+
+    if config.get("mcpServers").is_none() {
+        if let Some(obj) = config.as_object_mut() {
+            obj.insert("mcpServers".to_string(), serde_json::json!({}));
+        }
+    }
+    if let Some(servers) = config.get_mut("mcpServers").and_then(|m| m.as_object_mut()) {
+        servers.insert("doxus".to_string(), mcp_entry);
+    }
+
+    match serde_json::to_string_pretty(&config) {
+        Ok(content) => {
+            if let Err(e) = std::fs::write(config_path, content) {
+                eprintln!("[mcp] Failed to write settings.json: {e}");
+            } else {
+                eprintln!("[mcp] ~/.claude/settings.json updated → doxus HTTP port {port}");
+            }
+        }
+        Err(e) => eprintln!("[mcp] Failed to serialize settings.json: {e}"),
+    }
+}
+
+/// ~/.claude/settings.json 의 doxus 항목을 HTTP 타입으로 갱신
+fn write_doxus_http_config(port: u16, token: &str) {
+    let home = match std::env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => {
+            eprintln!("[mcp] HOME not set, skipping settings update");
+            return;
+        }
+    };
+    let config_path = std::path::PathBuf::from(home).join(".claude/settings.json");
+    write_doxus_http_config_to(port, token, &config_path);
+}
+
 /// doxus-mcp를 HTTP 모드로 실행하고 실제 포트를 반환
 fn spawn_mcp_http_server(
     bin: &std::path::Path,
     token: &str,
+    port: u16,
 ) -> Result<(std::process::Child, u16), String> {
     use std::io::{BufRead, BufReader};
     use std::process::{Command, Stdio};
 
     let mut child = Command::new(bin)
-        .args(["--http", "0"])
+        .args(["--http", &port.to_string()])
         .env("DOXUS_MCP_TOKEN", token)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -305,23 +368,33 @@ fn main() {
     }
     state_arc.sidecar.set_debug(doxus_core::observability::is_debug_enabled("agent"));
 
-    // doxus-mcp HTTP 서버 시작 (앱 생애주기에 묶임)
+    // doxus-mcp HTTP 서버 시작 — 포트 1421 고정, 이미 실행 중이면 재사용
     {
         let mcp_token = bridge_token.clone();
-        if let Some(mcp_bin) = find_doxus_mcp_bin() {
-            match spawn_mcp_http_server(&mcp_bin, &mcp_token) {
+        let endpoint = format!("http://127.0.0.1:{}/mcp", DOXUS_MCP_HTTP_PORT);
+
+        if is_port_in_use(DOXUS_MCP_HTTP_PORT) {
+            // 이미 실행 중 (이전 앱 인스턴스 또는 동일 프로세스) → 재사용
+            eprintln!("[mcp] HTTP server already running on port {DOXUS_MCP_HTTP_PORT}, reusing");
+            *state_arc.mcp_endpoint.lock().unwrap() = Some(endpoint.clone());
+            *state_arc.mcp_token.lock().unwrap() = mcp_token.clone();
+        } else if let Some(mcp_bin) = find_doxus_mcp_bin() {
+            match spawn_mcp_http_server(&mcp_bin, &mcp_token, DOXUS_MCP_HTTP_PORT) {
                 Ok((child, port)) => {
                     let endpoint = format!("http://127.0.0.1:{}/mcp", port);
                     eprintln!("[mcp] HTTP server started on {}", endpoint);
                     *state_arc.mcp_process.lock().unwrap() = Some(child);
-                    *state_arc.mcp_endpoint.lock().unwrap() = Some(endpoint);
-                    *state_arc.mcp_token.lock().unwrap() = mcp_token;
+                    *state_arc.mcp_endpoint.lock().unwrap() = Some(endpoint.clone());
+                    *state_arc.mcp_token.lock().unwrap() = mcp_token.clone();
                 }
                 Err(e) => eprintln!("[mcp] Failed to start HTTP server: {}", e),
             }
         } else {
             eprintln!("[mcp] doxus-mcp binary not found, HTTP server disabled");
         }
+
+        // ~/.claude/settings.json 을 HTTP 타입으로 자동 갱신
+        write_doxus_http_config(DOXUS_MCP_HTTP_PORT, &mcp_token);
     }
 
     let conn_arc = state_arc.conn.clone();
@@ -329,11 +402,42 @@ fn main() {
     let state_for_tauri = state_arc.clone();
     
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_oauth::init())
         .setup(move |app| {
             let state = app.state::<Arc<AppState>>();
+
+            // Post-update migration: detect version change and run hooks
+            {
+                let hook = doxus_desktop_lib::update_manager::TauriReindexHook::new(
+                    app.handle().clone(),
+                    conn_arc.clone(),
+                    state_arc.sync_manager.indexing_service(),
+                );
+                match conn_arc.lock() {
+                    Ok(conn_guard) => {
+                        match doxus_desktop_lib::update_manager::detect_and_migrate(
+                            &conn_guard,
+                            Some(&hook),
+                            env!("CARGO_PKG_VERSION"),
+                        ) {
+                            Ok(r) => tracing::info!(
+                                outcome = ?r.outcome,
+                                reindex_triggered = r.reindex_triggered,
+                                "post-update migration complete"
+                            ),
+                            Err(e) => tracing::error!(error = %e, "post-update migration failed"),
+                        }
+                    }
+                    Err(e) => tracing::error!(
+                        error = %e,
+                        "post-update migration skipped: db mutex poisoned"
+                    ),
+                }
+            }
+
             let scheduler = state.scheduler_manager.clone();
             let handler = Arc::new(doxus_desktop_lib::scheduler_handler::TauriAgentHandler {
                 state: state.inner().clone(),
@@ -444,23 +548,6 @@ fn main() {
                         manager.trigger(doxus_core::sync_manager::SyncTrigger::Focus).await;
                     });
                 }
-                tauri::WindowEvent::Destroyed => {
-                    // inner().clone()으로 소유권 있는 Arc 획득
-                    let app_state: Arc<AppState> = window.state::<Arc<AppState>>().inner().clone();
-                    std::thread::spawn(move || {
-                        // sidecar graceful shutdown
-                        let _ = app_state.sidecar.send_request(
-                            &serde_json::json!({"type": "close"})
-                        );
-                        // MCP HTTP 서버 종료
-                        if let Ok(mut proc) = app_state.mcp_process.lock() {
-                            if let Some(ref mut child) = *proc {
-                                let _ = child.kill();
-                                eprintln!("[mcp] HTTP server stopped");
-                            }
-                        }
-                    });
-                }
                 _ => {}
             }
         })
@@ -527,7 +614,88 @@ fn main() {
             doxus_desktop_lib::commands::scheduler::delete_scheduled_job,
             doxus_desktop_lib::commands::scheduler::get_job_history,
             doxus_desktop_lib::commands::scheduler::update_scheduled_job,
+            doxus_desktop_lib::update_manager::relaunch_app,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Exit = event {
+                let state: Arc<AppState> = app_handle.state::<Arc<AppState>>().inner().clone();
+                std::thread::spawn(move || {
+                    let _ = state.sidecar.send_request(&serde_json::json!({"type": "close"}));
+                    if let Ok(mut proc) = state.mcp_process.lock() {
+                        if let Some(ref mut child) = *proc {
+                            let _ = child.kill();
+                            eprintln!("[mcp] HTTP server stopped on app exit");
+                        }
+                    }
+                });
+            }
+        });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_port_in_use_when_bound() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(is_port_in_use(port), "bound port should be in use");
+        drop(listener);
+        assert!(!is_port_in_use(port), "released port should be free");
+    }
+
+    #[test]
+    fn test_write_doxus_http_config_creates_http_entry() {
+        let dir = std::env::temp_dir().join(format!(
+            "doxus-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("settings.json");
+        std::fs::write(&config_path, r#"{"mcpServers": {}}"#).unwrap();
+
+        write_doxus_http_config_to(1421, "tok123", &config_path);
+
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        let config: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(config["mcpServers"]["doxus"]["type"], "http");
+        assert_eq!(config["mcpServers"]["doxus"]["url"], "http://127.0.0.1:1421/mcp");
+        assert_eq!(
+            config["mcpServers"]["doxus"]["headers"]["Authorization"],
+            "Bearer tok123"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_write_doxus_http_config_overwrites_stdio_entry() {
+        let dir = std::env::temp_dir().join(format!(
+            "doxus-test2-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_path = dir.join("settings.json");
+        std::fs::write(
+            &config_path,
+            r#"{"mcpServers": {"doxus": {"type": "stdio", "command": "/old/path"}}}"#,
+        )
+        .unwrap();
+
+        write_doxus_http_config_to(1421, "newtoken", &config_path);
+
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        let config: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(config["mcpServers"]["doxus"]["type"], "http");
+        assert!(config["mcpServers"]["doxus"]["command"].is_null());
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

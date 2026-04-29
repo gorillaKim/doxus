@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 
 #[derive(Debug, Deserialize)]
 pub struct McpRequest {
-    pub id: Value,
+    pub id: Option<Value>,
     pub method: String,
     pub params: Option<Value>,
 }

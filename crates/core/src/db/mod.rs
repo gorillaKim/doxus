@@ -24,7 +24,7 @@ pub fn apply_pragmas(conn: &Connection) -> SqlResult<()> {
     )
 }
 
-/// Run all migrations V1–V12 in order. Idempotent.
+/// Run all migrations V1–V40 in order. Idempotent.
 pub fn migrate(conn: &Connection) -> Result<(), DbError> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS _migrations (
@@ -62,6 +62,30 @@ pub fn migrate(conn: &Connection) -> Result<(), DbError> {
         .map_err(DbError::Sqlite)?;
     }
 
+    Ok(())
+}
+
+/// Get a value from the system_config table. Returns None if key doesn't exist.
+pub fn get_system_config(conn: &Connection, key: &str) -> Result<Option<String>, DbError> {
+    match conn.query_row(
+        "SELECT value FROM system_config WHERE key = ?1",
+        [key],
+        |r| r.get::<_, String>(0),
+    ) {
+        Ok(val) => Ok(Some(val)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(DbError::Sqlite(e)),
+    }
+}
+
+/// Set a value in the system_config table (upsert).
+pub fn set_system_config(conn: &Connection, key: &str, value: &str) -> Result<(), DbError> {
+    conn.execute(
+        "INSERT INTO system_config (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [key, value],
+    )
+    .map_err(DbError::Sqlite)?;
     Ok(())
 }
 
@@ -150,7 +174,9 @@ static MIGRATIONS: &[(&str, &str)] = &[
     ("V35__document_freshness", include_str!("migrations/V35__document_freshness.sql")),
     ("V36__freshness_config", include_str!("migrations/V36__freshness_config.sql")),
     ("V37__link_optimization", include_str!("migrations/V37__link_optimization.sql")),
-    ("V38__scheduler_details", include_str!("migrations/V38__scheduler_details.sql")),
+    ("V38__scheduler_details",      include_str!("migrations/V38__scheduler_details.sql")),
+    ("V39__add_last_fetched_at",    include_str!("migrations/V39__add_last_fetched_at.sql")),
+    ("V40__add_system_config",      include_str!("migrations/V40__add_system_config.sql")),
 ];
 
 // ── Test helper ──────────────────────────────────────────────────────────────
@@ -399,6 +425,50 @@ mod tests {
             "SELECT COUNT(*) FROM templates WHERE project_id=?1", [pid], |r| r.get(0),
         ).unwrap();
         assert_eq!(count, 0, "프로젝트 삭제 시 템플릿도 CASCADE 삭제되어야 함");
+    }
+
+    // ── V40: system_config 테이블 ────────────────────────────────────────────
+
+    #[test]
+    fn v40_system_config_table_exists() {
+        let db = TestDb::new();
+        let count: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='system_config'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 1, "system_config 테이블이 존재해야 함");
+    }
+
+    #[test]
+    fn v40_system_config_bootstrap_default() {
+        let db = TestDb::new();
+        let val: String = db.conn.query_row(
+            "SELECT value FROM system_config WHERE key='last_run_version'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(val, "0.0.0", "부트스트랩: last_run_version 초기값은 0.0.0");
+    }
+
+    #[test]
+    fn test_get_system_config_returns_bootstrap_value() {
+        let db = TestDb::new();
+        let val = get_system_config(&db.conn, "last_run_version").unwrap();
+        assert_eq!(val, Some("0.0.0".to_string()));
+    }
+
+    #[test]
+    fn test_set_and_get_system_config() {
+        let db = TestDb::new();
+        set_system_config(&db.conn, "last_run_version", "0.2.0").unwrap();
+        let val = get_system_config(&db.conn, "last_run_version").unwrap();
+        assert_eq!(val, Some("0.2.0".to_string()));
+    }
+
+    #[test]
+    fn test_get_system_config_missing_key() {
+        let db = TestDb::new();
+        let val = get_system_config(&db.conn, "nonexistent_key").unwrap();
+        assert_eq!(val, None, "존재하지 않는 키는 None 반환");
     }
 
     #[test]

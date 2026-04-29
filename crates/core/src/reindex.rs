@@ -125,7 +125,7 @@ impl ReindexService {
                         "SELECT title, content_hash FROM documents WHERE project_id = ?1 AND source_doc_id = ?2",
                         params![project_id, sid],
                         |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?)),
-                    ).map_err(|e| e)
+                    )
                 };
 
                 match row {
@@ -262,6 +262,10 @@ impl ReindexService {
             ReindexScope::DateRange { .. } => "date_range".to_string(),
         };
         let conn = self.conn.lock().map_err(|_| "db lock poisoned".to_string())?;
+        tracing::debug!(
+            project_id, scope = %scope_str, status, total, processed, skipped = _skipped,
+            "reindex_history entry"
+        );
         conn.execute(
             "INSERT INTO reindex_history(project_id, scope, status, total_docs, processed_docs, error_message, started_at, completed_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, unixepoch(), unixepoch())",
@@ -269,6 +273,55 @@ impl ReindexService {
         ).map_err(|e| e.to_string())?;
         Ok(())
     }
+}
+
+/// Trigger full re-indexing for all active projects. Used by post-update migrations.
+/// Returns the number of projects queued for re-indexing.
+/// Uses `force: true` so content-hash skipping is disabled — all documents are re-processed.
+/// `last_run_version` should be updated after this returns, not after the queue drains,
+/// so that a mid-run app restart resumes correctly (idempotent via content-hash on next run).
+pub async fn force_reindex_all_projects(
+    conn: Arc<Mutex<rusqlite::Connection>>,
+    indexing: Arc<IndexingService>,
+) -> Result<usize, String> {
+    let project_names: Vec<String> = {
+        let c = conn.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let mut stmt = c
+            .prepare("SELECT name FROM projects WHERE status = 'active'")
+            .map_err(|e| e.to_string())?;
+        // Bind to a named variable so `stmt`/`c` drop before the block result is returned.
+        let names: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        names
+    };
+
+    let count = project_names.len();
+    let service = ReindexService::new(conn, indexing);
+    let mut errors: Vec<String> = Vec::new();
+
+    for name in &project_names {
+        if let Err(e) = service
+            .reindex(name, ReindexScope::Full, ReindexOptions { force: true, ..Default::default() })
+            .await
+        {
+            tracing::error!(project = %name, error = %e, "force_reindex failed for project");
+            errors.push(format!("'{}': {}", name, e));
+        }
+    }
+
+    if !errors.is_empty() {
+        tracing::warn!(
+            total = count,
+            failed = errors.len(),
+            "force_reindex_all_projects completed with errors: {}",
+            errors.join("; ")
+        );
+    }
+
+    Ok(count)
 }
 
 #[cfg(test)]
@@ -313,6 +366,36 @@ mod tests {
     }
 
     // ── Step 4 TDD 테스트 ──────────────────────────────────────────────────
+
+    // ── force_reindex_all_projects TDD ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_force_reindex_all_active_excludes_disabled() {
+        let db = TestDb::new();
+        let (conn, indexing) = make_service(&db);
+
+        insert_project(&conn, "active-1");
+        insert_project(&conn, "active-2");
+        {
+            let c = conn.lock().unwrap();
+            c.execute(
+                "INSERT INTO projects(name, display_name, path, status, storage_strategy, created_at, updated_at) \
+                 VALUES ('disabled-p', 'Disabled', '/tmp', 'disabled', 'full', unixepoch(), unixepoch())",
+                [],
+            ).unwrap();
+        }
+
+        let count = force_reindex_all_projects(conn.clone(), indexing).await.unwrap();
+        assert_eq!(count, 2, "active 프로젝트 2개만 재인덱싱 대상이어야 함");
+    }
+
+    #[tokio::test]
+    async fn test_force_reindex_all_returns_zero_when_no_active() {
+        let db = TestDb::new();
+        let (conn, indexing) = make_service(&db);
+        let count = force_reindex_all_projects(conn.clone(), indexing).await.unwrap();
+        assert_eq!(count, 0, "active 프로젝트 없으면 0 반환");
+    }
 
     #[tokio::test]
     async fn test_dry_run_returns_targets_without_db_change() {
@@ -402,6 +485,23 @@ mod tests {
             params![pid], |r| r.get(0),
         ).unwrap();
         assert_eq!(count, 1, "reindex_history에 이력이 기록되어야 함");
+    }
+
+    #[tokio::test]
+    async fn test_force_reindex_all_writes_reindex_history() {
+        let db = TestDb::new();
+        let (conn, indexing) = make_service(&db);
+        let pid = insert_project(&conn, "history-proj");
+        insert_doc(&conn, pid, "doc-a", "Doc A", 1000);
+
+        force_reindex_all_projects(conn.clone(), indexing).await.unwrap();
+
+        let count: i64 = conn.lock().unwrap().query_row(
+            "SELECT COUNT(*) FROM reindex_history WHERE project_id = ?1",
+            params![pid],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(count >= 1, "force_reindex_all_projects는 reindex_history에 이력을 남겨야 함");
     }
 
     #[tokio::test]

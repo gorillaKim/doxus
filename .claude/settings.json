@@ -107,7 +107,14 @@
       "mcp__doxus__doxus_list_projects",
       "Bash(bash scripts/build-dmg.sh)",
       "Bash(./scripts/build-dmg.sh)",
-      "Bash(kill 91349)"
+      "Bash(kill 91349)",
+      "mcp__doxus__doxus_status",
+      "Bash(cp /Users/madup/gorillaProject/doxus/target/release/doxus-mcp /Applications/doxus.app/Contents/MacOS/doxus-mcp)",
+      "Bash(kill 25711)",
+      "Bash(sample 41164 3)",
+      "Bash(kill 41164 36802)",
+      "Bash(sample 44468 2)",
+      "Bash(kill 44468)"
     ],
     "additionalDirectories": [
       "/Users/madup/.doxus/agents/librarian",

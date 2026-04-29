@@ -44,6 +44,12 @@
       "desktop": {
         "schemes": ["doxus"]
       }
+    },
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFBRDc5RkE0QzNFNzQyNzAKUldSd1F1ZkRwSi9YR21HOGJSQWRJWXZ4YWcvUG9LY3hkeUp0SEg0Y3lSUXJVdmc2VXRoUTltN3UK",
+      "endpoints": [
+        "https://github.com/gorillaKim/doxus/releases/latest/download/latest.json"
+      ]
     }
   }
 }

@@ -13,12 +13,15 @@ import GuidePage from "./pages/GuidePage";
 import FreshnessPage from "./pages/FreshnessPage";
 import SchedulerPage from "./pages/SchedulerPage";
 import { ModelDownloadModal } from "./components/ModelDownloadModal";
+import { setupMigrationListeners } from "./services/migrationListener";
 
 export default function App() {
   const [cacheToast, setCacheToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [indexToast, setIndexToast] = useState<{ name: string; message: string } | null>(null);
   const indexToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [migrationToast, setMigrationToast] = useState<string | null>(null);
+  const migrationToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const unlisten = listen<{ count: number }>("cache:cleanup", (event) => {
@@ -28,6 +31,21 @@ export default function App() {
       toastTimer.current = setTimeout(() => setCacheToast(null), 4000);
     });
     return () => { unlisten.then(fn => fn()); };
+  }, []);
+
+  useEffect(() => {
+    const setup = setupMigrationListeners(
+      () => {
+        if (migrationToastTimer.current) clearTimeout(migrationToastTimer.current);
+        setMigrationToast("앱 업데이트 후 검색 성능 향상을 위한 데이터 재구성이 진행 중입니다...");
+      },
+      () => {
+        if (migrationToastTimer.current) clearTimeout(migrationToastTimer.current);
+        setMigrationToast("데이터 재구성이 완료되었습니다.");
+        migrationToastTimer.current = setTimeout(() => setMigrationToast(null), 4000);
+      },
+    );
+    return () => { setup.then((fn) => fn()); };
   }, []);
 
   useEffect(() => {
@@ -76,6 +94,12 @@ export default function App() {
               <p className="text-xs text-gray-400 mt-1">{indexToast.message}</p>
             </div>
           </div>
+        </div>
+      )}
+
+      {migrationToast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 px-5 py-3 bg-indigo-900/90 backdrop-blur-xl border border-indigo-500/30 rounded-2xl shadow-2xl text-sm text-indigo-100 max-w-sm text-center">
+          {migrationToast}
         </div>
       )}
 

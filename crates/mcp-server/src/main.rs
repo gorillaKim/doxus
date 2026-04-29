@@ -168,7 +168,7 @@ async fn main() -> Result<()> {
 
                 let response = match serde_json::from_str::<McpRequest>(&line) {
                     Ok(req) => {
-                        let id = req.id.clone();
+                        let id = req.id.clone().unwrap_or(serde_json::Value::Null);
                         server.dispatch(&req.method, id, req.params.as_ref()).await
                     }
                     Err(e) => McpResponse::err(json!(null), -32700, format!("parse error: {e}")),

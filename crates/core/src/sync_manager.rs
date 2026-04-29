@@ -73,6 +73,10 @@ impl SyncManager {
         )
     }
 
+    pub fn indexing_service(&self) -> Arc<IndexingService> {
+        self.indexing_service.clone()
+    }
+
     pub async fn trigger(&self, trigger: SyncTrigger) {
         let _ = self.tx.send(trigger).await;
     }
