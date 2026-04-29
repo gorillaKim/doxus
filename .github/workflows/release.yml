@@ -38,10 +38,10 @@ jobs:
           cache: 'npm'
           cache-dependency-path: apps/desktop/package-lock.json
 
-      - name: Setup Rust (stable + universal targets)
+      - name: Setup Rust (stable + aarch64 target)
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: aarch64-apple-darwin
 
       - name: Rust build cache
         uses: swatinem/rust-cache@v2
@@ -52,14 +52,11 @@ jobs:
 
       # ── Build doxus-mcp sidecar for both architectures ────────────────────
       # Tauri external binaries require per-target suffixed files.
-      - name: Build doxus-mcp sidecar (aarch64 + x86_64)
+      - name: Build doxus-mcp sidecar (aarch64)
         run: |
           cargo build -p doxus-mcp --release --target aarch64-apple-darwin
-          cargo build -p doxus-mcp --release --target x86_64-apple-darwin
           cp target/aarch64-apple-darwin/release/doxus-mcp \
              apps/desktop/src-tauri/binaries/doxus-mcp-aarch64-apple-darwin
-          cp target/x86_64-apple-darwin/release/doxus-mcp \
-             apps/desktop/src-tauri/binaries/doxus-mcp-x86_64-apple-darwin
 
       - name: Install frontend dependencies
         run: npm ci
@@ -92,4 +89,4 @@ jobs:
           releaseDraft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
           projectPath: apps/desktop
-          args: --target universal-apple-darwin
+          args: --target aarch64-apple-darwin
