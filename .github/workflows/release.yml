@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  push:
+    tags:
+      # Matches v0.2.0, v1.0.0, v0.2.0-rc1 — excludes branch names and loose tags
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Pre-flight checks ──────────────────────────────────────────────────
+      - name: Verify updater pubkey is configured
+        run: |
+          if grep -q PLACEHOLDER_ED25519_PUBLIC_KEY apps/desktop/src-tauri/tauri.conf.json; then
+            echo "::error::tauri.conf.json still contains PLACEHOLDER_ED25519_PUBLIC_KEY."
+            echo "::error::Generate a key pair: npx @tauri-apps/cli signer generate"
+            echo "::error::Add TAURI_SIGNING_PRIVATE_KEY secret, then set the pubkey in tauri.conf.json."
+            exit 1
+          fi
+
+      # ── Toolchains ────────────────────────────────────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Setup Rust (stable + universal targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Rust build cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            apps/desktop/src-tauri -> target
+
+      # ── Build doxus-mcp sidecar for both architectures ────────────────────
+      # Tauri external binaries require per-target suffixed files.
+      - name: Build doxus-mcp sidecar (aarch64 + x86_64)
+        run: |
+          cargo build -p doxus-mcp --release --target aarch64-apple-darwin
+          cargo build -p doxus-mcp --release --target x86_64-apple-darwin
+          cp target/aarch64-apple-darwin/release/doxus-mcp \
+             apps/desktop/src-tauri/binaries/doxus-mcp-aarch64-apple-darwin
+          cp target/x86_64-apple-darwin/release/doxus-mcp \
+             apps/desktop/src-tauri/binaries/doxus-mcp-x86_64-apple-darwin
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: apps/desktop
+
+      # ── Build + publish (draft) ────────────────────────────────────────────
+      # tauri-action generates latest.json and uploads it as a release asset.
+      # After the job succeeds, go to GitHub Releases and click "Publish release"
+      # to make it visible to the updater endpoint:
+      #   https://github.com/gorillaKim/doxus/releases/latest/download/latest.json
+      #
+      # Prereleases (tags containing '-') are marked as prerelease and will NOT
+      # be served by the 'latest' redirect — use the full tag URL for beta testers.
+      - name: Build and publish release
+        uses: tauri-apps/tauri-action@v0.5.17
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # ED25519 signing key — generate with: npx @tauri-apps/cli signer generate
+          # Set TAURI_SIGNING_PRIVATE_KEY (required) and
+          # TAURI_SIGNING_PRIVATE_KEY_PASSWORD (optional) in:
+          # Settings → Secrets and variables → Actions
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # ORT download strategy avoids needing onnxruntime installed on the runner
+          ORT_STRATEGY: download
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Doxus ${{ github.ref_name }}'
+          releaseBody: 'See CHANGELOG for release notes.'
+          releaseDraft: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          projectPath: apps/desktop
+          args: --target universal-apple-darwin

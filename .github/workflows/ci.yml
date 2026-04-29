@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  # Avoids needing onnxruntime pre-installed on runners
+  ORT_STRATEGY: download
+
+jobs:
+  test-rust:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust build cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-features -- -D warnings
+
+      - name: Run Rust tests
+        run: |
+          set -euo pipefail
+          # Targeted filters skip known-hanging integration tests (wiremock/mockito OAuth tests).
+          # Assert at least one test ran to catch silent filter mismatches.
+          out=$(cargo test -p doxus-core -- db::tests reindex::tests --test-threads=4 2>&1 | tee /dev/stderr)
+          echo "$out" | grep -qE 'test result: ok\. [1-9]' \
+            || { echo "::error::No doxus-core tests ran — check filter path names"; exit 1; }
+
+          out=$(cargo test -p doxus-desktop -- update_manager::tests state::tests --test-threads=4 2>&1 | tee /dev/stderr)
+          echo "$out" | grep -qE 'test result: ok\. [1-9]' \
+            || { echo "::error::No doxus-desktop tests ran — check filter path names"; exit 1; }
+
+  # Catches Tauri macro expansion failures, build.rs errors, and missing IPC
+  # command registration at PR time instead of waiting for a tag push.
+  build-tauri-check:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust build cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            apps/desktop/src-tauri -> target
+
+      - name: cargo check (desktop lib + bin)
+        run: cargo check -p doxus-desktop --all-targets
+
+  test-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: apps/desktop
+
+      - name: Run Vitest
+        run: npm test
+        working-directory: apps/desktop
