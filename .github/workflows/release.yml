@@ -50,6 +50,20 @@ jobs:
             . -> target
             apps/desktop/src-tauri -> target
 
+      # ── Verify signing key works before long build ────────────────────────
+      - name: Verify signing key
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          echo "test" > /tmp/sign_test.txt
+          npx @tauri-apps/cli signer sign /tmp/sign_test.txt
+          if [ ! -s /tmp/sign_test.txt.sig ]; then
+            echo "::error::Signing test failed — key/password combination is invalid"
+            exit 1
+          fi
+          echo "✓ Signing key verified"
+
       # ── Build doxus-mcp sidecar for both architectures ────────────────────
       # Tauri external binaries require per-target suffixed files.
       - name: Build doxus-mcp sidecar (aarch64)
