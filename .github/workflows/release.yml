@@ -101,6 +101,22 @@ jobs:
           projectPath: apps/desktop
           args: --target aarch64-apple-darwin
 
+      # tauri-action re-packages the .app into a new tar.gz but doesn't re-sign it,
+      # leaving doxus.app.tar.gz.sig empty. Re-sign manually after the action.
+      - name: Re-sign update payload
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          TAR_FILE=$(find target/aarch64-apple-darwin/release/bundle/macos -name "*.app.tar.gz" | head -1)
+          echo "Signing: $TAR_FILE"
+          npx @tauri-apps/cli signer sign "$TAR_FILE"
+          if [ ! -s "${TAR_FILE}.sig" ]; then
+            echo "::error::Re-signing failed — .sig is still empty"
+            exit 1
+          fi
+          echo "✓ Re-signed: $(ls -lh ${TAR_FILE}.sig)"
+
       # tauri-action sometimes fails to detect the .sig for latest.json.
       # This step creates and uploads it manually as a reliable fallback.
       - name: Upload update payload and latest.json
