@@ -55,6 +55,7 @@ jobs:
       - name: Build doxus-mcp sidecar (aarch64)
         run: |
           cargo build -p doxus-mcp --release --target aarch64-apple-darwin
+          mkdir -p apps/desktop/src-tauri/binaries
           cp target/aarch64-apple-darwin/release/doxus-mcp \
              apps/desktop/src-tauri/binaries/doxus-mcp-aarch64-apple-darwin
 
