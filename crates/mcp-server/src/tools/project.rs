@@ -2,7 +2,6 @@ use crate::server::McpServer;
 use crate::types::McpResponse;
 use rusqlite::params;
 use serde_json::Value;
-use doxus_core::indexing::IndexingService;
 
 pub fn list_projects(server: &McpServer, id: Value) -> McpResponse {
     let conn = server.conn();
@@ -55,22 +54,48 @@ pub fn add_project(server: &McpServer, id: Value, args: &Value) -> McpResponse {
         None => return McpResponse::err(id, -32602, "missing required arg: path"),
     };
     let display_name = args["display_name"].as_str().unwrap_or(name);
+    let source_type = args["source_type"].as_str().unwrap_or("obsidian");
+    let config_json = args["config"].as_object()
+        .map(|m| serde_json::Value::Object(m.clone()).to_string())
+        .unwrap_or_else(|| "{}".to_string());
+
+    let plugin_id = match source_type {
+        "obsidian" | "confluence" | "github" => format!("com.doxus.{source_type}"),
+        other => other.to_string(),
+    };
 
     let conn = server.conn();
     let conn_lock = match conn.lock() {
         Ok(l) => l,
         Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
     };
-    let result = conn_lock.execute(
-        "INSERT INTO projects(name, display_name, path, created_at, updated_at)
-         VALUES (?1, ?2, ?3, unixepoch(), unixepoch())",
-        params![name, display_name, path],
-    );
+
+    // projects + source_instances 동시 INSERT (atomic)
+    let result: Result<(), rusqlite::Error> = (|| {
+        // plugins FK 충족: 해당 plugin_id 행이 없으면 upsert
+        conn_lock.execute(
+            "INSERT OR IGNORE INTO plugins(id, name, version, kind, installed_at)
+             VALUES (?1, ?1, '0.0.0', 'builtin', unixepoch())",
+            params![plugin_id],
+        )?;
+        conn_lock.execute(
+            "INSERT INTO projects(name, display_name, path, source_type, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, unixepoch(), unixepoch())",
+            params![name, display_name, path, source_type],
+        )?;
+        let project_id = conn_lock.last_insert_rowid();
+        conn_lock.execute(
+            "INSERT INTO source_instances(plugin_id, project_id, name, config_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, unixepoch())",
+            params![plugin_id, project_id, name, config_json],
+        )?;
+        Ok(())
+    })();
 
     match result {
         Ok(_) => McpResponse::text(
             id,
-            format!("Project '{name}' added. Run doxus_index_project to index it."),
+            format!("Project '{name}' added (source_type: {source_type}). Run doxus_index_project to index it."),
         ),
         Err(e) => McpResponse::err(id, -32603, e.to_string()),
     }
@@ -107,41 +132,24 @@ pub fn remove_project(server: &McpServer, id: Value, args: &Value) -> McpRespons
 }
 
 pub fn index_project(server: &McpServer, id: Value, args: &Value) -> McpResponse {
-    use doxus_core::search::SearchEngine;
-    use std::sync::Arc;
-
     let name = match args["project"].as_str().or_else(|| args["name"].as_str()) {
-        Some(n) => n,
+        Some(n) => n.to_string(),
         None => return McpResponse::err(id, -32602, "missing required arg: project"),
     };
     let full = args["full"].as_bool().unwrap_or(false);
 
-    let conn = server.conn().clone();
-    let plugin_manager = server.plugin_manager().clone();
-    let embedder = server.embedder()
-        .unwrap_or_else(|| Arc::new(doxus_core::embedding::NoOpEmbedder) as Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>);
-    let engine = Arc::new(SearchEngine::with_embedder(conn.clone(), embedder));
-
-    let indexing_service = IndexingService::new(conn, plugin_manager, engine);
-
-    let run_indexing = async move {
-        indexing_service.index_project(&name, full).await
-    };
+    let indexing_service = server.indexer();
 
     let result = match tokio::runtime::Handle::try_current() {
-        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(run_indexing)),
-        Err(_) => {
-            match tokio::runtime::Runtime::new() {
-                Ok(rt) => rt.block_on(run_indexing),
-                Err(e) => return McpResponse::err(id, -32603, format!("runtime error: {e}")),
-            }
-        }
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(indexing_service.index_project(&name, full))),
+        Err(_) => match tokio::runtime::Runtime::new() {
+            Ok(rt) => rt.block_on(indexing_service.index_project(&name, full)),
+            Err(e) => return McpResponse::err(id, -32603, format!("runtime error: {e}")),
+        },
     };
 
     match result {
-        Ok(indexed) => {
-            McpResponse::text(id, format!("Project '{name}' indexed: {indexed} documents. (Unified Indexing Service)"))
-        }
+        Ok(indexed) => McpResponse::text(id, format!("Project '{name}' indexed: {indexed} documents.")),
         Err(e) => McpResponse::err(id, -32603, format!("index failed: {e}")),
     }
 }
@@ -359,4 +367,73 @@ pub fn setup_project_agent(_server: &McpServer, id: Value, args: &Value) -> McpR
     }
 
     McpResponse::text(id, format!("Doxus agent instructions successfully added to {}.", claude_md_path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::server::McpServer;
+    use doxus_core::db::TestDb;
+    use std::sync::{Arc, Mutex};
+
+    fn make_server(db: TestDb) -> McpServer {
+        let conn = Arc::new(Mutex::new(db.conn));
+        let pm = Arc::new(doxus_core::plugin::PluginManager::new(
+            std::path::PathBuf::from("/tmp/plugins"),
+        ));
+        McpServer::new(
+            conn,
+            std::path::PathBuf::from("/tmp/test.db"),
+            None,
+            pm,
+            std::path::PathBuf::from("/tmp/plugins"),
+        )
+    }
+
+    #[test]
+    fn test_add_project_creates_source_instances_row() {
+        let db = TestDb::new();
+        let server = make_server(db);
+
+        let args = serde_json::json!({
+            "name": "my-confluence",
+            "path": "https://example.atlassian.net",
+            "source_type": "confluence"
+        });
+        let resp = add_project(&server, serde_json::json!(1), &args);
+        assert!(resp.result.is_some(), "add_project should succeed: {:?}", resp.error);
+
+        let count: i64 = server.conn().lock().unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM source_instances si
+                 JOIN projects p ON si.project_id = p.id
+                 WHERE p.name = 'my-confluence'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(count, 1, "add_project는 source_instances 행을 생성해야 함");
+    }
+
+    #[test]
+    fn test_add_project_obsidian_default_source_type() {
+        let db = TestDb::new();
+        let server = make_server(db);
+
+        // source_type 없으면 obsidian 기본값
+        let args = serde_json::json!({ "name": "my-vault", "path": "/Users/me/vault" });
+        let resp = add_project(&server, serde_json::json!(2), &args);
+        assert!(resp.result.is_some(), "add_project should succeed: {:?}", resp.error);
+
+        let plugin_id: String = server.conn().lock().unwrap()
+            .query_row(
+                "SELECT si.plugin_id FROM source_instances si
+                 JOIN projects p ON si.project_id = p.id
+                 WHERE p.name = 'my-vault'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(plugin_id, "com.doxus.obsidian");
+    }
 }

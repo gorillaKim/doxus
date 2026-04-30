@@ -1,11 +1,12 @@
 use axum::{
-    extract::{Host, State},
+    extract::{Host, Query, State},
     http::{header::AUTHORIZATION, Request, StatusCode},
     middleware::{self, Next},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Redirect, Response},
     routing::{get, post},
     Json, Router,
 };
+use std::collections::HashMap;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -14,15 +15,20 @@ use crate::{McpRequest, McpServer};
 #[derive(Clone)]
 struct HttpState {
     server: Arc<McpServer>,
+    token: String,
 }
 
 /// Build the axum Router for the HTTP MCP server.
 pub fn build_router(server: Arc<McpServer>, token: String) -> Router {
-    let state = HttpState { server };
+    let state = HttpState {
+        server,
+        token: token.clone(),
+    };
 
-    // OAuth token handler captures the static token via closure.
-    // /oauth/token is intentionally unauthenticated — it IS the token issuance endpoint.
-    let static_token = token.clone();
+    // OAuth discovery endpoints satisfy the RFC 9728 / RFC 8414 / RFC 7591
+    // handshake that MCP SDK 1.x performs before every connection.
+    // They are intentionally unauthenticated (they ARE the auth mechanism).
+    // host_allowlist_middleware below mitigates DNS-rebinding attacks.
     let oauth_router = Router::new()
         .route(
             "/.well-known/oauth-protected-resource",
@@ -32,22 +38,9 @@ pub fn build_router(server: Arc<McpServer>, token: String) -> Router {
             "/.well-known/oauth-authorization-server",
             get(oauth_authorization_server),
         )
-        .route(
-            "/oauth/token",
-            post(move || {
-                let t = static_token.clone();
-                async move {
-                    (
-                        StatusCode::OK,
-                        Json(json!({
-                            "access_token": t,
-                            "token_type": "Bearer",
-                            "expires_in": 3600
-                        })),
-                    )
-                }
-            }),
-        );
+        .route("/oauth/register", post(oauth_register))
+        .route("/oauth/authorize", get(oauth_authorize))
+        .route("/oauth/token", post(oauth_token));
 
     Router::new()
         .route("/mcp", post(mcp_handler))
@@ -55,6 +48,8 @@ pub fn build_router(server: Arc<McpServer>, token: String) -> Router {
         .route("/health", get(health_handler))
         .merge(oauth_router)
         .with_state(state)
+        // Wraps all routes: blocks requests with non-loopback Host headers.
+        .layer(middleware::from_fn(host_allowlist_middleware))
 }
 
 /// Start an HTTP MCP server on the given port.
@@ -93,10 +88,34 @@ async fn mcp_handler(
     (StatusCode::OK, Json(response)).into_response()
 }
 
+// Blocks DNS-rebinding attacks by rejecting requests whose Host header is not
+// a loopback address. Absent Host header (e.g. internal/test calls) is allowed.
+async fn host_allowlist_middleware(
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let host = req
+        .headers()
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("127.0.0.1");
+
+    let is_local = host.starts_with("127.0.0.1")
+        || host.starts_with("localhost")
+        || host.starts_with("[::1]");
+
+    if is_local {
+        Ok(next.run(req).await)
+    } else {
+        Err(StatusCode::FORBIDDEN)
+    }
+}
+
 // MCP SDK 1.x sends OAuth discovery preflight requests before connecting.
 // These endpoints satisfy the RFC 9728 / RFC 8414 discovery handshake so the
 // SDK stops trying OAuth and falls through to use the Bearer token from headers.
-async fn oauth_protected_resource(Host(host): Host) -> impl IntoResponse {
+async fn oauth_protected_resource(host: Option<Host>) -> impl IntoResponse {
+    let host = host.map(|h| h.0).unwrap_or_else(|| "127.0.0.1".to_string());
     (
         StatusCode::OK,
         Json(json!({
@@ -107,17 +126,85 @@ async fn oauth_protected_resource(Host(host): Host) -> impl IntoResponse {
     )
 }
 
-async fn oauth_authorization_server(Host(host): Host) -> impl IntoResponse {
+async fn oauth_authorization_server(host: Option<Host>) -> impl IntoResponse {
+    let host = host.map(|h| h.0).unwrap_or_else(|| "127.0.0.1".to_string());
     (
         StatusCode::OK,
         Json(json!({
             "issuer": format!("http://{}", host),
+            "authorization_endpoint": format!("http://{}/oauth/authorize", host),
             "token_endpoint": format!("http://{}/oauth/token", host),
-            "grant_types_supported": ["client_credentials"],
-            "token_endpoint_auth_methods_supported": ["none"],
-            "response_types_supported": ["token"]
+            "registration_endpoint": format!("http://{}/oauth/register", host),
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code", "client_credentials"],
+            "code_challenge_methods_supported": ["S256"],
+            "token_endpoint_auth_methods_supported": ["none"]
+            // http:// is correct: this server is loopback-only by design
         })),
     )
+}
+
+// Immediately redirect back with a static code — no user interaction needed.
+// This lets MCP SDK 1.x complete the authorization_code + PKCE flow automatically.
+async fn oauth_authorize(Query(params): Query<HashMap<String, String>>) -> Response {
+    let redirect_uri = params.get("redirect_uri").cloned().unwrap_or_default();
+    let state = params.get("state").cloned().unwrap_or_default();
+    let location = if state.is_empty() {
+        format!("{}?code=doxus-auth-code", redirect_uri)
+    } else {
+        format!("{}?code=doxus-auth-code&state={}", redirect_uri, state)
+    };
+    Redirect::temporary(&location).into_response()
+}
+
+async fn oauth_register() -> impl IntoResponse {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    (
+        StatusCode::CREATED,
+        Json(json!({
+            "client_id": "doxus-mcp-client",
+            "client_id_issued_at": now,
+            "redirect_uris": [],
+            "grant_types": ["client_credentials"],
+            "token_endpoint_auth_method": "none"
+        })),
+    )
+}
+
+// /oauth/token is intentionally unauthenticated — it IS the token issuance endpoint.
+// Validates grant_type=client_credentials (RFC 6749 §4.4) before returning the
+// static bearer token. Exposure is limited by: loopback-only bind + host_allowlist_middleware.
+async fn oauth_token(
+    State(state): State<HttpState>,
+    body: axum::body::Bytes,
+) -> Response {
+    let body_str = String::from_utf8_lossy(&body);
+    let has_valid_grant = body_str.split('&').any(|pair| {
+        let p = pair.trim();
+        p == "grant_type=client_credentials" || p == "grant_type=authorization_code"
+    });
+
+    if !has_valid_grant {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "unsupported_grant_type"})),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "access_token": state.token.as_str(),
+            "token_type": "Bearer",
+            "expires_in": 3600
+        })),
+    )
+        .into_response()
 }
 
 async fn auth_middleware(
@@ -165,20 +252,7 @@ mod tests {
             std::path::PathBuf::from("/tmp/doxus-test-plugins"),
         ));
 
-        let token_str = token.to_string();
-        let state = HttpState {
-            server: Arc::clone(&server),
-        };
-
-        let app = Router::new()
-            .route("/mcp", post(mcp_handler))
-            .route_layer(middleware::from_fn_with_state(
-                token_str,
-                auth_middleware,
-            ))
-            .route("/health", get(health_handler))
-            .with_state(state);
-
+        let app = build_router(Arc::clone(&server), token.to_string());
         (app, server)
     }
 
@@ -289,5 +363,113 @@ mod tests {
         let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let tools = &val["result"]["tools"];
         assert!(tools.as_array().unwrap().len() >= 30);
+    }
+
+    // ── OAuth discovery endpoint tests ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn oauth_protected_resource_returns_200_without_auth() {
+        let (app, _) = make_app("secret");
+        let req = HttpRequest::builder()
+            .method(Method::GET)
+            .uri("/.well-known/oauth-protected-resource")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn oauth_authorization_server_has_registration_endpoint() {
+        let (app, _) = make_app("secret");
+        let req = HttpRequest::builder()
+            .method(Method::GET)
+            .uri("/.well-known/oauth-authorization-server")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(val.get("registration_endpoint").is_some());
+        assert!(val.get("token_endpoint").is_some());
+        // MCP SDK 1.x requires these fields even for client_credentials-only servers
+        assert!(val.get("authorization_endpoint").is_some());
+        assert!(val["response_types_supported"].is_array());
+    }
+
+    #[tokio::test]
+    async fn oauth_token_returns_token_with_valid_grant_type() {
+        let (app, _) = make_app("mytoken");
+        let req = HttpRequest::builder()
+            .method(Method::POST)
+            .uri("/oauth/token")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from("grant_type=client_credentials"))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(val["access_token"], "mytoken");
+        assert_eq!(val["token_type"], "Bearer");
+    }
+
+    #[tokio::test]
+    async fn oauth_token_rejects_missing_grant_type() {
+        let (app, _) = make_app("secret");
+        let req = HttpRequest::builder()
+            .method(Method::POST)
+            .uri("/oauth/token")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(val["error"], "unsupported_grant_type");
+    }
+
+    #[tokio::test]
+    async fn oauth_register_returns_201_with_client_id() {
+        let (app, _) = make_app("secret");
+        let req = HttpRequest::builder()
+            .method(Method::POST)
+            .uri("/oauth/register")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"grant_types":["client_credentials"]}"#))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(val.get("client_id").is_some());
+        assert!(val["client_id_issued_at"].as_u64().unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn host_allowlist_blocks_non_local_host() {
+        let (app, _) = make_app("secret");
+        let req = HttpRequest::builder()
+            .method(Method::GET)
+            .uri("/health")
+            .header("host", "evil.attacker.com")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 }

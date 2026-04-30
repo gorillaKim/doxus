@@ -63,8 +63,6 @@ impl IndexingService {
             config_fields.insert("path".to_string(), serde_json::Value::String(project_path.clone()));
         }
 
-        inject_keychain_auth(&plugin_id, &mut PluginConfig { fields: config_fields.clone() }, &mut secrets).await;
-        
         let mut final_config = PluginConfig { fields: config_fields };
         inject_keychain_auth(&plugin_id, &mut final_config, &mut secrets).await;
 
@@ -196,12 +194,16 @@ impl IndexingService {
             Ok::<(), String>(())
         }.await;
 
-        // 3. 뒷정리 및 링크 해결 (이번 세션에서 보지 못한 문서 삭제)
-        let _ = self.remove_deleted_documents(project_id, sync_start_time).await;
-        {
+        // 3. 뒷정리: fetch가 완전히 성공한 경우에만 삭제 및 링크 해결
+        if result.is_ok() {
+            let _ = self.remove_deleted_documents(project_id, sync_start_time).await;
             if let Ok(conn) = self.conn.lock() {
                 let _ = LinkResolver::resolve_project_links(&conn, project_id);
-                // 인덱싱 종료 로그 기록 (에러가 있었더라도 지금까지 처리된 개수 기록)
+            }
+        }
+        // 인덱싱 종료 로그는 성공/실패와 무관하게 항상 기록
+        {
+            if let Ok(conn) = self.conn.lock() {
                 persist_audit(&conn, &AuditEvent::IndexComplete { project_id, docs_indexed: total });
             }
         }
@@ -553,6 +555,147 @@ mod tests {
     use super::*;
     use crate::db::TestDb;
     use std::sync::Arc;
+    use async_trait::async_trait;
+    use doxus_plugin_sdk::{
+        DocSource, PluginMetadata, PluginKind, Capabilities, SyncPolicy,
+        FetchAllOpts, DocumentStream, FetchChangesOpts, ChangeSet,
+        PluginConfig, PluginSecrets, SourceDocId, RawDocument,
+        HealthStatus, PluginError,
+    };
+
+    // ── Bug 1: inject_keychain_auth 이중 호출 테스트 ──────────────────────────
+
+    #[tokio::test]
+    async fn test_inject_keychain_auth_called_once_on_real_config() {
+        // DOXUS_SKIP_KEYCHAIN=1 환경에서 inject_keychain_auth 단일/이중 호출 시
+        // secrets에 api_token이 정확히 한 번만 주입되는지 확인 (멱등성)
+        std::env::set_var("DOXUS_SKIP_KEYCHAIN", "1");
+        std::env::set_var("DOXUS_CONFLUENCE_API_TOKEN", "test-token-123");
+
+        let mut config = doxus_plugin_sdk::PluginConfig::default();
+        let mut secrets = doxus_plugin_sdk::PluginSecrets::default();
+
+        // 단일 호출
+        crate::auth::inject_keychain_auth("com.doxus.confluence", &mut config, &mut secrets).await;
+
+        let token_count = secrets.fields.values()
+            .filter(|v| matches!(v, doxus_plugin_sdk::SecretValue::Text(t) if t == "test-token-123"))
+            .count();
+        assert_eq!(token_count, 1, "api_token은 한 번만 주입되어야 함");
+
+        // 두 번 호출해도 중복 삽입 없어야 함 (HashMap이므로 overwrite됨 — 여전히 1)
+        crate::auth::inject_keychain_auth("com.doxus.confluence", &mut config, &mut secrets).await;
+        let token_count_after = secrets.fields.values()
+            .filter(|v| matches!(v, doxus_plugin_sdk::SecretValue::Text(t) if t == "test-token-123"))
+            .count();
+        assert_eq!(token_count_after, 1, "두 번 호출해도 중복 주입 없어야 함");
+
+        std::env::remove_var("DOXUS_SKIP_KEYCHAIN");
+        std::env::remove_var("DOXUS_CONFLUENCE_API_TOKEN");
+    }
+
+    // ── Issue D: partial failure 시 기존 문서 삭제 방지 테스트 ───────────────
+
+    /// 첫 번째 fetch_all 호출부터 즉시 에러를 반환하는 플러그인
+    struct AlwaysFailPlugin;
+
+    #[async_trait]
+    impl DocSource for AlwaysFailPlugin {
+        fn metadata(&self) -> &PluginMetadata {
+            static META: std::sync::OnceLock<PluginMetadata> = std::sync::OnceLock::new();
+            META.get_or_init(|| PluginMetadata {
+                id: "test.alwaysfail".to_string(),
+                name: "Always Fail Plugin".to_string(),
+                version: "0.1.0".to_string(),
+                kind: PluginKind::Builtin,
+            })
+        }
+
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                incremental_sync: false,
+                oauth: false,
+                native_search: false,
+                sync_policy: SyncPolicy::Manual,
+            }
+        }
+
+        async fn validate_config(&self, _config: &PluginConfig) -> Result<(), PluginError> {
+            Ok(())
+        }
+
+        async fn initialize(&mut self, _: PluginConfig, _: PluginSecrets) -> Result<(), PluginError> {
+            Ok(())
+        }
+
+        async fn fetch_all(&self, _opts: FetchAllOpts) -> Result<DocumentStream, PluginError> {
+            Err(PluginError::NetworkError("simulated network failure".to_string()))
+        }
+
+        async fn fetch_changes(&self, _: FetchChangesOpts) -> Result<ChangeSet, PluginError> {
+            Err(PluginError::Internal("not supported".to_string()))
+        }
+
+        async fn fetch_document(&self, id: &SourceDocId) -> Result<RawDocument, PluginError> {
+            Err(PluginError::NotFound(id.0.clone()))
+        }
+
+        async fn health_check(&self) -> HealthStatus {
+            HealthStatus { healthy: true, message: None }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_partial_failure_does_not_delete_existing_documents() {
+        let db = TestDb::new();
+        let conn = Arc::new(std::sync::Mutex::new(db.conn));
+
+        // 프로젝트 삽입
+        conn.lock().unwrap().execute(
+            "INSERT INTO projects (name, display_name, path, source_type, created_at, updated_at) \
+             VALUES ('test-proj', 'Test', '/tmp', 'obsidian', 0, 0)",
+            [],
+        ).unwrap();
+        let project_id: i64 = conn.lock().unwrap()
+            .query_row("SELECT id FROM projects WHERE name='test-proj'", [], |r| r.get(0))
+            .unwrap();
+
+        // 기존 문서 10개 삽입 (last_indexed = 0, sync_start_time보다 이전이므로 삭제 대상)
+        {
+            let guard = conn.lock().unwrap();
+            for i in 0..10i64 {
+                guard.execute(
+                    "INSERT INTO documents (project_id, source_doc_id, content_hash, last_indexed) \
+                     VALUES (?1, ?2, 'hash', 0)",
+                    rusqlite::params![project_id, format!("existing-doc-{i}")],
+                ).unwrap();
+            }
+        }
+
+        let mut pm = PluginManager::new(std::path::PathBuf::from("/tmp/plugins"));
+        pm.register_factory("com.doxus.obsidian", || {
+            Box::new(AlwaysFailPlugin) as Box<dyn DocSource + Send + Sync>
+        });
+        let pm = Arc::new(pm);
+        let engine = Arc::new(SearchEngine::with_embedder(
+            conn.clone(),
+            Arc::new(crate::embedding::NoOpEmbedder),
+        ));
+        let indexer = IndexingService::new(conn.clone(), pm, engine);
+
+        // 인덱싱 실행 (첫 fetch_all부터 실패)
+        let result = indexer.index_project("test-proj", false).await;
+        assert!(result.is_err(), "fetch_all 에러 시 index_project는 Err를 반환해야 함");
+
+        // 기존 문서 10개가 보존되어야 함 (partial failure 시 삭제하면 안 됨)
+        let doc_count: i64 = conn.lock().unwrap().query_row(
+            "SELECT COUNT(*) FROM documents WHERE project_id = ?1",
+            [project_id],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(doc_count, 10,
+            "fetch 실패 시 기존 문서 10개가 보존되어야 함 (현재 버그: 삭제됨)");
+    }
 
     #[tokio::test]
     async fn test_needs_reindexing_logic() {
