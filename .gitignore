@@ -2,10 +2,11 @@
 *.onnx
 **/node_modules/
 **/dist/
-!apps/desktop/dist/
 .DS_Store
 .omc/
 .claude/worktrees/
+.claude/settings.json
+.serena/
 **/Cargo.lock
 !/Cargo.lock
 apps/desktop/src-tauri/binaries/
