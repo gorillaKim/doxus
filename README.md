@@ -76,16 +76,31 @@ cargo build --release --bin doxus
 
 doxus는 최상의 검색 품질을 위해 다음 기술을 조합하여 사용합니다.
 
-1.  **SQLite FTS5**: 키워드 기반의 빠른 정확도 보장.
-2.  **ONNX Local Embedding**: 로컬 CPU를 활용한 고효율 벡터 생성.
-3.  **RRF (Reciprocal Rank Fusion)**: 키워드 검색과 벡터 검색 순위를 통계적으로 병합하여 최적의 결과를 도출합니다.
-4.  **WASM Plugin System**: Extism 기반의 샌드박스에서 안전하게 외부 소스(Confluence, GitHub 등)의 데이터를 가져옵니다.
+1.  **SQLite FTS5**: 키워드 기반의 빠른 정확도 보장 (BM25 랭킹).
+2.  **ONNX Local Embedding**: 로컬 CPU로 all-MiniLM-L6-v2 모델을 실행해 384차원 벡터를 생성합니다. 외부 서버 불필요.
+3.  **sqlite-vec KNN**: 벡터 저장 및 K-최근접 이웃 검색을 SQLite 확장으로 처리합니다.
+4.  **RRF (Reciprocal Rank Fusion)**: FTS5와 벡터 검색 결과를 절대 점수가 아닌 순위(rank)로 병합하여 이질적인 스코어 체계를 자연스럽게 통합합니다. (K=60)
+5.  **Small-to-Big Retrieval**: 문서를 1,500자 청크로 분할 인덱싱한 뒤, 검색 결과로는 청크를 찾고 실제 반환은 원본 문서 전체를 제공합니다.
+6.  **고성능 스니펫 생성**: memmap2로 원본 파일을 메모리 맵하고, Aho-Corasick 알고리즘으로 검색어를 광속 탐색하여 하이라이팅된 스니펫을 생성합니다.
+7.  **WASM Plugin System**: Extism 기반의 샌드박스에서 안전하게 외부 소스(Confluence, GitHub 등)의 데이터를 가져옵니다.
 
 ---
 
 ## 🧩 에이전트 연동 (MCP)
-doxus는 **MCP (Model Context Protocol)** 서버를 내장하고 있습니다. 
-Claude Desktop 설정에 `doxus-mcp` 바이너리를 추가하면 에이전트가 `doxus_search`, `doxus_get_document` 등의 도구를 사용하여 당신의 지식을 활용할 수 있게 됩니다.
+
+doxus는 **MCP (Model Context Protocol)** 서버를 내장하고 있습니다.
+Claude Desktop 설정에 `doxus-mcp` 바이너리를 추가하면 에이전트가 38개의 `doxus_*` 도구를 사용하여 당신의 지식을 활용할 수 있게 됩니다.
+
+| 카테고리 | 도구 |
+|---------|------|
+| **검색** | `doxus_search`, `doxus_get_document`, `doxus_get_section`, `doxus_get_metadata` |
+| **문서** | `doxus_list_documents`, `doxus_get_documents`, `doxus_get_toc`, `doxus_get_ranking`, `doxus_resolve_alias`, `doxus_inspect_document`, `doxus_create_document` |
+| **그래프** | `doxus_get_backlinks`, `doxus_get_links`, `doxus_find_path`, `doxus_get_cluster` |
+| **프로젝트** | `doxus_list_projects`, `doxus_add_project`, `doxus_remove_project`, `doxus_index_project`, `doxus_sync_project` |
+| **플러그인** | `doxus_plugin_list`, `doxus_plugin_install`, `doxus_plugin_remove`, `doxus_plugin_update`, `doxus_plugin_status`, `doxus_plugin_logs`, `doxus_plugin_info`, `doxus_plugin_search` |
+| **신선도** | `doxus_get_freshness_report`, `doxus_update_freshness_config` |
+| **진단** | `doxus_diagnose`, `doxus_system_report`, `doxus_explain_search` |
+| **시스템** | `doxus_status`, `doxus_agent_summary`, `doxus_help`, `doxus_onboard`, `doxus_reindex_documents`, `doxus_reindex_status` |
 
 ---
 

@@ -110,3 +110,46 @@ secrets = ["api_token", "base_url"]
 - 플러그인 로드는 lazy (첫 사용 시)
 - 동일 플러그인 ID의 다중 인스턴스 허용 (source_instances 테이블로 구분)
 - 플러그인 업데이트 시 기존 인덱스 무효화 여부는 ABI 버전으로 결정
+
+## WASM 빌드 타겟
+
+플러그인 빌드 타겟은 `wasm32-wasip1` 사용. `wasm32-wasi`는 지원 중단됨.
+
+```bash
+cargo build --target wasm32-wasip1 --release
+```
+
+> **근거**: 2026-04-27 devlog — `wasm32-wasi` 타겟 지원 중단으로 빌드 실패, `wasm32-wasip1`으로 교체.
+
+## 외부 API 응답 필드 안전 처리
+
+외부 플러그인(Confluence 등)의 API 응답은 선택적 필드가 누락될 수 있다.
+`updated_at`, `created_at` 같은 타임스탬프 필드는 반드시 fallback을 명시해야 한다.
+fallback 없이 unwrap하면 해당 문서가 인덱싱 파이프라인 진입 자체에서 실패한다.
+
+```rust
+// 올바른 예 — updated_at 없으면 created_at, 그것도 없으면 현재 시각
+let updated_at = doc.updated_at
+    .or(doc.created_at)
+    .unwrap_or_else(|| current_time_secs());
+
+// 잘못된 예 — updated_at 없는 문서에서 패닉 또는 인덱싱 실패
+let updated_at = doc.updated_at.unwrap();
+```
+
+## 외부 API 다중 버전 지원
+
+V1/V2처럼 다중 버전을 지원하는 API는 파라미터 직렬화 형식이 버전별로 다르다.
+HTTP 요청 빌더에 버전별 분기를 명시하고, 각 버전을 독립적으로 검증할 것.
+
+```rust
+match self.api_version {
+    ApiVersion::V1 => builder.query(&[("limit", limit.to_string())]),
+    ApiVersion::V2 => builder.query(&[("page-size", limit.to_string())]),
+}
+```
+
+페이지네이션 루프에서 빈 페이지 반환 시 **명시적 `break`** 로 탈출해야 한다.
+`next_cursor`에만 의존하면 일부 API가 빈 결과와 함께 cursor를 계속 반환하는 경우 무한 루프가 발생한다.
+
+> **근거**: 2026-04-27 devlog — Confluence V2 API limit 파라미터 버그 + 빈 페이지 무한루프 버그.

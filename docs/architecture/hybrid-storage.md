@@ -1,3 +1,15 @@
+---
+title: 하이브리드 스토리지 및 고성능 검색 아키텍처
+updated: 2026-04-30
+tags:
+  - architecture
+  - storage
+  - hybrid
+  - memmap2
+  - aho-corasick
+  - sqlite
+---
+
 # 하이브리드 스토리지 및 고성능 검색 아키텍처
 
 Doxus는 데스크탑 환경의 리소스(디스크 용량, CPU) 제약을 극복하고 수십만 개의 문서를 정밀하게 검색하기 위해 **Hybrid Storage** 아키텍처를 채택합니다.

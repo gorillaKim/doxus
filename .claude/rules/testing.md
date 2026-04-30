@@ -102,5 +102,69 @@ strategy:
 - `unwrap()` / `expect()` 는 테스트 코드에서만 허용
 - 외부 네트워크 요청 금지 — MockHttpServer 또는 `#[cfg(not(test))]`로 분기
 - WASM 플러그인 테스트용 fixture는 `crates/plugins/tests/fixtures/` 에 위치
-- 통합 테스트는 `TestDb::new()` 사용 — 실제 `~/.doxus/db/nexus.db` 건드리지 않음
+- 통합 테스트는 `TestDb::new()` 사용 — 실제 `~/.doxus/db/doxus.db` 건드리지 않음
 - 마이그레이션 테스트: 각 버전에서 롤포워드 후 데이터 무결성 확인
+- 통합 테스트에 **대용량 시나리오(100+ 문서)** 포함 필요 — 소규모 테스트에서 재현 안 되는 버그가 존재
+
+## Vitest + Tauri 플러그인 mock 패턴
+
+`@tauri-apps/plugin-*` 같은 Tauri 플러그인을 mock할 때는 반드시 `vi.hoisted()` 사용.
+일반 `vi.fn()`은 ES module hoisting 이후 평가되므로 mock factory 진입 전에 `undefined`로 참조된다.
+
+```typescript
+// 올바른 예 — vi.hoisted()로 hoisting 단계에서 먼저 실행
+const { mockCheckUpdate } = vi.hoisted(() => ({
+  mockCheckUpdate: vi.fn(),
+}));
+
+vi.mock('@tauri-apps/plugin-updater', () => ({
+  check: mockCheckUpdate,
+}));
+
+// 잘못된 예 — hoisting 전에 평가되어 mock이 undefined
+const mockCheckUpdate = vi.fn();
+vi.mock('@tauri-apps/plugin-updater', () => ({ check: mockCheckUpdate }));
+```
+
+> **근거**: 2026-04-29 devlog — `updateManager.test.ts`, `migrationListener.test.ts` 2개 파일 연속 재현.
+
+## Tauri 플러그인 timeout 테스트
+
+`vi.useFakeTimers()` 환경에서 `Promise.race` 기반 timeout이 정상 동작하지 않는다.
+real timer + 짧은 `timeoutMs`(예: 50ms)로 실제 timeout 동작을 검증할 것.
+
+```typescript
+// 권장 — real timer
+await updateManager.checkForUpdates({ timeoutMs: 50 });
+
+// 사용 금지 — fake timer + Promise.race 조합 불안정
+vi.useFakeTimers();
+vi.advanceTimersByTime(5000);
+```
+
+## React + Tauri 이벤트 리스너 — StrictMode cleanup
+
+`useEffect`에서 Tauri 이벤트를 구독할 때, async로 등록되는 `unlisten` 함수에 대한
+cleanup race를 `cancelled` 플래그로 방어해야 StrictMode 이중 실행에 안전하다.
+
+```typescript
+useEffect(() => {
+  let unlisten: (() => void) | undefined;
+  let cancelled = false;
+
+  listen('migration:progress', handleProgress).then(fn => {
+    if (cancelled) {
+      fn();  // 이미 unmount됐으면 즉시 해제
+      return;
+    }
+    unlisten = fn;
+  });
+
+  return () => {
+    cancelled = true;
+    unlisten?.();
+  };
+}, []);
+```
+
+> **근거**: 2026-04-29 devlog — App.tsx StrictMode cleanup race로 이벤트 리스너 중복 등록 (Opus 리뷰 지적).

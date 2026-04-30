@@ -1,6 +1,6 @@
 ---
 title: doxus 검색 파이프라인 아키텍처
-updated: 2026-04-13
+updated: 2026-04-30
 tags:
   - search
   - architecture
@@ -14,7 +14,7 @@ tags:
 # doxus 검색 파이프라인 아키텍처
 
 > **대상 독자:** doxus 기여자, 검색 동작을 이해하려는 개발자  
-> **관련 코드:** `crates/core/src/search.rs`, `crates/core/src/chunker.rs`, `crates/core/src/embedding.rs`
+> **관련 코드:** `crates/core/src/search/mod.rs`, `crates/core/src/search/highlighter.rs`, `crates/core/src/chunker.rs`, `crates/core/src/embedding.rs`
 
 ---
 
@@ -342,3 +342,66 @@ RRF 점수는 `1/61 ≈ 0.016` 수준으로, `{:.2}` 포맷이면 `0.00`으로 �
 - **SyncSearchEngine은 FTS-only:** Vector 모드를 요청해도 FTS로 폴백된다.
 - **ONNX Session 단일 스레드:** 동시 임베딩 요청은 Mutex로 직렬화된다.
 - **스니펫은 청크 단위:** 매칭된 청크의 일부만 표시, 문서 전체 컨텍스트가 아님.
+
+---
+
+## 13. 고성능 스니펫 생성 (`crates/core/src/search/highlighter.rs`)
+
+### 두 가지 모드
+
+| 모드 | 대상 | 동작 방식 |
+|------|------|----------|
+| `highlight_file` | Reference 전략 프로젝트 (Obsidian 등) | 파일을 memmap2로 메모리 맵, 바이트 오프셋으로 청크 범위 직접 읽기 |
+| `highlight_text` | Full 전략 프로젝트 (Confluence, GitHub 등) | DB에 저장된 청크 텍스트에서 직접 스니펫 추출 |
+
+### 구현 구조
+
+```rust
+pub struct Highlighter {
+    ac: AhoCorasick,   // 검색어 멀티 패턴 매처 (케이스 인센시티브)
+}
+
+pub struct HighlightingResult {
+    pub snippet: String,         // HTML <b> 태그 강조 포함
+    pub matches_found: usize,    // 매칭된 검색어 개수
+}
+```
+
+### Aho-Corasick 설정
+
+```rust
+AhoCorasick::builder()
+    .match_kind(MatchKind::LeftmostFirst)  // 좌측 우선 최장 일치
+    .ascii_case_insensitive(true)          // 대소문자 무시
+    .build(keywords)
+```
+
+- 여러 검색어(토큰)를 단일 패스로 동시 탐색 — O(n) 시간복잡도
+- `adjust_to_unicode_boundary`: UTF-8 멀티바이트 문자 경계 안전 처리
+
+### Reference 모드 흐름 (파일 기반)
+
+```
+chunks.start_byte, chunks.end_byte   (DB에서 조회)
+       │
+       ▼
+File::open(path) → Mmap::map()       (커널 페이지 캐시 활용, 복사 없음)
+       │
+       ▼
+&mmap[start_byte..end_byte]          (해당 범위만 참조)
+       │
+       ▼
+AhoCorasick::find_iter()             (검색어 위치 탐색)
+       │
+       ▼
+<b>키워드</b> 강조된 스니펫 반환
+```
+
+### 성능 특성
+
+| 항목 | 값 |
+|------|-----|
+| 파일 접근 방식 | memmap2 (커널 페이지 캐시, 복사 없음) |
+| 검색어 탐색 | Aho-Corasick O(n + m) |
+| Unicode 안전성 | UTF-8 바이트 경계 자동 조정 |
+| 최대 스니펫 길이 | 청크 범위 내 전체 (설정 없음)

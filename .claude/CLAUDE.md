@@ -31,17 +31,22 @@ doxus는 **obsidian-nexus의 차세대 진화판**으로, WASM 플러그인 기�
 | 파일 | 내용 |
 |------|------|
 | [architecture.md](rules/architecture.md) | 전체 아키텍처 원칙, 모노레포 레이아웃 |
-| [plugin-system.md](rules/plugin-system.md) | WASM 플러그인 SDK, Host Function 규격 |
-| [database.md](rules/database.md) | SQLite 하이브리드 저장소(V27+), FTS5/Vector 스키마 |
+| [plugin-system.md](rules/plugin-system.md) | WASM 플러그인 SDK, Host Function 규격, wasm32-wasip1 타겟 |
+| [database.md](rules/database.md) | SQLite 저장소, FTS5/Vector 스키마, sqlite-vec 제약, FTS5 쿼리 안전 가드 |
+| [indexing.md](rules/indexing.md) | 인덱싱 파이프라인 — Clock Drift 방지, 배치 처리 안전, 빈 페이지 방어 |
 | [agent-mcp.md](rules/agent-mcp.md) | MCP 도구 명명 규칙 및 에이전트 연동 가이드 |
 | [rust-conventions.md](rules/rust-conventions.md) | 에러 처리, 의존성 관리 규칙 |
+| [frontend.md](rules/frontend.md) | Tauri v2 + React 19, Zustand, Tauri 이벤트 race guard |
+| [testing.md](rules/testing.md) | 테스트 전략, Vitest + Tauri mock 패턴, StrictMode cleanup |
+| [git-workflow.md](rules/git-workflow.md) | 커밋 컨벤션, 브랜치 전략, Phase 태그 |
 
 ## 🚀 현재 상태
 
-- **Core Engine (v0.1.0)**: ONNX 임베딩, FTS5 하이브리드 검색, RRF 랭킹 안정화 완료.
-- **MCP Server**: 30여 개의 도구 구현 및 숫자/경로 복합 ID 시스템 적용 완료.
+- **Core Engine (v0.1.0)**: ONNX 임베딩(all-MiniLM-L6-v2), FTS5 + sqlite-vec 하이브리드 검색, RRF 랭킹 안정화 완료.
+- **MCP Server**: 38개 `doxus_*` 도구 구현 (검색·문서·그래프·프로젝트·플러그인·진단).
 - **Graph Tools**: 지식 그래프 탐색 및 최단 경로 검색 지원 (CLI/MCP 공통).
-- **Desktop (Beta)**: Tauri v2 기반 검색 및 프로젝트 관리 UI 개발 중.
+- **Desktop (Beta)**: Tauri v2 기반 검색, 프로젝트 관리 UI, Auto Updater 구현 완료.
+- **Auto Updater**: ED25519 서명 검증, GitHub Actions CI/CD, post-update 마이그레이션 훅 완료.
 
 ## ⚠️ 핵심 제약사항
 

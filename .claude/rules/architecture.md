@@ -74,6 +74,17 @@ doxus/
 | 7 | 워크스페이스 + 템플릿 관리 | 대기 |
 | 8 | Desktop UI 고도화 | 대기 |
 
+## 인덱싱 파이프라인 알려진 한계
+
+현재 벡터 검색 커버리지와 삭제 로직에 개선이 필요한 항목이 있다:
+
+- **벡터 임베딩**: 현재 `chunk_index=0` (첫 청크)만 대상 — 전체 청크 배치 임베딩으로 전환 필요
+- **삭제 로직**: 타임스탬프 기반(`last_indexed < sync_start_time`) → 세션 ID 기반으로 리팩토링 권장
+
+상세 내용 및 구현 방안:
+- [docs/improvements/indexing-pipeline-known-limits.md](../../docs/improvements/indexing-pipeline-known-limits.md)
+- [docs/improvements/indexing-session-id-refactor.md](../../docs/improvements/indexing-session-id-refactor.md)
+
 ## 데이터 경로 규칙
 
 ```
