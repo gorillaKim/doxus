@@ -1,5 +1,5 @@
 use axum::{
-    extract::State,
+    extract::{Host, State},
     http::{header::AUTHORIZATION, Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -20,10 +20,40 @@ struct HttpState {
 pub fn build_router(server: Arc<McpServer>, token: String) -> Router {
     let state = HttpState { server };
 
+    // OAuth token handler captures the static token via closure.
+    // /oauth/token is intentionally unauthenticated — it IS the token issuance endpoint.
+    let static_token = token.clone();
+    let oauth_router = Router::new()
+        .route(
+            "/.well-known/oauth-protected-resource",
+            get(oauth_protected_resource),
+        )
+        .route(
+            "/.well-known/oauth-authorization-server",
+            get(oauth_authorization_server),
+        )
+        .route(
+            "/oauth/token",
+            post(move || {
+                let t = static_token.clone();
+                async move {
+                    (
+                        StatusCode::OK,
+                        Json(json!({
+                            "access_token": t,
+                            "token_type": "Bearer",
+                            "expires_in": 3600
+                        })),
+                    )
+                }
+            }),
+        );
+
     Router::new()
         .route("/mcp", post(mcp_handler))
         .route_layer(middleware::from_fn_with_state(token, auth_middleware))
         .route("/health", get(health_handler))
+        .merge(oauth_router)
         .with_state(state)
 }
 
@@ -61,6 +91,33 @@ async fn mcp_handler(
         .dispatch(&req.method, id, req.params.as_ref())
         .await;
     (StatusCode::OK, Json(response)).into_response()
+}
+
+// MCP SDK 1.x sends OAuth discovery preflight requests before connecting.
+// These endpoints satisfy the RFC 9728 / RFC 8414 discovery handshake so the
+// SDK stops trying OAuth and falls through to use the Bearer token from headers.
+async fn oauth_protected_resource(Host(host): Host) -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        Json(json!({
+            "resource": format!("http://{}", host),
+            "bearer_methods_supported": ["header"]
+            // no authorization_servers → SDK uses this origin as auth server
+        })),
+    )
+}
+
+async fn oauth_authorization_server(Host(host): Host) -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        Json(json!({
+            "issuer": format!("http://{}", host),
+            "token_endpoint": format!("http://{}/oauth/token", host),
+            "grant_types_supported": ["client_credentials"],
+            "token_endpoint_auth_methods_supported": ["none"],
+            "response_types_supported": ["token"]
+        })),
+    )
 }
 
 async fn auth_middleware(
