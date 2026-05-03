@@ -68,6 +68,33 @@ v0.2.0-phase3     # Phase 3 완료
 v1.0.0            # 전체 릴리즈
 ```
 
+## 릴리즈 버전 bump 체크리스트
+
+버전을 올릴 때 반드시 아래 4개 파일을 **모두** 수정해야 한다. 하나라도 누락하면 Tauri 업데이터 오판정 등 런타임 버그로 이어진다.
+
+| 파일 | 수정 항목 | 주의 |
+|------|----------|------|
+| `Cargo.toml` (workspace 루트) | `version = "X.Y.Z"` | 단일 소스 기준 |
+| `apps/desktop/src-tauri/Cargo.toml` | `version.workspace = true` 위임 확인 | 하드코딩 금지 |
+| `apps/desktop/src-tauri/tauri.conf.json` | `"version": "X.Y.Z"` | |
+| `apps/desktop/package.json` | `"version": "X.Y.Z"` | |
+
+**`apps/desktop/src-tauri/Cargo.toml` 확인 규칙**
+
+```toml
+# 올바른 예 — workspace 단일 소스
+[package]
+version.workspace = true
+
+# 잘못된 예 — 버전 mismatch 유발
+[package]
+version = "0.1.1"   # workspace 버전과 달라져 Tauri 업데이터 오판정
+```
+
+`env!(CARGO_PKG_VERSION)`은 해당 크레이트의 `Cargo.toml`을 읽으므로, 하드코딩이 남아있으면 `tauri.conf.json`과 다른 버전을 반환한다.
+
+> **근거**: 2026-05-03 devlog — v0.1.2에서 `src-tauri/Cargo.toml` 누락 → Tauri 업데이터 '최신버전' 오표시 → v0.1.3 긴급 재릴리즈.
+
 ## 규칙
 
 - `main`에 직접 push 금지 — 항상 PR

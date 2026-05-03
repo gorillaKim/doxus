@@ -99,6 +99,30 @@ doxus_status            # 서버 상태
 - 대용량 결과는 페이지네이션 (`cursor` 파라미터)
 - 문서 내용은 `content_type: "text/markdown"` 명시
 
+### MCP Bearer 토큰 인증 — 운영 주의사항
+
+doxus-mcp는 정적 Bearer 토큰으로 인증한다. 아래 두 가지 상황이 401 needs-auth를 유발한다.
+
+**1. 구버전 프로세스 포트 점유**
+
+재빌드 후 구버전 바이너리가 백그라운드에서 다른 bridge token으로 살아있으면, 신규 빌드의 토큰과 mismatch가 발생해 모든 MCP 요청이 401을 반환한다.
+
+```bash
+# 배포 전 동일 포트 점유 프로세스 확인 필수
+lsof -i :<MCP_PORT>   # 구버전 프로세스 있으면 kill 후 재시작
+```
+
+**2. MCP SDK 1.x OAuth 루프**
+
+MCP SDK 1.x는 서버에 연결 시 `/.well-known/oauth-protected-resource`를 선제적으로 요청한다.
+
+- 해당 엔드포인트가 **없으면**: SDK가 에러를 내고 연결을 포기한다 → 404 응답을 허용하거나 엔드포인트를 추가해야 한다.
+- 해당 엔드포인트가 **있으면**: SDK가 OAuth 인증 루프로 진입한다 → Bearer 토큰만 쓰는 서버에서 역효과.
+
+**결론**: Bearer 전용 서버에서는 `oauth-protected-resource` 엔드포인트를 **추가하지 말 것**. SDK가 404를 받으면 OAuth를 건너뛰고 Bearer 인증을 시도한다.
+
+> **근거**: 2026-05-03 devlog — 구버전 프로세스로 인한 토큰 mismatch(critical) 및 OAuth 엔드포인트 역효과(high) 연속 발생.
+
 ## 도구 허용 목록 (에이전트)
 
 사서 에이전트가 사용 가능한 doxus-mcp 도구:

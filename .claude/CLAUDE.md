@@ -42,10 +42,10 @@ doxus는 **obsidian-nexus의 차세대 진화판**으로, WASM 플러그인 기�
 
 ## 🚀 현재 상태
 
-- **Core Engine (v0.1.0)**: ONNX 임베딩(all-MiniLM-L6-v2), FTS5 + sqlite-vec 하이브리드 검색, RRF 랭킹 안정화 완료.
-- **MCP Server**: 38개 `doxus_*` 도구 구현 (검색·문서·그래프·프로젝트·플러그인·진단).
+- **Core Engine (v0.1.3)**: ONNX 임베딩(all-MiniLM-L6-v2), FTS5 + sqlite-vec 하이브리드 검색, RRF 랭킹 안정화 완료.
+- **MCP Server**: 38개 `doxus_*` 도구 구현 (검색·문서·그래프·프로젝트·플러그인·진단). Bearer 토큰 인증, OAuth 엔드포인트 제거.
 - **Graph Tools**: 지식 그래프 탐색 및 최단 경로 검색 지원 (CLI/MCP 공통).
-- **Desktop (Beta)**: Tauri v2 기반 검색, 프로젝트 관리 UI, Auto Updater 구현 완료.
+- **Desktop (Beta)**: Tauri v2 기반 검색, 프로젝트 관리 UI, Auto Updater 구현 완료. `src-tauri/Cargo.toml` workspace 버전 위임 완료(v0.1.3).
 - **Auto Updater**: ED25519 서명 검증, GitHub Actions CI/CD, post-update 마이그레이션 훅 완료.
 
 ## ⚠️ 핵심 제약사항
