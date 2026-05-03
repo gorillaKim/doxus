@@ -1,12 +1,11 @@
 use axum::{
-    extract::{Host, Query, State},
+    extract::{Host, State},
     http::{header::AUTHORIZATION, Request, StatusCode},
     middleware::{self, Next},
-    response::{IntoResponse, Redirect, Response},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
-use std::collections::HashMap;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -15,38 +14,21 @@ use crate::{McpRequest, McpServer};
 #[derive(Clone)]
 struct HttpState {
     server: Arc<McpServer>,
-    token: String,
 }
 
 /// Build the axum Router for the HTTP MCP server.
 pub fn build_router(server: Arc<McpServer>, token: String) -> Router {
-    let state = HttpState {
-        server,
-        token: token.clone(),
-    };
+    let state = HttpState { server };
 
-    // OAuth discovery endpoints satisfy the RFC 9728 / RFC 8414 / RFC 7591
-    // handshake that MCP SDK 1.x performs before every connection.
-    // They are intentionally unauthenticated (they ARE the auth mechanism).
-    // host_allowlist_middleware below mitigates DNS-rebinding attacks.
-    let oauth_router = Router::new()
-        .route(
-            "/.well-known/oauth-protected-resource",
-            get(oauth_protected_resource),
-        )
-        .route(
-            "/.well-known/oauth-authorization-server",
-            get(oauth_authorization_server),
-        )
-        .route("/oauth/register", post(oauth_register))
-        .route("/oauth/authorize", get(oauth_authorize))
-        .route("/oauth/token", post(oauth_token));
-
+    // /.well-known/oauth-protected-resource tells MCP SDK 1.x that this server
+    // accepts Bearer tokens via header. Without /.well-known/oauth-authorization-server,
+    // the SDK finds no OAuth server and falls back to using the pre-configured
+    // Authorization: Bearer header directly — no PKCE flow, no browser redirect needed.
     Router::new()
         .route("/mcp", post(mcp_handler))
         .route_layer(middleware::from_fn_with_state(token, auth_middleware))
         .route("/health", get(health_handler))
-        .merge(oauth_router)
+        .route("/.well-known/oauth-protected-resource", get(oauth_protected_resource))
         .with_state(state)
         // Wraps all routes: blocks requests with non-loopback Host headers.
         .layer(middleware::from_fn(host_allowlist_middleware))
@@ -126,84 +108,6 @@ async fn oauth_protected_resource(host: Option<Host>) -> impl IntoResponse {
     )
 }
 
-async fn oauth_authorization_server(host: Option<Host>) -> impl IntoResponse {
-    let host = host.map(|h| h.0).unwrap_or_else(|| "127.0.0.1".to_string());
-    (
-        StatusCode::OK,
-        Json(json!({
-            "issuer": format!("http://{}", host),
-            "token_endpoint": format!("http://{}/oauth/token", host),
-            "registration_endpoint": format!("http://{}/oauth/register", host),
-            // Only client_credentials: no browser/redirect needed, SDK completes auth automatically.
-            // authorization_code (PKCE) requires a browser redirect which breaks in sidecar context.
-            "grant_types_supported": ["client_credentials"],
-            "token_endpoint_auth_methods_supported": ["none"]
-        })),
-    )
-}
-
-// Immediately redirect back with a static code — no user interaction needed.
-// This lets MCP SDK 1.x complete the authorization_code + PKCE flow automatically.
-async fn oauth_authorize(Query(params): Query<HashMap<String, String>>) -> Response {
-    let redirect_uri = params.get("redirect_uri").cloned().unwrap_or_default();
-    let state = params.get("state").cloned().unwrap_or_default();
-    let location = if state.is_empty() {
-        format!("{}?code=doxus-auth-code", redirect_uri)
-    } else {
-        format!("{}?code=doxus-auth-code&state={}", redirect_uri, state)
-    };
-    Redirect::temporary(&location).into_response()
-}
-
-async fn oauth_register() -> impl IntoResponse {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-
-    (
-        StatusCode::CREATED,
-        Json(json!({
-            "client_id": "doxus-mcp-client",
-            "client_id_issued_at": now,
-            "redirect_uris": [],
-            "grant_types": ["client_credentials"],
-            "token_endpoint_auth_method": "none"
-        })),
-    )
-}
-
-// /oauth/token is intentionally unauthenticated — it IS the token issuance endpoint.
-// Validates grant_type=client_credentials (RFC 6749 §4.4) before returning the
-// static bearer token. Exposure is limited by: loopback-only bind + host_allowlist_middleware.
-async fn oauth_token(
-    State(state): State<HttpState>,
-    body: axum::body::Bytes,
-) -> Response {
-    let body_str = String::from_utf8_lossy(&body);
-    let has_valid_grant = body_str.split('&').any(|pair| {
-        let p = pair.trim();
-        p == "grant_type=client_credentials" || p == "grant_type=authorization_code"
-    });
-
-    if !has_valid_grant {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "unsupported_grant_type"})),
-        )
-            .into_response();
-    }
-
-    (
-        StatusCode::OK,
-        Json(json!({
-            "access_token": state.token.as_str(),
-            "token_type": "Bearer",
-            "expires_in": 31536000
-        })),
-    )
-        .into_response()
-}
 
 async fn auth_middleware(
     State(token): State<String>,
@@ -378,7 +282,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn oauth_authorization_server_has_registration_endpoint() {
+    async fn oauth_authorization_server_returns_404() {
+        // No auth server → MCP SDK falls back to using the configured Authorization header directly.
         let (app, _) = make_app("secret");
         let req = HttpRequest::builder()
             .method(Method::GET)
@@ -386,78 +291,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(val.get("registration_endpoint").is_some());
-        assert!(val.get("token_endpoint").is_some());
-        // Only client_credentials — no authorization_endpoint or response_types_supported
-        let grant_types = val["grant_types_supported"].as_array().unwrap();
-        assert!(grant_types.iter().any(|g| g == "client_credentials"));
-        assert!(!grant_types.iter().any(|g| g == "authorization_code"));
-    }
-
-    #[tokio::test]
-    async fn oauth_token_returns_token_with_valid_grant_type() {
-        let (app, _) = make_app("mytoken");
-        let req = HttpRequest::builder()
-            .method(Method::POST)
-            .uri("/oauth/token")
-            .header("content-type", "application/x-www-form-urlencoded")
-            .body(Body::from("grant_type=client_credentials"))
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(val["access_token"], "mytoken");
-        assert_eq!(val["token_type"], "Bearer");
-        assert_eq!(val["expires_in"], 31536000);
-    }
-
-    #[tokio::test]
-    async fn oauth_token_rejects_missing_grant_type() {
-        let (app, _) = make_app("secret");
-        let req = HttpRequest::builder()
-            .method(Method::POST)
-            .uri("/oauth/token")
-            .header("content-type", "application/x-www-form-urlencoded")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(val["error"], "unsupported_grant_type");
-    }
-
-    #[tokio::test]
-    async fn oauth_register_returns_201_with_client_id() {
-        let (app, _) = make_app("secret");
-        let req = HttpRequest::builder()
-            .method(Method::POST)
-            .uri("/oauth/register")
-            .header("content-type", "application/json")
-            .body(Body::from(r#"{"grant_types":["client_credentials"]}"#))
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::CREATED);
-
-        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(val.get("client_id").is_some());
-        assert!(val["client_id_issued_at"].as_u64().unwrap() > 0);
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
