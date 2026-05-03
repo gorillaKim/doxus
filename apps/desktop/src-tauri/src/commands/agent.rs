@@ -43,26 +43,33 @@ pub struct BridgeResponse {
 
 pub const CLAUDE_MD_INSTRUCTIONS: &str = r#"이 프로젝트의 지식과 문서는 Doxus 지식 그래프에 의해 관리되고 있습니다. 에이전트는 다음 도구를 사용하여 지식의 파편들을 연결하고 깊이 있는 리서치를 수행할 수 있습니다.
 
-### 🛠️ 핵심 탐색 도구 (Core Tools)
-- `doxus_search`: 하이브리드 검색(키워드+의미론)을 통해 관련 문맥을 찾습니다. 
-- `doxus_get_document`: 찾은 문서의 전체 내용을 읽습니다.
-- `doxus_agent_summary`: 지식 베이스의 전체적인 지도와 주요 태그를 파악하여 탐색의 시작점을 정합니다.
+### 🔴 필수 규칙 (MUST)
 
-### 🔗 지식 관계 탐색 (Graph & Links)
-단순 검색만으로는 놓치기 쉬운 맥락을 다음 도구로 추적하십시오:
-- `doxus_get_links`: 현재 문서가 인용하거나 참조하고 있는 '앞으로의 연결고리'를 찾습니다.
-- `doxus_get_backlinks`: 현재 문서를 참조하고 있는 '뒤로의 연결고리'를 찾아 영향도 분석을 수행합니다.
-- `doxus_get_cluster`: 현재 문서와 다중 홉으로 연결된 지식 클러스터를 탐색하여 연관된 문서들을 한꺼번에 찾습니다.
-- `doxus_find_path`: 두 문서 사이의 복잡한 인용 관계나 참조 경로를 분석합니다.
+**문서 검색, 컨텍스트 파악, 아키텍처 이해 등 탐색 작업에서 반드시 `doxus_*` 도구를 먼저 사용하십시오.**
+Read / Grep / Glob 등 직접 파일 접근은 코드 파일·설정 파일 등 Doxus로 해결 불가능한 경우에만 허용됩니다.
+
+### 🛠️ 탐색 도구 및 사용 순서
+
+| 작업 | 사용 도구 |
+|------|-----------|
+| 프로젝트 파악 | `doxus_list_projects` → `doxus_agent_summary` |
+| 문서 검색 | `doxus_search(query, mode="hybrid")` — 항상 첫 번째 |
+| 섹션만 읽기 | `doxus_get_section(path, heading)` — 토큰 90% 절약 |
+| 전체 문서 | `doxus_get_document` — 섹션으로 해결 안 될 때만 |
+| 연관 탐색 | `doxus_get_cluster(id, depth=2)` |
+| 역방향 링크 | `doxus_get_backlinks(id)` |
+| 정방향 링크 | `doxus_get_links(id)` |
+| 경로 탐색 | `doxus_find_path(from, to)` |
 
 ### 💡 탐색 시나리오 (Scenarios)
-- **리서치 심화 (Deep Dive)**: 문서 A와 관련된 모든 맥락을 한꺼번에 파악하려면 `doxus_get_cluster`를, 구체적인 인용 근거를 찾으려면 `doxus_get_links`를 호출하십시오.
-- **영향도 평가 (Impact Analysis)**: 코드 수정 시, 해당 사양이 정의된 문서를 읽고 `doxus_get_backlinks`를 조회하여 이 변경이 영향을 줄 수 있는 다른 설계나 기획을 점검하십시오.
-- **프로젝트 횡단 탐색 (Cross-Project)**: 문서 내에서 `doxus://ProjectName/DocID` 형태의 링크를 발견하면, 해당 프로젝트명을 인자로 `doxus_get_document`를 호출하여 프로젝트를 넘나드는 탐색을 수행하십시오.
+- **리서치 심화 (Deep Dive)**: `doxus_search` → 상위 결과에 `doxus_get_cluster` → 섹션 읽기
+- **영향도 평가 (Impact Analysis)**: 코드 수정 시 `doxus_get_backlinks`로 영향받는 설계/기획 문서 점검
+- **프로젝트 횡단 탐색 (Cross-Project)**: `doxus://ProjectName/DocID` 링크 발견 시 해당 프로젝트로 `doxus_get_document` 호출
 
 ### ⚡ 효율적인 탐색 팁
-- 문서가 너무 길다면 `doxus_get_toc`로 목차를 먼저 보고, `doxus_get_section`으로 필요한 부분만 집중적으로 읽어 토큰을 절약하십시오.
-- 지식 탐색의 시작은 `doxus_search`로 하되, 발견된 문서들 사이의 **연결(Links)**을 무시하지 마십시오."#;
+- `doxus_get_toc`로 목차 먼저 → `doxus_get_section`으로 필요한 부분만 읽기
+- 검색 결과 `snippet`으로 관련성 판단 후 전체 읽기 여부 결정
+- 발견된 문서들 사이의 **연결(Links)**을 무시하지 마십시오"#;
 
 // ── 배경 리더 ────────────────────────────────────────────────────────────────
 
