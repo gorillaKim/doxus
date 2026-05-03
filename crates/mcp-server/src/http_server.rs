@@ -132,14 +132,12 @@ async fn oauth_authorization_server(host: Option<Host>) -> impl IntoResponse {
         StatusCode::OK,
         Json(json!({
             "issuer": format!("http://{}", host),
-            "authorization_endpoint": format!("http://{}/oauth/authorize", host),
             "token_endpoint": format!("http://{}/oauth/token", host),
             "registration_endpoint": format!("http://{}/oauth/register", host),
-            "response_types_supported": ["code"],
-            "grant_types_supported": ["authorization_code", "client_credentials"],
-            "code_challenge_methods_supported": ["S256"],
+            // Only client_credentials: no browser/redirect needed, SDK completes auth automatically.
+            // authorization_code (PKCE) requires a browser redirect which breaks in sidecar context.
+            "grant_types_supported": ["client_credentials"],
             "token_endpoint_auth_methods_supported": ["none"]
-            // http:// is correct: this server is loopback-only by design
         })),
     )
 }
@@ -396,9 +394,10 @@ mod tests {
         let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert!(val.get("registration_endpoint").is_some());
         assert!(val.get("token_endpoint").is_some());
-        // MCP SDK 1.x requires these fields even for client_credentials-only servers
-        assert!(val.get("authorization_endpoint").is_some());
-        assert!(val["response_types_supported"].is_array());
+        // Only client_credentials — no authorization_endpoint or response_types_supported
+        let grant_types = val["grant_types_supported"].as_array().unwrap();
+        assert!(grant_types.iter().any(|g| g == "client_credentials"));
+        assert!(!grant_types.iter().any(|g| g == "authorization_code"));
     }
 
     #[tokio::test]
