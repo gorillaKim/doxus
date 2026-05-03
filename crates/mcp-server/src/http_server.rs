@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Host, State},
+    extract::State,
     http::{header::AUTHORIZATION, Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -20,15 +20,13 @@ struct HttpState {
 pub fn build_router(server: Arc<McpServer>, token: String) -> Router {
     let state = HttpState { server };
 
-    // /.well-known/oauth-protected-resource tells MCP SDK 1.x that this server
-    // accepts Bearer tokens via header. Without /.well-known/oauth-authorization-server,
-    // the SDK finds no OAuth server and falls back to using the pre-configured
-    // Authorization: Bearer header directly — no PKCE flow, no browser redirect needed.
+    // No OAuth discovery endpoints are exposed. MCP SDK 1.x falls back to using
+    // the pre-configured Authorization: Bearer header directly when it finds no
+    // /.well-known/oauth-protected-resource — no PKCE flow, no browser redirect.
     Router::new()
         .route("/mcp", post(mcp_handler))
         .route_layer(middleware::from_fn_with_state(token, auth_middleware))
         .route("/health", get(health_handler))
-        .route("/.well-known/oauth-protected-resource", get(oauth_protected_resource))
         .with_state(state)
         // Wraps all routes: blocks requests with non-loopback Host headers.
         .layer(middleware::from_fn(host_allowlist_middleware))
@@ -91,21 +89,6 @@ async fn host_allowlist_middleware(
     } else {
         Err(StatusCode::FORBIDDEN)
     }
-}
-
-// MCP SDK 1.x sends OAuth discovery preflight requests before connecting.
-// These endpoints satisfy the RFC 9728 / RFC 8414 discovery handshake so the
-// SDK stops trying OAuth and falls through to use the Bearer token from headers.
-async fn oauth_protected_resource(host: Option<Host>) -> impl IntoResponse {
-    let host = host.map(|h| h.0).unwrap_or_else(|| "127.0.0.1".to_string());
-    (
-        StatusCode::OK,
-        Json(json!({
-            "resource": format!("http://{}", host),
-            "bearer_methods_supported": ["header"]
-            // no authorization_servers → SDK uses this origin as auth server
-        })),
-    )
 }
 
 
@@ -268,9 +251,12 @@ mod tests {
     }
 
     // ── OAuth discovery endpoint tests ────────────────────────────────────────
+    // Both endpoints must return 404. MCP SDK 1.x only initiates OAuth when it
+    // finds /.well-known/oauth-protected-resource returning 200. With both absent,
+    // the SDK uses the pre-configured Authorization: Bearer header directly.
 
     #[tokio::test]
-    async fn oauth_protected_resource_returns_200_without_auth() {
+    async fn oauth_protected_resource_returns_404() {
         let (app, _) = make_app("secret");
         let req = HttpRequest::builder()
             .method(Method::GET)
@@ -278,7 +264,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
