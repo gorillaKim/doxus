@@ -201,7 +201,7 @@ async fn oauth_token(
         Json(json!({
             "access_token": state.token.as_str(),
             "token_type": "Bearer",
-            "expires_in": 3600
+            "expires_in": 31536000
         })),
     )
         .into_response()
@@ -419,6 +419,7 @@ mod tests {
         let val: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(val["access_token"], "mytoken");
         assert_eq!(val["token_type"], "Bearer");
+        assert_eq!(val["expires_in"], 31536000);
     }
 
     #[tokio::test]
