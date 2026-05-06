@@ -70,6 +70,17 @@ export class ClaudeAdapter {
   }
 
   async query(sessionId, prompt, entry, emit) {
+    if (!this.#sdk) {
+      emit({
+        type: "error",
+        sessionId,
+        code: "sdk_not_loaded",
+        message: "Claude Agent SDK를 로드하지 못했습니다. Claude Code가 설치되어 있는지 확인해주세요.",
+        retryable: false,
+      });
+      return;
+    }
+
     const abort = new AbortController();
     entry.abort = abort;
 

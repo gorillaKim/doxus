@@ -77,6 +77,10 @@ jobs:
         run: npm ci
         working-directory: apps/desktop
 
+      - name: Install sidecar dependencies
+        run: npm ci
+        working-directory: apps/desktop/src-tauri/sidecar
+
       # ── Build + publish (draft) ────────────────────────────────────────────
       # tauri-action generates latest.json and uploads it as a release asset.
       # After the job succeeds, go to GitHub Releases and click "Publish release"
