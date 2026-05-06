@@ -156,28 +156,51 @@ fn ensure_bridge_token() -> String {
 
 /// doxus-mcp 바이너리 경로 탐색
 fn find_doxus_mcp_bin() -> Option<std::path::PathBuf> {
-    // 1. 실행 파일 옆 (프로덕션 번들)
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let c = dir.join("doxus-mcp");
-            if c.exists() { return Some(c); }
-        }
-    }
-    // 2. cargo 빌드 결과물 (dev 모드)
-    if let Ok(exe) = std::env::current_exe() {
-        let mut dir = exe.as_path();
-        loop {
-            if dir.file_name().map(|n| n == "target").unwrap_or(false) {
-                let d = dir.join("debug/doxus-mcp");
-                if d.exists() { return Some(d); }
-                let r = dir.join("release/doxus-mcp");
-                if r.exists() { return Some(r); }
-                break;
+    find_doxus_mcp_bin_in(std::env::current_exe().ok()?.parent()?)
+        .or_else(|| find_doxus_mcp_bin_in_target())
+        .or_else(|| find_doxus_mcp_bin_in_path())
+}
+
+/// 지정 디렉토리에서 `doxus-mcp` prefix를 가진 실행 파일을 탐색
+/// Tauri externalBin은 OS/아키텍처별 트리플 suffix를 붙여 번들링하므로
+/// 정확한 이름 대신 prefix 매칭으로 탐색 (OS 확장 시에도 수정 불필요)
+fn find_doxus_mcp_bin_in(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    // 정확한 이름 우선 (dev/local 빌드)
+    let exact = dir.join("doxus-mcp");
+    if exact.is_file() { return Some(exact); }
+
+    // Tauri 번들 바이너리: "doxus-mcp-<triple>" prefix 스캔
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            let is_mcp = name_str == "doxus-mcp"
+                || (name_str.starts_with("doxus-mcp-") && !name_str.ends_with(".d"));
+            if is_mcp && entry.path().is_file() {
+                return Some(entry.path());
             }
-            match dir.parent() { Some(p) => dir = p, None => break }
         }
     }
-    // 3. PATH 탐색
+    None
+}
+
+fn find_doxus_mcp_bin_in_target() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let mut dir = exe.as_path();
+    loop {
+        if dir.file_name().map(|n| n == "target").unwrap_or(false) {
+            let d = dir.join("debug/doxus-mcp");
+            if d.exists() { return Some(d); }
+            let r = dir.join("release/doxus-mcp");
+            if r.exists() { return Some(r); }
+            break;
+        }
+        match dir.parent() { Some(p) => dir = p, None => break }
+    }
+    None
+}
+
+fn find_doxus_mcp_bin_in_path() -> Option<std::path::PathBuf> {
     std::env::var_os("PATH").and_then(|p| {
         std::env::split_paths(&p).find_map(|d| {
             let c = d.join("doxus-mcp");
@@ -697,5 +720,37 @@ mod tests {
         assert_eq!(config["mcpServers"]["doxus"]["type"], "http");
         assert!(config["mcpServers"]["doxus"]["command"].is_null());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_find_doxus_mcp_bin_in_exact_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("doxus-mcp");
+        std::fs::write(&bin, b"").unwrap();
+        assert_eq!(find_doxus_mcp_bin_in(dir.path()), Some(bin));
+    }
+
+    #[test]
+    fn test_find_doxus_mcp_bin_in_triple_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("doxus-mcp-aarch64-apple-darwin");
+        std::fs::write(&bin, b"").unwrap();
+        assert_eq!(find_doxus_mcp_bin_in(dir.path()), Some(bin));
+    }
+
+    #[test]
+    fn test_find_doxus_mcp_bin_in_prefers_exact_over_triple() {
+        let dir = tempfile::tempdir().unwrap();
+        let exact = dir.path().join("doxus-mcp");
+        let triple = dir.path().join("doxus-mcp-aarch64-apple-darwin");
+        std::fs::write(&exact, b"").unwrap();
+        std::fs::write(&triple, b"").unwrap();
+        assert_eq!(find_doxus_mcp_bin_in(dir.path()), Some(exact));
+    }
+
+    #[test]
+    fn test_find_doxus_mcp_bin_in_returns_none_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(find_doxus_mcp_bin_in(dir.path()), None);
     }
 }
