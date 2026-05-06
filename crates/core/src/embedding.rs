@@ -381,10 +381,10 @@ pub const MULTILINGUAL_E5_SMALL_SHA256: &str = "ca456c06b3a9505ddfd9131408916dd7
 /// exist in the same directory.
 pub fn resolve_model_path() -> Option<std::path::PathBuf> {
     // Prefer int8-quantized model (~120MB) over fp32 (~448MB) for faster CPU inference.
-    let model_name = if {
-        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-        home.join(".doxus/models/multilingual-e5-small-int8.onnx").exists()
-    } {
+    let home_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+    let int8_exists = home_dir.join(".doxus/models/multilingual-e5-small-int8.onnx").exists();
+    
+    let model_name = if int8_exists {
         "multilingual-e5-small-int8.onnx"
     } else {
         "multilingual-e5-small.onnx"
@@ -488,13 +488,13 @@ impl OnnxEmbedder {
         })?;
 
         // Verify checksum (only for the standard model)
-        if path.file_name().and_then(|n| n.to_str()) == Some("multilingual-e5-small.onnx") {
-            if !verify_model_checksum(&path, MULTILINGUAL_E5_SMALL_SHA256) {
-                return Err(EmbeddingError::ModelLoad(format!(
-                    "model checksum mismatch at {}; the file may be corrupt",
-                    path.display()
-                )));
-            }
+        if path.file_name().and_then(|n| n.to_str()) == Some("multilingual-e5-small.onnx")
+            && !verify_model_checksum(&path, MULTILINGUAL_E5_SMALL_SHA256)
+        {
+            return Err(EmbeddingError::ModelLoad(format!(
+                "model checksum mismatch at {}; the file may be corrupt",
+                path.display()
+            )));
         }
 
         Self::new(path)
@@ -530,7 +530,7 @@ impl MockEmbedder {
             dimension,
             info: ModelInfo {
                 name: "mock".to_string(),
-                dimension: dimension,
+                dimension,
                 max_tokens: 512,
                 path: None,
             },

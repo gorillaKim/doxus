@@ -569,7 +569,7 @@ pub async fn generate_global_claude_md() -> Result<(), String> {
 
     content.push_str("\n\n");
     content.push_str(instr_header);
-    content.push_str("\n");
+    content.push('\n');
     content.push_str(instr_body);
 
     std::fs::write(&path, content).map_err(|e| format!("Failed to write global CLAUDE.md: {e}"))?;
@@ -605,7 +605,7 @@ pub async fn generate_project_claude_md(path: String) -> Result<(), String> {
 
     content.push_str("\n\n");
     content.push_str(instr_header);
-    content.push_str("\n");
+    content.push('\n');
     content.push_str(instr_body);
 
     std::fs::write(&claude_md_path, content).map_err(|e| format!("Failed to write CLAUDE.md: {e}"))?;

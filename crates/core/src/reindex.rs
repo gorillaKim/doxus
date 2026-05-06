@@ -68,7 +68,15 @@ impl ReindexService {
         // 3. dry_run: 실제 인덱싱 없이 대상 목록만 반환
         if options.dry_run {
             let duration_ms = start.elapsed().as_millis() as u64;
-            self.record_history(project_id, &scope, "dry_run", total, 0, 0, None)?;
+            self.record_history(HistoryEntry {
+                project_id,
+                scope: &scope,
+                status: "dry_run",
+                total,
+                processed: 0,
+                skipped: 0,
+                error_msg: None,
+            })?;
             return Ok(ReindexResult {
                 total,
                 processed: 0,
@@ -149,7 +157,15 @@ impl ReindexService {
 
         let duration_ms = start.elapsed().as_millis() as u64;
         let status = if errors.is_empty() { "completed" } else { "completed_with_errors" };
-        self.record_history(project_id, &scope, status, total, processed, skipped, None)?;
+        self.record_history(HistoryEntry {
+            project_id,
+            scope: &scope,
+            status,
+            total,
+            processed,
+            skipped,
+            error_msg: None,
+        })?;
 
         Ok(ReindexResult {
             total,
@@ -205,7 +221,8 @@ impl ReindexService {
 
     fn load_raw_document(&self, project_id: i64, sid: &str) -> Result<doxus_plugin_sdk::RawDocument, String> {
         let conn = self.conn.lock().map_err(|_| "db lock poisoned".to_string())?;
-        let (title, url, created_at, updated_at, metadata_json): (Option<String>, Option<String>, Option<i64>, Option<i64>, Option<String>) = conn.query_row(
+        type RawDocData = (Option<String>, Option<String>, Option<i64>, Option<i64>, Option<String>);
+        let (title, url, created_at, updated_at, metadata_json): RawDocData = conn.query_row(
             "SELECT title, url, created_at, updated_at, metadata_json FROM documents WHERE project_id = ?1 AND source_doc_id = ?2",
             params![project_id, sid],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
@@ -247,15 +264,9 @@ impl ReindexService {
 
     fn record_history(
         &self,
-        project_id: i64,
-        scope: &ReindexScope,
-        status: &str,
-        total: usize,
-        processed: usize,
-        _skipped: usize,
-        error_msg: Option<&str>,
+        entry: HistoryEntry,
     ) -> Result<(), String> {
-        let scope_str = match scope {
+        let scope_str = match entry.scope {
             ReindexScope::Full => "full".to_string(),
             ReindexScope::Document(s) => format!("document:{}", s),
             ReindexScope::Documents(v) => format!("documents:{}", v.len()),
@@ -263,16 +274,27 @@ impl ReindexService {
         };
         let conn = self.conn.lock().map_err(|_| "db lock poisoned".to_string())?;
         tracing::debug!(
-            project_id, scope = %scope_str, status, total, processed, skipped = _skipped,
+            project_id = entry.project_id, scope = %scope_str, status = entry.status,
+            total = entry.total, processed = entry.processed, skipped = entry.skipped,
             "reindex_history entry"
         );
         conn.execute(
             "INSERT INTO reindex_history(project_id, scope, status, total_docs, processed_docs, error_message, started_at, completed_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, unixepoch(), unixepoch())",
-            params![project_id, scope_str, status, total as i64, processed as i64, error_msg],
+            params![entry.project_id, scope_str, entry.status, entry.total as i64, entry.processed as i64, entry.error_msg],
         ).map_err(|e| e.to_string())?;
         Ok(())
     }
+}
+
+struct HistoryEntry<'a> {
+    project_id: i64,
+    scope: &'a ReindexScope,
+    status: &'a str,
+    total: usize,
+    processed: usize,
+    skipped: usize,
+    error_msg: Option<&'a str>,
 }
 
 /// Trigger full re-indexing for all active projects. Used by post-update migrations.

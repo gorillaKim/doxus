@@ -222,7 +222,7 @@ async fn handle_index(conn: &rusqlite::Connection) -> Result<()> {
                 .await
                 .map_err(|e| anyhow::anyhow!("fetch error: {e}"))?;
 
-            let engine = SearchEngine::new(conn);
+            let engine = SearchEngine::sync(conn);
 
             for doc in &stream.documents {
                 let meta = DocMeta {
@@ -268,7 +268,7 @@ async fn handle_index(conn: &rusqlite::Connection) -> Result<()> {
 
 async fn handle_search(
     conn: &rusqlite::Connection,
-    db_path: &PathBuf,
+    db_path: &std::path::Path,
     embedder: Option<std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>>,
     query_text: String,
     limit: usize,
@@ -301,10 +301,10 @@ async fn handle_search(
             std::sync::Arc::new(std::sync::Mutex::new(search_conn)),
             emb,
         );
-        engine.search_async(&query).await.map_err(|e| anyhow::anyhow!(e))?
+        engine.search_async(&query).await.map_err(|e: doxus_core::search::SearchError| anyhow::anyhow!(e))?
     } else {
-        SearchEngine::new(conn).search(&query)
-            .map_err(|e| anyhow::anyhow!(e))?
+        SearchEngine::sync(conn).search(&query)
+            .map_err(|e: doxus_core::search::SearchError| anyhow::anyhow!(e))?
             .into_iter()
             .map(doxus_core::search::Hit::from)
             .collect()
@@ -548,13 +548,6 @@ fn handle_workspace(conn: &rusqlite::Connection, action: WorkspaceAction) -> Res
     Ok(())
 }
 
-/// SHA-256 hash of content for deduplication.
-fn content_hash(input: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut h = Sha256::new();
-    h.update(input.as_bytes());
-    hex::encode(h.finalize())
-}
 
 #[cfg(test)]
 mod tests {
@@ -848,8 +841,8 @@ fn resolve_id(conn: &rusqlite::Connection, project: &str, id_str: &str) -> Resul
 
 async fn handle_graph(
     conn: &rusqlite::Connection,
-    db_path: &std::path::Path,
-    embedder: Option<std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>>,
+    _db_path: &std::path::Path,
+    _embedder: Option<std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>>,
     action: GraphAction,
 ) -> Result<()> {
     match action {
@@ -887,8 +880,7 @@ async fn handle_graph(
             let (from_id, _) = resolve_id(conn, &project, &from)?;
             let (to_id, _) = resolve_id(conn, &project, &to)?;
 
-            let sql = format!(
-                "WITH RECURSIVE path(id, depth, path_str) AS (
+            let sql = "WITH RECURSIVE path(id, depth, path_str) AS (
                     SELECT ?1, 0, CAST(?1 AS TEXT)
                     UNION ALL
                     SELECT l.target_id, p.depth + 1, p.path_str || ' -> ' || l.target_id
@@ -896,8 +888,7 @@ async fn handle_graph(
                     JOIN path p ON l.source_id = p.id
                     WHERE p.depth < ?3 AND p.id != ?2
                 )
-                SELECT path_str FROM path WHERE id = ?2 ORDER BY depth LIMIT 1"
-            );
+                SELECT path_str FROM path WHERE id = ?2 ORDER BY depth LIMIT 1".to_string();
 
             let result: Result<String, _> = conn.query_row(&sql, rusqlite::params![from_id, to_id, max_hops], |r| r.get(0));
             match result {
@@ -908,8 +899,7 @@ async fn handle_graph(
         GraphAction::Cluster { project, id, depth } => {
             let (db_id, _) = resolve_id(conn, &project, &id)?;
             
-            let sql = format!(
-                "WITH RECURSIVE cluster(id, level) AS (
+            let sql = "WITH RECURSIVE cluster(id, level) AS (
                     SELECT ?1, 0
                     UNION
                     SELECT l.target_id, c.level + 1
@@ -925,8 +915,7 @@ async fn handle_graph(
                 SELECT DISTINCT d.source_doc_id, d.title, c.level 
                 FROM cluster c 
                 JOIN documents d ON c.id = d.id 
-                ORDER BY c.level, d.title"
-            );
+                ORDER BY c.level, d.title".to_string();
 
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map(rusqlite::params![db_id, depth], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, i64>(2)?)))?;

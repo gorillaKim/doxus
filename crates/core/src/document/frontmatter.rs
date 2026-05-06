@@ -2,7 +2,6 @@
 ///
 /// 템플릿 content에서 frontmatter를 추출하고,
 /// 구조화된 필드 + 본문으로부터 마크다운 문서를 생성한다.
-
 use std::collections::BTreeMap;
 
 /// frontmatter 키-값 쌍 (순서 유지를 위해 BTreeMap 대신 Vec 사용)

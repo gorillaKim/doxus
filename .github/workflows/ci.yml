@@ -58,6 +58,12 @@ jobs:
             . -> target
             apps/desktop/src-tauri -> target
 
+      - name: Create dummy sidecar binaries for check
+        run: |
+          mkdir -p apps/desktop/src-tauri/binaries
+          touch apps/desktop/src-tauri/binaries/doxus-mcp-aarch64-apple-darwin
+          touch apps/desktop/src-tauri/binaries/doxus-mcp-x86_64-apple-darwin
+
       - name: cargo check (desktop lib + bin)
         run: cargo check -p doxus-desktop --all-targets
 

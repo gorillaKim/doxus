@@ -169,7 +169,8 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
         Ok(l) => l,
         Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
     };
-    let row: Result<(i64, String, Option<String>, Option<i64>, String), _> = conn_lock.query_row(
+    type SourceRow = (i64, String, Option<String>, Option<i64>, String);
+    let row: Result<SourceRow, _> = conn_lock.query_row(
         "SELECT si.id, si.plugin_id, si.sync_cursor, si.last_synced, si.config_json
          FROM source_instances si
          JOIN projects p ON si.project_id = p.id
@@ -274,7 +275,7 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
             |r| r.get(0)
         ).unwrap_or_else(|_| "full".to_string());
 
-        let engine = SyncSearchEngine::from_conn(&*conn_lock);
+        let engine = SyncSearchEngine::from_conn(&conn_lock);
 
         for doc in &changeset.updated {
             let title = doc.title.as_deref().unwrap_or("");
@@ -325,10 +326,7 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
     }
 }
 pub fn setup_project_agent(_server: &McpServer, id: Value, args: &Value) -> McpResponse {
-    let path_str = match args["path"].as_str() {
-        Some(p) => p,
-        None => ".", // Default to current directory
-    };
+    let path_str = args["path"].as_str().unwrap_or(".");
     let project_path = std::path::PathBuf::from(path_str);
     
     // Attempt to resolve absolute path for clarity
@@ -359,7 +357,7 @@ pub fn setup_project_agent(_server: &McpServer, id: Value, args: &Value) -> McpR
 
     content.push_str("\n\n");
     content.push_str(instr_header);
-    content.push_str("\n");
+    content.push('\n');
     content.push_str(instr_body);
 
     if let Err(e) = std::fs::write(&claude_md_path, content) {

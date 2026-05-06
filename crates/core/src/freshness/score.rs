@@ -1,31 +1,45 @@
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RetentionTier { Short, Mid, Long }
 
-impl RetentionTier {
-    pub fn from_str(s: &str) -> Self {
-        match s {
+impl std::str::FromStr for RetentionTier {
+    type Err = std::convert::Infallible;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
             "short" => RetentionTier::Short,
             "long" => RetentionTier::Long,
             _ => RetentionTier::Mid,
-        }
+        })
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SensitivityMode { Strict, Normal, Relaxed }
 
-impl SensitivityMode {
-    pub fn from_str(s: &str) -> Self {
-        match s {
+impl std::str::FromStr for SensitivityMode {
+    type Err = std::convert::Infallible;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
             "strict" => SensitivityMode::Strict,
             "relaxed" => SensitivityMode::Relaxed,
             _ => SensitivityMode::Normal,
-        }
+        })
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FreshnessStatus { Fresh, Aging, Stale, Obsolete }
+
+impl std::str::FromStr for FreshnessStatus {
+    type Err = std::convert::Infallible;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "aging" => FreshnessStatus::Aging,
+            "stale" => FreshnessStatus::Stale,
+            "obsolete" => FreshnessStatus::Obsolete,
+            _ => FreshnessStatus::Fresh,
+        })
+    }
+}
 
 impl FreshnessStatus {
     pub fn as_str(&self) -> &'static str {
@@ -34,15 +48,6 @@ impl FreshnessStatus {
             FreshnessStatus::Aging => "aging",
             FreshnessStatus::Stale => "stale",
             FreshnessStatus::Obsolete => "obsolete",
-        }
-    }
-    
-    pub fn from_str(s: &str) -> Self {
-        match s {
-            "aging" => FreshnessStatus::Aging,
-            "stale" => FreshnessStatus::Stale,
-            "obsolete" => FreshnessStatus::Obsolete,
-            _ => FreshnessStatus::Fresh,
         }
     }
 }

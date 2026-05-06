@@ -9,9 +9,9 @@ mod defaults {
 /// Strip YAML frontmatter from a markdown string.
 fn strip_frontmatter(content: &str) -> &str {
     let trimmed = content.trim();
-    if trimmed.starts_with("---") {
-        if let Some(end) = trimmed[3..].find("---") {
-            return trimmed[end + 6..].trim();
+    if let Some(rest) = trimmed.strip_prefix("---") {
+        if let Some(end) = rest.find("---") {
+            return rest[end + 3..].trim();
         }
     }
     trimmed

@@ -146,7 +146,7 @@ pub(crate) fn which_binary(name: &str) -> Option<PathBuf> {
 }
 
 /// Resolve the first existing path that contains a `*` glob segment (single level only).
-fn glob_first(pattern: &PathBuf) -> Option<PathBuf> {
+fn glob_first(pattern: &Path) -> Option<PathBuf> {
     let pattern_str = pattern.to_string_lossy();
     let parts: Vec<&str> = pattern_str.split('/').collect();
     let star_idx = parts.iter().position(|p| *p == "*")?;

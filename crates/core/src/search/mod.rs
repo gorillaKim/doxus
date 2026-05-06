@@ -58,6 +58,30 @@ pub enum SearchMode {
     Vector,
 }
 
+/// Parameters for indexing a document.
+pub struct IndexParams<'a> {
+    pub project_id: i64,
+    pub source_doc_id: &'a str,
+    pub title: &'a str,
+    pub content: &'a str,
+    pub meta: DocMeta,
+    pub strategy: &'a str,
+    pub last_indexed: i64,
+}
+
+/// Parameters for synchronous indexing.
+pub(crate) struct SyncIndexParams<'a> {
+    pub project_id: i64,
+    pub source_doc_id: &'a str,
+    pub title: &'a str,
+    pub content: &'a str,
+    pub chunks: &'a [crate::chunker::Chunk],
+    pub chunk_embeddings: &'a [Vec<u8>],
+    pub meta: &'a DocMeta,
+    pub strategy: &'a str,
+    pub last_indexed: i64,
+}
+
 impl SearchQuery {
     pub fn new(text: impl Into<String>) -> Self {
         Self {
@@ -231,7 +255,7 @@ impl SearchEngine {
         Ok(())
     }
 
-    pub fn new(conn: &Connection) -> SyncSearchEngine<'_> {
+    pub fn sync(conn: &Connection) -> SyncSearchEngine<'_> {
         SyncSearchEngine::from_conn(conn)
     }
 
@@ -251,7 +275,15 @@ impl SearchEngine {
         strategy: &str,
     ) -> Result<(), SearchError> {
         let now = chrono::Utc::now().timestamp();
-        self.index_document_async_with_meta(project_id, source_doc_id, title, content, DocMeta::default(), strategy, now).await
+        self.index_document_async_with_meta(IndexParams {
+            project_id,
+            source_doc_id,
+            title,
+            content,
+            meta: DocMeta::default(),
+            strategy,
+            last_indexed: now,
+        }).await
     }
 
     pub async fn index_documents_batch_async(
@@ -335,15 +367,17 @@ impl SearchEngine {
 
                         index_document_sync(
                             &tx,
-                            req.project_id,
-                            &req.source_doc_id,
-                            &req.title,
-                            &req.content,
-                            doc_chunks,
-                            doc_embeddings,
-                            &req.meta,
-                            &strategy,
-                            last_indexed,
+                            SyncIndexParams {
+                                project_id: req.project_id,
+                                source_doc_id: &req.source_doc_id,
+                                title: &req.title,
+                                content: &req.content,
+                                chunks: doc_chunks,
+                                chunk_embeddings: doc_embeddings,
+                                meta: &req.meta,
+                                strategy: &strategy,
+                                last_indexed,
+                            },
                         )?;
                         current_chunk_offset += num_chunks;
                     }
@@ -371,16 +405,10 @@ impl SearchEngine {
 
     pub async fn index_document_async_with_meta(
         &self,
-        project_id: i64,
-        source_doc_id: &str,
-        title: &str,
-        content: &str,
-        meta: DocMeta,
-        strategy: &str,
-        last_indexed: i64,
+        params: IndexParams<'_>,
     ) -> Result<(), SearchError> {
-        let strategy = strategy.to_string();
-        let chunks = crate::chunker::split_chunks(content, crate::chunker::ChunkConfig { title: Some(title.to_string()), ..Default::default() });
+        let strategy = params.strategy.to_string();
+        let chunks = crate::chunker::split_chunks(params.content, crate::chunker::ChunkConfig { title: Some(params.title.to_string()), ..Default::default() });
         if chunks.is_empty() { return Ok(()); }
 
         let texts: Vec<&str> = chunks.iter().map(|c| c.embedding_text.as_str()).collect();
@@ -393,13 +421,29 @@ impl SearchEngine {
         }
 
         let conn = Arc::clone(&self.conn);
-        let source_doc_id = source_doc_id.to_string();
-        let title = title.to_string();
-        let content = content.to_string();
+        let source_doc_id = params.source_doc_id.to_string();
+        let title = params.title.to_string();
+        let content = params.content.to_string();
+        let project_id = params.project_id;
+        let last_indexed = params.last_indexed;
+        let meta = params.meta;
 
         tokio::task::spawn_blocking(move || -> Result<(), SearchError> {
             let conn = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
-            index_document_sync(&conn, project_id, &source_doc_id, &title, &content, &chunks, &chunk_embeddings, &meta, &strategy, last_indexed)?;
+            index_document_sync(
+                &conn,
+                SyncIndexParams {
+                    project_id,
+                    source_doc_id: &source_doc_id,
+                    title: &title,
+                    content: &content,
+                    chunks: &chunks,
+                    chunk_embeddings: &chunk_embeddings,
+                    meta: &meta,
+                    strategy: &strategy,
+                    last_indexed,
+                },
+            )?;
             Ok(())
         }).await??;
         Ok(())
@@ -490,16 +534,17 @@ impl SearchEngine {
 
 pub(crate) fn index_document_sync(
     conn: &Connection,
-    project_id: i64,
-    source_doc_id: &str,
-    title: &str,
-    content: &str,
-    chunks: &[crate::chunker::Chunk],
-    chunk_embeddings: &[Vec<u8>],
-    meta: &DocMeta,
-    strategy: &str,
-    last_indexed: i64,
+    params: SyncIndexParams<'_>,
 ) -> Result<(), SearchError> {
+    let project_id = params.project_id;
+    let source_doc_id = params.source_doc_id;
+    let title = params.title;
+    let content = params.content;
+    let meta = params.meta;
+    let strategy = params.strategy;
+    let chunks = params.chunks;
+    let chunk_embeddings = params.chunk_embeddings;
+    let last_indexed = params.last_indexed;
     let is_reference = strategy == "reference";
     // Even if content is empty, we should persist the document record to avoid repeated re-indexing.
     // We only skip if both content AND title are effectively empty.
@@ -697,9 +742,11 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
 
         if let Some(ref path_str) = hit.file_path {
             let path = std::path::Path::new(path_str);
-            if path.exists() && hit.start_byte.is_some() && hit.end_byte.is_some() {
-                if let Ok(res) = highlighter.highlight_file(path, hit.start_byte.unwrap() as usize, hit.end_byte.unwrap() as usize, 50) {
-                    hit.snippet = res.snippet;
+            if path.exists() {
+                if let (Some(start), Some(end)) = (hit.start_byte, hit.end_byte) {
+                    if let Ok(res) = highlighter.highlight_file(path, start as usize, end as usize, 50) {
+                        hit.snippet = res.snippet;
+                    }
                 }
             } else if let Some(ref raw) = hit.raw_content {
                 hit.snippet = highlighter.highlight_text(raw).snippet;
@@ -795,9 +842,11 @@ fn vector_search_sync(
 
         if let Some(ref path_str) = hit.file_path {
             let path = std::path::Path::new(path_str);
-            if path.exists() && hit.start_byte.is_some() && hit.end_byte.is_some() {
-                if let Ok(res) = highlighter.highlight_file(path, hit.start_byte.unwrap() as usize, hit.end_byte.unwrap() as usize, 50) {
-                    hit.snippet = res.snippet;
+            if path.exists() {
+                if let (Some(start), Some(end)) = (hit.start_byte, hit.end_byte) {
+                    if let Ok(res) = highlighter.highlight_file(path, start as usize, end as usize, 50) {
+                        hit.snippet = res.snippet;
+                    }
                 }
             } else if let Some(ref raw) = hit.raw_content {
                 hit.snippet = highlighter.highlight_text(raw).snippet;
@@ -872,7 +921,20 @@ impl<'a> SyncSearchEngine<'a> {
             updated_at: meta.updated_at.or(Some(now)),
             ..meta.clone()
         };
-        index_document_sync(self.conn, project_id, sid, title, content, &chunks, &[], &meta, strategy, now)
+        index_document_sync(
+            self.conn,
+            SyncIndexParams {
+                project_id,
+                source_doc_id: sid,
+                title,
+                content,
+                chunks: &chunks,
+                chunk_embeddings: &[],
+                meta: &meta,
+                strategy,
+                last_indexed: now,
+            },
+        )
     }
     pub fn search(&self, query: &SearchQuery) -> Result<Vec<SearchHit>, SearchError> {
         fts_search_sync(self.conn, query)

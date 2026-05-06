@@ -3,6 +3,9 @@ use std::collections::HashMap;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{Duration, Instant};
 use crate::indexing::IndexingService;
+ 
+type ProgressCallback = Box<dyn Fn(String, usize, usize) + Send + Sync>;
+type EventSender = mpsc::Sender<(String, usize)>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SyncTrigger {
@@ -50,8 +53,8 @@ pub struct SyncManager {
     watcher_manager: Arc<Mutex<Option<Arc<crate::watcher::WatcherManager>>>>,
     active_tasks: Arc<Mutex<std::collections::HashMap<String, i64>>>,
     recent_triggers: Arc<Mutex<VecDeque<SyncTriggerSummary>>>,
-    event_tx: Arc<Mutex<Option<mpsc::Sender<(String, usize)>>>>,
-    progress_callback: Arc<Mutex<Option<Box<dyn Fn(String, usize, usize) + Send + Sync>>>>,
+    event_tx: Arc<Mutex<Option<EventSender>>>,
+    progress_callback: Arc<Mutex<Option<ProgressCallback>>>,
 }
 
 impl SyncManager {
@@ -135,7 +138,7 @@ impl SyncManager {
         Arc::clone(&self.indexing_service)
     }
 
-    pub async fn set_event_sender(&self, tx: mpsc::Sender<(String, usize)>) {
+    pub async fn set_event_sender(&self, tx: EventSender) {
         let mut guard = self.event_tx.lock().await;
         *guard = Some(tx);
     }

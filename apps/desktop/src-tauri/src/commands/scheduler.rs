@@ -15,6 +15,7 @@ pub async fn list_scheduled_jobs(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn create_scheduled_job(
     state: tauri::State<'_, Arc<crate::AppState>>,
     project_id: Option<i64>,
@@ -99,16 +100,15 @@ pub async fn get_job_history(
     }).map_err(|e| e.to_string())?;
 
     let mut rows = Vec::new();
-    for r in iter {
-        if let Ok(v) = r {
-            rows.push(v);
-        }
+    for v in iter.flatten() {
+        rows.push(v);
     }
 
     Ok(json!({ "history": rows }))
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn update_scheduled_job(
     state: tauri::State<'_, Arc<crate::AppState>>,
     job_id: i64,

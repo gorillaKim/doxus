@@ -213,7 +213,7 @@ pub fn migrate_legacy_secrets(
                     tracing::info!("[Secrets] Migrating legacy secret '{}' to unified store", key);
                     let target_service = plugin_id.to_string();
                     let target_key = if key.starts_with("doxus:") {
-                        key.split(':').last().unwrap_or(key)
+                        key.split(':').next_back().unwrap_or(key)
                     } else {
                         key
                     };

@@ -35,9 +35,9 @@ fn parse_tags(content: &str) -> Vec<String> {
         }
         if !in_code_block {
             // Also skip inline code snippets roughly
-            let mut char_iter = line.chars().peekable();
+            let char_iter = line.chars().peekable();
             let mut in_inline = false;
-            while let Some(c) = char_iter.next() {
+            for c in char_iter {
                 if c == '`' {
                     in_inline = !in_inline;
                     continue;
@@ -136,8 +136,8 @@ fn parse_frontmatter_meta(fm: &str) -> (Vec<String>, Option<i64>, Option<String>
                 }
                 
                 // date/created extraction logic
-                if key == "created" || key == "date" {
-                    if val.len() >= 10 {
+                if (key == "created" || key == "date")
+                    && val.len() >= 10 {
                         let date_part = &val[..10];
                         let parts: Vec<&str> = date_part.split('-').collect();
                         if parts.len() == 3 {
@@ -156,7 +156,6 @@ fn parse_frontmatter_meta(fm: &str) -> (Vec<String>, Option<i64>, Option<String>
                             }
                         }
                     }
-                }
 
                 if key == "title" {
                     title = Some(val.to_string());
@@ -661,10 +660,10 @@ impl DocSource for ObsidianPlugin {
             .map_err(|e| PluginError::Internal(e.to_string()))?;
 
         // Split current file into frontmatter and body
-        let (mut fm_text, mut body_text) = if current_raw.starts_with("---") {
-            if let Some(end_idx) = current_raw[3..].find("\n---") {
-                let fm = &current_raw[3..end_idx + 3];
-                let body = &current_raw[end_idx + 7..];
+        let (mut fm_text, mut body_text) = if let Some(rest) = current_raw.strip_prefix("---") {
+            if let Some(end_idx) = rest.find("\n---") {
+                let fm = &rest[..end_idx];
+                let body = &rest[end_idx + 4..];
                 (fm.to_string(), body.to_string())
             } else {
                 ("".into(), current_raw)

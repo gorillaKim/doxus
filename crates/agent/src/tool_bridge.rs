@@ -54,23 +54,25 @@ pub const DEFAULT_ALLOWED_TOOLS: &[&str] = &[
 /// The `dispatcher` is a type-erased function that accepts `(tool_name, args)`
 /// and returns a JSON result value. This keeps the agent crate free of a direct
 /// dependency on `doxus-mcp`.
+type ToolDispatcher = Arc<dyn Fn(&str, Value) -> Value + Send + Sync>;
+
 pub struct ToolBridge {
     allowed: Vec<String>,
-    dispatcher: Arc<dyn Fn(&str, Value) -> Value + Send + Sync>,
+    dispatcher: ToolDispatcher,
 }
 
 impl ToolBridge {
     /// Create a new bridge with an explicit allow-list and dispatcher.
     pub fn new(
         allowed: Vec<String>,
-        dispatcher: Arc<dyn Fn(&str, Value) -> Value + Send + Sync>,
+        dispatcher: ToolDispatcher,
     ) -> Self {
         Self { allowed, dispatcher }
     }
 
     /// Create a bridge using the default allowed tool list.
     pub fn with_default_tools(
-        dispatcher: Arc<dyn Fn(&str, Value) -> Value + Send + Sync>,
+        dispatcher: ToolDispatcher,
     ) -> Self {
         Self::new(
             DEFAULT_ALLOWED_TOOLS.iter().map(|s| s.to_string()).collect(),
@@ -111,8 +113,8 @@ impl ToolBridge {
                 name: name.to_string(),
                 error: format!("tool '{name}' is not in the allowed list"),
             };
-            return Ok(serde_json::to_string(&msg)
-                .map_err(|e| BridgeError::Serialize(e.to_string()))?);
+            return serde_json::to_string(&msg)
+                .map_err(|e| BridgeError::Serialize(e.to_string()));
         }
 
         let result = (self.dispatcher)(name, input);

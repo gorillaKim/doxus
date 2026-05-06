@@ -5,7 +5,6 @@
 /// - Merge small paragraphs until the chunk reaches `max_chars`
 /// - Overlap: last `overlap_chars` of each chunk are prepended to the next
 /// - Minimum chunk size: at least one paragraph (never returns empty chunks)
-
 pub const DEFAULT_MAX_CHARS: usize = 1000;
 pub const DEFAULT_OVERLAP_CHARS: usize = 200;
 

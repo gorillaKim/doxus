@@ -72,7 +72,7 @@ impl<S: DocSource + Send + Sync> SyncRunner<S> {
                             |r| r.get(0),
                         )
                         .optional()
-                        .map_err(|e| SyncError::Db(e))?;
+                        .map_err(SyncError::Db)?;
 
                     match existing_hash {
                         Some(ref local_hash) => {

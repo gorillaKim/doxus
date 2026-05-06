@@ -703,8 +703,8 @@ fn is_safe_local_path(path: &str) -> bool {
 fn validate_base_url(url: &str) -> Result<(), String> {
     let parsed = reqwest::Url::parse(url).map_err(|e| format!("잘못된 URL: {}", e))?;
 
-    if parsed.scheme() != "https" {
-        return Err("HTTPS URL만 허용됩니다 (SSRF 방지)".to_string());
+    if parsed.scheme() != "https" && parsed.scheme() != "http" {
+        return Err("HTTP/HTTPS URL만 허용됩니다 (SSRF 방지)".to_string());
     }
 
     let host = parsed.host_str().ok_or_else(|| "URL에 호스트가 없습니다".to_string())?;
@@ -732,7 +732,7 @@ fn validate_base_url(url: &str) -> Result<(), String> {
                 v6.is_loopback()
                     || (v6.segments()[0] & 0xffc0) == 0xfe80  // link-local
                     || (v6.segments()[0] & 0xfe00) == 0xfc00  // unique-local
-                    || v6.to_ipv4_mapped().map_or(false, |v4| {
+                    || v6.to_ipv4_mapped().is_some_and(|v4| {
                         let o = v4.octets();
                         o[0] == 127
                             || o[0] == 10

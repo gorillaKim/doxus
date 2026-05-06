@@ -157,8 +157,8 @@ fn ensure_bridge_token() -> String {
 /// doxus-mcp 바이너리 경로 탐색
 fn find_doxus_mcp_bin() -> Option<std::path::PathBuf> {
     find_doxus_mcp_bin_in(std::env::current_exe().ok()?.parent()?)
-        .or_else(|| find_doxus_mcp_bin_in_target())
-        .or_else(|| find_doxus_mcp_bin_in_path())
+        .or_else(find_doxus_mcp_bin_in_target)
+        .or_else(find_doxus_mcp_bin_in_path)
 }
 
 /// 지정 디렉토리에서 `doxus-mcp` prefix를 가진 실행 파일을 탐색
@@ -564,15 +564,12 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            match event {
-                tauri::WindowEvent::Focused(true) => {
-                    let state = window.state::<Arc<AppState>>();
-                    let manager = state.sync_manager.clone();
-                    tauri::async_runtime::spawn(async move {
-                        manager.trigger(doxus_core::sync_manager::SyncTrigger::Focus).await;
-                    });
-                }
-                _ => {}
+            if let tauri::WindowEvent::Focused(true) = event {
+                let state = window.state::<Arc<AppState>>();
+                let manager = state.sync_manager.clone();
+                tauri::async_runtime::spawn(async move {
+                    manager.trigger(doxus_core::sync_manager::SyncTrigger::Focus).await;
+                });
             }
         })
         .manage(state_for_tauri)

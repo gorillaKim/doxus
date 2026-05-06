@@ -181,6 +181,7 @@ impl PostUpdateHook for TauriReindexHook {
 
 /// Tauri IPC command — delegates to `tauri_plugin_process::restart`.
 #[tauri::command]
+#[allow(unreachable_code)]
 pub async fn relaunch_app(handle: tauri::AppHandle) -> Result<(), String> {
     handle.restart();
     Ok(())

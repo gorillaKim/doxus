@@ -234,7 +234,7 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
                         break;
                     }
                 };
-                let sync_db = doxus_core::sync::SyncDb::new(&*guard);
+                let sync_db = doxus_core::sync::SyncDb::new(&guard);
                 match scheduler.due_instances(&sync_db) {
                     Ok(d) => d,
                     Err(e) => {
@@ -391,7 +391,7 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
 
                                     match conn.lock() {
                                         Ok(guard) => {
-                                            let sync_db = SyncDb::new(&*guard);
+                                            let sync_db = SyncDb::new(&guard);
                                             if let Err(e) = sync_db.mark_synced(inst.id, new_cursor.as_deref()) {
                                                 tracing::warn!(
                                                     instance_id = inst.id,

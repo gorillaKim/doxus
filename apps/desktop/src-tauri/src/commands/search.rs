@@ -586,7 +586,8 @@ pub async fn search_documents(
     let doc_ids: Vec<i64> = hits.iter().map(|h| h.document_id).collect();
     
     // 3. Document metadata batch fetching (scoped lock)
-    let mut doc_info: std::collections::HashMap<i64, (String, String, String, Vec<String>, i64, i64, serde_json::Value, String, Option<String>, String, f64, String)> = std::collections::HashMap::new();
+    type DocInfo = (String, String, String, Vec<String>, i64, i64, serde_json::Value, String, Option<String>, String, f64, String);
+    let mut doc_info: std::collections::HashMap<i64, DocInfo> = std::collections::HashMap::new();
     {
         let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
         for chunk in doc_ids.chunks(50) {
@@ -622,8 +623,7 @@ pub async fn search_documents(
                 ))
             }).map_err(|e| e.to_string())?;
 
-            for row_res in rows {
-                if let Ok(row) = row_res {
+            for row in rows.flatten() {
                     let doc_id = row.0;
                     let project_name = row.1;
                     let source_type = row.2;
@@ -643,7 +643,6 @@ pub async fn search_documents(
                         .filter_map(|tr| tr.ok()).collect();
 
                     doc_info.insert(doc_id, (project_name.clone(), source_type.clone(), source_doc_id.clone(), tags, updated_at, last_indexed, metadata.clone(), project_path.clone(), url.clone(), source_project_id.clone(), freshness_score, retention_tier.clone()));
-                }
             }
         }
     }
@@ -700,7 +699,7 @@ pub async fn search_documents(
                     // 완전히 일치하거나
                     first_lower == proj_lower || 
                     // 프로젝트명에 슬래시가 있는 경우 마지막 파트와 일치하거나 (e.g. '컨플/테크' -> '테크')
-                    (project_name.contains('/') && Some(first_lower.as_str()) == proj_lower.split('/').last()) ||
+                    (project_name.contains('/') && Some(first_lower.as_str()) == proj_lower.split('/').next_back()) ||
                     // 일반적인 중복 폴더명인 경우
                     first_lower == "project" || first_lower == "space"
                 } else {
@@ -940,7 +939,7 @@ pub async fn get_document_content(
                         doc_clone.title.as_deref().unwrap_or("Untitled"), doc_clone.id.0);
                     
                     let doc_id_for_log = doc_clone.id.0.clone();
-                    if let Ok(_) = indexer_clone.index_single_document(pid, doc_clone, &strategy).await {
+                    if indexer_clone.index_single_document(pid, doc_clone, &strategy).await.is_ok() {
                         // 실제 인덱싱 완료 시 프런트엔드에 알림 이벤트 발행
                         let _ = handle_clone.emit("document-indexed", serde_json::json!({
                             "project_name": pname_clone,
@@ -971,10 +970,7 @@ pub async fn get_document_content(
         row
     };
 
-    let (db_title, last_indexed, cache_ttl) = match db_meta {
-        Some(m) => m,
-        None => (None, None, None),
-    };
+    let (db_title, last_indexed, cache_ttl) = db_meta.unwrap_or_default();
 
     // 4. Fetch tags from DB
     let tags = {
@@ -1075,7 +1071,7 @@ pub fn list_all_documents_impl(
                 }
                 p = p.trim_start_matches('/');
                 if project_name.contains('/') {
-                    if let Some(virtual_root) = project_name.split('/').last() {
+                    if let Some(virtual_root) = project_name.split('/').next_back() {
                         if !virtual_root.is_empty() && p.starts_with(virtual_root) {
                             let next = p.strip_prefix(virtual_root).unwrap_or(p);
                             if next.starts_with('/') {

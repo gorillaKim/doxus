@@ -112,5 +112,5 @@ pub async fn get_graph_data(
 ) -> Result<serde_json::Value, String> {
     let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
     let data = get_graph_data_impl(&conn)?;
-    Ok(serde_json::to_value(data).map_err(|e| e.to_string())?)
+    serde_json::to_value(data).map_err(|e| e.to_string())
 }

@@ -352,15 +352,15 @@ impl IndexingService {
         };
 
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
-        self.engine.index_document_async_with_meta(
+        self.engine.index_document_async_with_meta(crate::search::IndexParams {
             project_id,
-            &doc.id.0,
+            source_doc_id: &doc.id.0,
             title,
-            &doc.content,
+            content: &doc.content,
             meta,
             strategy,
-            now
-        ).await.map_err(|e| format!("Indexing error: {e}"))
+            last_indexed: now,
+        }).await.map_err(|e| format!("Indexing error: {e}"))
     }
 
     /// 특정 문서가 재인덱싱이 필요한지 확인합니다.

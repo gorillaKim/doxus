@@ -46,12 +46,12 @@ impl FreshnessService {
             WHERE df.document_id = ?1
         ")?;
         
-        if let Some(row) = stmt.query_row([doc_id], |row| {
+        if let Ok(row) = stmt.query_row([doc_id], |row| {
             let doc_id: i64 = row.get(0)?;
             let last_change: Option<i64> = row.get(1)?;
             let last_change_ts = last_change.unwrap_or(now); 
             let tier_str: String = row.get(2)?;
-            let tier = RetentionTier::from_str(&tier_str);
+            let tier: RetentionTier = tier_str.parse().unwrap();
             let policy_json: Option<String> = row.get(3)?;
             
             let mut mode = SensitivityMode::Normal;
@@ -72,7 +72,7 @@ impl FreshnessService {
             let status = score_to_status(score, &Thresholds::default());
             
             Ok((doc_id, score, status.as_str().to_string()))
-        }).ok() {
+        }) {
             let (id, score, status) = row;
             conn.execute(
                 "UPDATE document_freshness SET freshness_score = ?1, status = ?2, score_updated_at = ?3 WHERE document_id = ?4",
@@ -107,7 +107,7 @@ impl FreshnessService {
             let last_change: Option<i64> = row.get(1)?;
             let last_change_ts = last_change.unwrap_or(now); 
             let tier_str: String = row.get(2)?;
-            let tier = RetentionTier::from_str(&tier_str);
+            let tier: RetentionTier = tier_str.parse().unwrap();
             let policy_json: Option<String> = row.get(3)?;
             
             let mut mode = SensitivityMode::Normal;

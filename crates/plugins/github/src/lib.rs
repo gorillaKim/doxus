@@ -59,12 +59,14 @@ impl FetchCursor {
             _ => None,
         }
     }
+}
 
-    fn to_string(&self) -> String {
+impl std::fmt::Display for FetchCursor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FetchCursor::Issues(p) => format!("issues:{p}"),
-            FetchCursor::Wiki(p) => format!("wiki:{p}"),
-            FetchCursor::Discussions(p) => format!("discussions:{p}"),
+            FetchCursor::Issues(p) => write!(f, "issues:{p}"),
+            FetchCursor::Wiki(p) => write!(f, "wiki:{p}"),
+            FetchCursor::Discussions(p) => write!(f, "discussions:{p}"),
         }
     }
 }
@@ -167,7 +169,7 @@ impl GitHubPlugin {
         let slug = page
             .html_url
             .split('/')
-            .last()
+            .next_back()
             .unwrap_or("unknown")
             .to_string();
         let mut metadata = HashMap::new();

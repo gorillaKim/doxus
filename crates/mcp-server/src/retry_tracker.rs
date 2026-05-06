@@ -25,6 +25,12 @@ pub fn compute_backoff(attempt: u32, base_secs: u64, max_secs: u64) -> std::time
     std::time::Duration::from_secs(secs)
 }
 
+impl Default for RetryTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RetryTracker {
     pub fn new() -> Self {
         Self {

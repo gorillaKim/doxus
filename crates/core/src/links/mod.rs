@@ -106,15 +106,14 @@ impl LinkResolver {
             .map_err(|e| e.to_string())?;
 
         let mut resolved_count = 0;
-        for row in rows {
-            if let Ok((link_id, target_raw)) = row {
-                if let Some(target_id) = Self::resolve_link(conn, project_id, &target_raw) {
-                    let _ = conn.execute(
-                        "UPDATE document_links SET target_id = ?1 WHERE id = ?2",
-                        rusqlite::params![target_id, link_id]
-                    );
-                    resolved_count += 1;
-                }
+        for row in rows.flatten() {
+            let (link_id, target_raw) = row;
+            if let Some(target_id) = Self::resolve_link(conn, project_id, &target_raw) {
+                let _ = conn.execute(
+                    "UPDATE document_links SET target_id = ?1 WHERE id = ?2",
+                    rusqlite::params![target_id, link_id]
+                );
+                resolved_count += 1;
             }
         }
         Ok(resolved_count)
@@ -131,22 +130,21 @@ impl LinkResolver {
             .map_err(|e| e.to_string())?;
 
         let mut resolved_count = 0;
-        for row in rows {
-            if let Ok((link_id, source_doc_id, target_raw)) = row {
-                let project_id: Result<i64, _> = conn.query_row(
-                    "SELECT project_id FROM documents WHERE id = ?1",
-                    [source_doc_id],
-                    |r| r.get(0)
-                );
+        for row in rows.flatten() {
+            let (link_id, source_doc_id, target_raw) = row;
+            let project_id: Result<i64, _> = conn.query_row(
+                "SELECT project_id FROM documents WHERE id = ?1",
+                [source_doc_id],
+                |r| r.get(0)
+            );
 
-                if let Ok(pid) = project_id {
-                    if let Some(target_id) = Self::resolve_link(conn, pid, &target_raw) {
-                        let _ = conn.execute(
-                            "UPDATE document_links SET target_id = ?1 WHERE id = ?2",
-                            rusqlite::params![target_id, link_id]
-                        );
-                        resolved_count += 1;
-                    }
+            if let Ok(pid) = project_id {
+                if let Some(target_id) = Self::resolve_link(conn, pid, &target_raw) {
+                    let _ = conn.execute(
+                        "UPDATE document_links SET target_id = ?1 WHERE id = ?2",
+                        rusqlite::params![target_id, link_id]
+                    );
+                    resolved_count += 1;
                 }
             }
         }

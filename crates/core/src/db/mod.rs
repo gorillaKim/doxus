@@ -98,9 +98,10 @@ pub fn ensure_vec_extension() {
         // signature expected by sqlite3_auto_extension. The transmute converts
         // from a typed fn pointer to the opaque fn() that sqlite3_auto_extension
         // requires.
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+        let init_fn = std::mem::transmute::<*const (), unsafe extern "C" fn(*mut rusqlite::ffi::sqlite3, *mut *mut i8, *const rusqlite::ffi::sqlite3_api_routines) -> i32>(
             sqlite_vec::sqlite3_vec_init as *const (),
-        )));
+        );
+        rusqlite::ffi::sqlite3_auto_extension(Some(init_fn));
     });
 }
 
@@ -185,6 +186,13 @@ static MIGRATIONS: &[(&str, &str)] = &[
 #[cfg(any(test, feature = "test-helpers"))]
 pub struct TestDb {
     pub conn: Connection,
+}
+
+#[cfg(any(test, feature = "test-helpers"))]
+impl Default for TestDb {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(any(test, feature = "test-helpers"))]

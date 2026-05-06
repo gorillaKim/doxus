@@ -30,7 +30,8 @@ static SYSTEM: Lazy<Arc<Mutex<System>>> = Lazy::new(|| {
     Arc::new(Mutex::new(System::new()))
 });
 
-static DISK_INFO_CACHE: Lazy<Arc<Mutex<(std::time::Instant, u64, u64, u64)>>> = Lazy::new(|| {
+type DiskInfo = (std::time::Instant, u64, u64, u64);
+static DISK_INFO_CACHE: Lazy<Arc<Mutex<DiskInfo>>> = Lazy::new(|| {
     Arc::new(Mutex::new((std::time::Instant::now() - std::time::Duration::from_secs(3600), 0, 0, 0)))
 });
 

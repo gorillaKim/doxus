@@ -467,7 +467,7 @@ impl DocSource for WasmDocSourceAdapter {
     fn supports_write(&self) -> bool {
         // WASM 플러그인이 create_document 함수를 내보내는지 확인
         let guard = self.plugin.lock().ok();
-        guard.map_or(false, |g| g.function_exists("create_document"))
+        guard.is_some_and(|g| g.function_exists("create_document"))
     }
 
     async fn create_document(

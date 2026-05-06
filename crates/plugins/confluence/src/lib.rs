@@ -75,7 +75,7 @@ mod native_compat {
             tracing::debug!("[Confluence-HTTP] Method: {}, URL: {}", method, req.url);
             
             if req.url.is_empty() || !req.url.starts_with("http") {
-                return Err(super::Error::msg(format!("Invalid or empty URL for Confluence request: '{}'", req.url)).into());
+                return Err(super::Error::msg(format!("Invalid or empty URL for Confluence request: '{}'", req.url)));
             }
 
             let mut request_builder = CLIENT.request(method, &req.url);
@@ -435,7 +435,7 @@ pub(crate) fn fetch_all_impl(opts: FetchAllOptsWasm) -> FnResult<DocumentStreamW
 
     let space_url = format!("{base_url}/api/v2/spaces?keys={space_key}");
     let space_resp = request_with_auth(&state, "GET", &space_url, None)?;
-    let space_list: ConfluenceV2ListResponse<ConfluenceSpace> = serde_json::from_slice(&space_resp.body())?;
+    let space_list: ConfluenceV2ListResponse<ConfluenceSpace> = serde_json::from_slice(space_resp.body())?;
     let space_info = space_list.results.first().ok_or(Error::msg("Space not found"))?;
     let root_folder_name = space_info.name.as_ref().unwrap_or(&space_info.key);
     
@@ -463,7 +463,7 @@ pub(crate) fn fetch_all_impl(opts: FetchAllOptsWasm) -> FnResult<DocumentStreamW
 
 
         let resp = request_with_auth(&state, "GET", &url, None)?;
-        let r: ConfluenceCqlResult = serde_json::from_slice(&resp.body())?;
+        let r: ConfluenceCqlResult = serde_json::from_slice(resp.body())?;
         let total_hint = r.total_size.map(|t| t as u64);
 
         let mut details = Vec::new();
@@ -484,7 +484,7 @@ pub(crate) fn fetch_all_impl(opts: FetchAllOptsWasm) -> FnResult<DocumentStreamW
                 let ids_str = page_ids.join(",");
                 let v2_url = format!("{base_url}/api/v2/pages?id={}&body-format=storage&limit={}", ids_str, page_ids.len());
                 let v2_resp = request_with_auth(&state, "GET", &v2_url, None)?;
-                let v2_list: ConfluenceV2ListResponse<ConfluencePageV2> = serde_json::from_slice(&v2_resp.body())?;
+                let v2_list: ConfluenceV2ListResponse<ConfluencePageV2> = serde_json::from_slice(v2_resp.body())?;
                 details = v2_list.results;
             }
         }
@@ -515,7 +515,7 @@ pub(crate) fn fetch_all_impl(opts: FetchAllOptsWasm) -> FnResult<DocumentStreamW
         
 
         let resp = request_with_auth(&state, "GET", &pages_url, None)?;
-        let r: ConfluenceV2ListResponse<ConfluencePageV2> = serde_json::from_slice(&resp.body())?;
+        let r: ConfluenceV2ListResponse<ConfluencePageV2> = serde_json::from_slice(resp.body())?;
         
         let next_cursor = r.links.next.clone();
         (r.results, next_cursor, None)
@@ -531,7 +531,16 @@ pub(crate) fn fetch_all_impl(opts: FetchAllOptsWasm) -> FnResult<DocumentStreamW
         .map(|p| {
             let ancestor_id = state.get_config_string("ancestor_id");
             let tags = doc_tags.remove(&p.id).unwrap_or_default();
-            page_to_doc_v2(&state, &mut hierarchy, p, root_folder_name, &space_key, &base_url, ancestor_id.as_deref(), tags)
+            page_to_doc_v2(PageToDocParams {
+                state: &state,
+                hierarchy: &mut hierarchy,
+                p,
+                space_name: root_folder_name,
+                space_key: &space_key,
+                base_url: &base_url,
+                stop_id: ancestor_id.as_deref(),
+                tags,
+            })
         })
         .collect();
 
@@ -569,7 +578,7 @@ pub(crate) fn fetch_document_impl(opts: FetchDocumentOptsWasm) -> FnResult<RawDo
     log_d!("confluence", "[Confluence-Debug] Fetching document by ID: {} -> URL: {}", opts.id, url);
     
     let resp = request_with_auth(&state, "GET", &url, None)?;
-    let p: ConfluencePageV2 = serde_json::from_slice(&resp.body())?;
+    let p: ConfluencePageV2 = serde_json::from_slice(resp.body())?;
 
     let space_key = state.get_config_string("space_key").unwrap_or_else(|| "Unknown".to_string());
     let root_name = state.get_config_string("space_name").unwrap_or_else(|| space_key.clone());
@@ -580,7 +589,16 @@ pub(crate) fn fetch_document_impl(opts: FetchDocumentOptsWasm) -> FnResult<RawDo
     let mut hierarchy = HashMap::new();
 
     let ancestor_id = state.get_config_string("ancestor_id");
-    Ok(page_to_doc_v2(&state, &mut hierarchy, p, &root_name, &space_key, &base_url, ancestor_id.as_deref(), vec![]))
+    Ok(page_to_doc_v2(PageToDocParams {
+        state: &state,
+        hierarchy: &mut hierarchy,
+        p,
+        space_name: &root_name,
+        space_key: &space_key,
+        base_url: &base_url,
+        stop_id: ancestor_id.as_deref(),
+        tags: vec![],
+    }))
 }
 
 #[cfg_attr(target_arch = "wasm32", plugin_fn)]
@@ -598,7 +616,7 @@ pub(crate) fn fetch_changes_impl(opts: FetchChangesOptsWasm) -> FnResult<ChangeS
 
     let start = opts.cursor.and_then(|c| c.parse::<i64>().ok()).unwrap_or(0);
     let limit = opts.page_size as i64;
-    let since_dt = chrono::DateTime::from_timestamp(opts.since, 0).unwrap_or_else(|| chrono::DateTime::UNIX_EPOCH);
+    let since_dt = chrono::DateTime::from_timestamp(opts.since, 0).unwrap_or(chrono::DateTime::UNIX_EPOCH);
     let now_str = since_dt.format("%Y-%m-%dT%H:%M:%S").to_string();
     
     let mut cql = format!("space = \"{space_key}\" AND lastModified > \"{now_str}\"");
@@ -610,13 +628,13 @@ pub(crate) fn fetch_changes_impl(opts: FetchChangesOptsWasm) -> FnResult<ChangeS
     let url = format!("{base_url}/rest/api/content/search?cql={}&start={start}&limit={limit}", urlencoding::encode(&cql));
     
     let resp = request_with_auth(&state, "GET", &url, None)?;
-    let r: ConfluenceCqlResult = serde_json::from_slice(&resp.body())?;
+    let r: ConfluenceCqlResult = serde_json::from_slice(resp.body())?;
 
     let next_cursor = if r.results.len() as i64 >= r.limit { Some((r.start + r.limit).to_string()) } else { None };
 
     let space_url = format!("{base_url}/api/v2/spaces?keys={space_key}");
     let space_resp = request_with_auth(&state, "GET", &space_url, None)?;
-    let space_list: ConfluenceV2ListResponse<ConfluenceSpace> = serde_json::from_slice(&space_resp.body())?;
+    let space_list: ConfluenceV2ListResponse<ConfluenceSpace> = serde_json::from_slice(space_resp.body())?;
     let space_info = space_list.results.first().ok_or(Error::msg("Space not found"))?;
     let root_name = space_info.name.as_ref().unwrap_or(&space_info.key);
 
@@ -635,7 +653,7 @@ pub(crate) fn fetch_changes_impl(opts: FetchChangesOptsWasm) -> FnResult<ChangeS
         log_d!("confluence", "[Confluence-Batch] Fetching batch of {} docs", chunk.len());
         
         if let Ok(batch_resp) = request_with_auth(&state, "GET", &batch_url, None) {
-            if let Ok(batch_list) = serde_json::from_slice::<ConfluenceV2ListResponse<ConfluencePageV2>>(&batch_resp.body()) {
+            if let Ok(batch_list) = serde_json::from_slice::<ConfluenceV2ListResponse<ConfluencePageV2>>(batch_resp.body()) {
                 for p_v2 in batch_list.results {
                     // 계층 구조 캐시 업데이트
                     hierarchy.insert(p_v2.id.clone(), (p_v2.title.clone(), p_v2.parent_id.clone()));
@@ -648,7 +666,16 @@ pub(crate) fn fetch_changes_impl(opts: FetchChangesOptsWasm) -> FnResult<ChangeS
                         .map(|l| l.results.iter().map(|lab| lab.name.clone()).collect())
                         .unwrap_or_default();
                         
-                    updated.push(page_to_doc_v2(&state, &mut hierarchy, p_v2, root_name, &space_key, &base_url, ancestor_id.as_deref(), tags));
+                    updated.push(page_to_doc_v2(PageToDocParams {
+                        state: &state,
+                        hierarchy: &mut hierarchy,
+                        p: p_v2,
+                        space_name: root_name,
+                        space_key: &space_key,
+                        base_url: &base_url,
+                        stop_id: ancestor_id.as_deref(),
+                        tags,
+                    }));
                 }
             }
         }
@@ -696,7 +723,7 @@ pub(crate) fn create_document_impl(opts: CreateDocumentOptsWasm) -> FnResult<Cre
 
     let space_url = format!("{base_url}/api/v2/spaces?keys={space_key}");
     let space_resp = request_with_auth(&state, "GET", &space_url, None)?;
-    let space_list: ConfluenceV2ListResponse<ConfluenceSpace> = serde_json::from_slice(&space_resp.body())?;
+    let space_list: ConfluenceV2ListResponse<ConfluenceSpace> = serde_json::from_slice(space_resp.body())?;
     let space_info = space_list.results.first().ok_or(Error::msg("Space not found"))?;
 
     let segments = doxus_plugin_sdk::path_utils::parse_hierarchical_path(opts.folder.as_deref(), &opts.title)?;
@@ -706,7 +733,7 @@ pub(crate) fn create_document_impl(opts: CreateDocumentOptsWasm) -> FnResult<Cre
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .or_else(|| state.get_config("default_parent_id").map(|s| s.to_string()))
-        .or_else(|| config_ancestor_id);
+        .or(config_ancestor_id);
 
     let mut final_title = String::new();
     let mut final_id = String::new();
@@ -744,7 +771,7 @@ pub(crate) fn create_document_impl(opts: CreateDocumentOptsWasm) -> FnResult<Cre
 
     let get_url = format!("{base_url}/api/v2/pages/{final_id}");
     let get_resp = request_with_auth(&state, "GET", &get_url, None)?;
-    let current_page: ConfluencePageV2 = serde_json::from_slice(&get_resp.body())?;
+    let current_page: ConfluencePageV2 = serde_json::from_slice(get_resp.body())?;
     let current_version = current_page.version.and_then(|v| v.number).unwrap_or(1);
 
     let req_body = UpdatePageRequestV2 {
@@ -780,13 +807,13 @@ pub(crate) fn update_document_impl(opts: UpdateDocumentOptsWasm) -> FnResult<()>
 
     let get_url = format!("{base_url}/api/v2/pages/{}", opts.id);
     let get_resp = request_with_auth(&state, "GET", &get_url, None)?;
-    let current_page: ConfluencePageV2 = serde_json::from_slice(&get_resp.body())?;
+    let current_page: ConfluencePageV2 = serde_json::from_slice(get_resp.body())?;
     let current_version = current_page.version.and_then(|v| v.number).unwrap_or(1);
 
     let html_content = if let Some(content) = opts.content {
         html_convert::markdown_to_html(&content)
     } else {
-        return Err(Error::msg("Updating without new content not yet supported").into());
+        return Err(Error::msg("Updating without new content not yet supported"));
     };
 
     let req_body = UpdatePageRequestV2 {
@@ -831,7 +858,7 @@ fn get_base_url(state: &PluginState) -> FnResult<String> {
     let raw = state.get_config("base_url").ok_or_else(|| Error::msg("base_url missing in plugin configuration"))?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err(Error::msg("base_url is empty. Please check your project configuration.").into());
+        return Err(Error::msg("base_url is empty. Please check your project configuration."));
     }
     
     let mut url = trimmed.trim_end_matches('/').to_string();
@@ -855,7 +882,7 @@ fn auth_header(state: &PluginState) -> FnResult<String> {
         return Ok(format!("Basic {encoded}"));
     }
 
-    Err(Error::msg("No authentication credentials (OAuth or API Token)").into())
+    Err(Error::msg("No authentication credentials (OAuth or API Token)"))
 }
 
 /// 429 응답 시 exponential backoff으로 최대 3회 재시도합니다.
@@ -887,12 +914,12 @@ fn request_with_auth(state: &PluginState, method: &str, url: &str, body: Option<
                 busy_wait_secs(wait);
                 continue;
             }
-            return Err(Error::msg(format!("HTTP 429: rate limited after {} retries", MAX_RETRIES)).into());
+            return Err(Error::msg(format!("HTTP 429: rate limited after {} retries", MAX_RETRIES)));
         }
 
         if resp.status_code() >= 400 {
-            let msg = format!("HTTP {}: {}", resp.status_code(), String::from_utf8_lossy(&resp.body()));
-            return Err(Error::msg(msg).into());
+            let msg = format!("HTTP {}: {}", resp.status_code(), String::from_utf8_lossy(resp.body()));
+            return Err(Error::msg(msg));
         }
 
         return Ok(resp);
@@ -952,11 +979,11 @@ fn refresh_oauth_token(state: &mut PluginState, refresh_token: &str) -> FnResult
 
     let resp = http::request(&req, Some(body_bytes))?;
     if resp.status_code() != 200 {
-        let msg = format!("Refresh failed ({}): {}", resp.status_code(), String::from_utf8_lossy(&resp.body()));
-        return Err(Error::msg(msg).into());
+        let msg = format!("Refresh failed ({}): {}", resp.status_code(), String::from_utf8_lossy(resp.body()));
+        return Err(Error::msg(msg));
     }
 
-    let token_resp: TokenResponse = serde_json::from_slice(&resp.body())?;
+    let token_resp: TokenResponse = serde_json::from_slice(resp.body())?;
     
     state.access_token = Some(token_resp.access_token.clone());
     if let Some(rt) = token_resp.refresh_token {
@@ -976,16 +1003,28 @@ fn refresh_oauth_token(state: &mut PluginState, refresh_token: &str) -> FnResult
     Ok(())
 }
 
-fn page_to_doc_v2(
-    state: &PluginState,
-    hierarchy: &mut HashMap<String, (String, Option<String>)>,
-    p: ConfluencePageV2, 
-    space_name: &str,
-    space_key: &str,
-    base_url: &str,
-    stop_id: Option<&str>,
+struct PageToDocParams<'a> {
+    state: &'a PluginState,
+    hierarchy: &'a mut HashMap<String, (String, Option<String>)>,
+    p: ConfluencePageV2,
+    space_name: &'a str,
+    space_key: &'a str,
+    base_url: &'a str,
+    stop_id: Option<&'a str>,
     tags: Vec<String>,
+}
+
+fn page_to_doc_v2(
+    params: PageToDocParams<'_>,
 ) -> RawDocumentWasm {
+    let p = params.p;
+    let state = params.state;
+    let hierarchy = params.hierarchy;
+    let space_name = params.space_name;
+    let space_key = params.space_key;
+    let base_url = params.base_url;
+    let stop_id = params.stop_id;
+    let tags = params.tags;
     let mut storage_content = p.body.as_ref()
         .and_then(|b| b.atlas_doc_format.as_ref().or(b.storage.as_ref()))
         .map(|s| s.value.as_str())
@@ -1019,7 +1058,7 @@ fn page_to_doc_v2(
     
     let final_root_name = if !root_name.is_empty() {
         "".to_string() 
-    } else if let Some(_) = stop_id {
+    } else if stop_id.is_some() {
         if !ancestor_titles.is_empty() {
              ancestor_titles.remove(0)
         } else {
@@ -1089,7 +1128,7 @@ fn get_full_hierarchy(
         if pages_count > 100 { break; }
         
         if let Ok(resp) = request_with_auth(state, "GET", &pages_url, None) {
-            if let Ok(list) = serde_json::from_slice::<ConfluenceV2ListResponse<ConfluencePageV2>>(&resp.body()) {
+            if let Ok(list) = serde_json::from_slice::<ConfluenceV2ListResponse<ConfluencePageV2>>(resp.body()) {
                 let _current_batch_size = list.results.len();
                 for p in list.results {
                     hierarchy.insert(p.id, (p.title, p.parent_id));
@@ -1108,7 +1147,7 @@ fn get_full_hierarchy(
         folders_count += 1;
         if folders_count > 100 { break; }
         if let Ok(resp) = request_with_auth(state, "GET", &folders_url, None) {
-            if let Ok(list) = serde_json::from_slice::<ConfluenceV2ListResponse<ConfluenceFolderV2>>(&resp.body()) {
+            if let Ok(list) = serde_json::from_slice::<ConfluenceV2ListResponse<ConfluenceFolderV2>>(resp.body()) {
                 for f in list.results {
                     hierarchy.insert(f.id, (f.title, f.parent_id));
                 }
@@ -1133,13 +1172,13 @@ fn fetch_page_info(
 ) -> Option<(String, Option<String>)> {
     let url = format!("{base_url}/api/v2/pages/{id}");
     if let Ok(resp) = request_with_auth(state, "GET", &url, None) {
-        if let Ok(p) = serde_json::from_slice::<ConfluencePageV2>(&resp.body()) {
+        if let Ok(p) = serde_json::from_slice::<ConfluencePageV2>(resp.body()) {
             return Some((p.title, p.parent_id));
         }
     }
     let url = format!("{base_url}/api/v2/folders/{id}");
     if let Ok(resp) = request_with_auth(state, "GET", &url, None) {
-        if let Ok(f) = serde_json::from_slice::<ConfluenceFolderV2>(&resp.body()) {
+        if let Ok(f) = serde_json::from_slice::<ConfluenceFolderV2>(resp.body()) {
             return Some((f.title, f.parent_id));
         }
     }
@@ -1234,12 +1273,12 @@ fn get_or_create_page_v2(
     loop {
         attempts += 1;
         if attempts > 10 {
-            return Err(Error::msg(format!("Failed to find a unique title for '{}' after 10 attempts", title)).into());
+            return Err(Error::msg(format!("Failed to find a unique title for '{}' after 10 attempts", title)));
         }
 
         let search_url = format!("{base_url}/api/v2/pages?spaceId={space_id}&title={}", urlencoding::encode(&current_title));
         let resp = request_with_auth(state, "GET", &search_url, None)?;
-        let list: ConfluenceV2ListResponse<ConfluencePageV2> = serde_json::from_slice(&resp.body())?;
+        let list: ConfluenceV2ListResponse<ConfluencePageV2> = serde_json::from_slice(resp.body())?;
         
         if !list.results.is_empty() {
             for p in &list.results {
@@ -1265,7 +1304,7 @@ fn get_or_create_page_v2(
         
         let create_url = format!("{base_url}/api/v2/pages");
         let resp = request_with_auth(state, "POST", &create_url, Some(serde_json::to_vec(&req_body)?))?;
-        let result: CreatePageResultV2 = serde_json::from_slice(&resp.body())?;
+        let result: CreatePageResultV2 = serde_json::from_slice(resp.body())?;
         return Ok((result.id, current_title));
     }
 }
@@ -1283,6 +1322,12 @@ pub struct ConfluencePlugin {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+impl Default for ConfluencePlugin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConfluencePlugin {
     pub fn new() -> Self {
         Self {
@@ -1420,14 +1465,12 @@ impl DocSource for ConfluencePlugin {
         }
 
         // OAuth token handles
-        if let Some(sv) = secrets.fields.values().next() {
-            if let doxus_plugin_sdk::SecretValue::Token { value, expires_at, refresh_token } = sv {
-                self.oauth_token = Some(doxus_core::auth::OAuthToken {
-                    access_token: value.clone(),
-                    refresh_token: refresh_token.clone(),
-                    expires_at: expires_at.map(|e| e as u64),
-                });
-            }
+        if let Some(doxus_plugin_sdk::SecretValue::Token { value, expires_at, refresh_token }) = secrets.fields.values().next() {
+            self.oauth_token = Some(doxus_core::auth::OAuthToken {
+                access_token: value.clone(),
+                refresh_token: refresh_token.clone(),
+                expires_at: expires_at.map(|e| e as u64),
+            });
         }
         
         Ok(())

@@ -1731,7 +1731,7 @@ dependencies = [
 
 [[package]]
 name = "doxus-agent"
-version = "0.1.7"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "serde",
@@ -1745,7 +1745,7 @@ dependencies = [
 
 [[package]]
 name = "doxus-cli"
-version = "0.1.7"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -1767,7 +1767,7 @@ dependencies = [
 
 [[package]]
 name = "doxus-core"
-version = "0.1.7"
+version = "0.1.9"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -1814,7 +1814,7 @@ dependencies = [
 
 [[package]]
 name = "doxus-desktop"
-version = "0.1.7"
+version = "0.1.9"
 dependencies = [
  "async-trait",
  "axum",
@@ -1858,7 +1858,7 @@ dependencies = [
 
 [[package]]
 name = "doxus-mcp"
-version = "0.1.7"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1932,7 +1932,7 @@ dependencies = [
 
 [[package]]
 name = "doxus-plugin-obsidian"
-version = "0.1.7"
+version = "0.1.9"
 dependencies = [
  "async-trait",
  "doxus-plugin-sdk",
@@ -1949,7 +1949,7 @@ dependencies = [
 
 [[package]]
 name = "doxus-plugin-sdk"
-version = "0.1.7"
+version = "0.1.9"
 dependencies = [
  "async-trait",
  "lazy_static",
@@ -2255,7 +2255,7 @@ dependencies = [
 
 [[package]]
 name = "extism-poc"
-version = "0.1.7"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "extism",

@@ -107,7 +107,7 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
             Ok(l) => l,
             Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
         };
-        let engine = SearchEngine::new(&*conn_lock);
+        let engine = SearchEngine::sync(&conn_lock);
         match engine.search(&q) {
             Err(e) => McpResponse::err(id, -32603, e.to_string()),
             Ok(hits) if hits.is_empty() => McpResponse::text(id, "No results found."),
