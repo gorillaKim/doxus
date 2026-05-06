@@ -1,7 +1,5 @@
 import React from 'react';
-import ReactMarkdown from 'react-markdown';
-import rehypeRaw from 'rehype-raw';
-import remarkGfm from 'remark-gfm';
+import { Markdown } from '../common/Markdown';
 import { invoke } from '@tauri-apps/api/core';
 import { DocEntry } from './SearchTree';
 
@@ -255,21 +253,16 @@ export const SearchPreview: React.FC<SearchPreviewProps> = ({
                     </div>
                     <div className="opacity-40 grayscale blur-[0.5px] scale-95 pointer-events-none">
                         <div className="prose prose-invert max-w-none">
-                            <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
-                                {selectedDoc.snippet || '내용 없음'}
-                            </ReactMarkdown>
+                        <Markdown content={selectedDoc.snippet || '내용 없음'} allowRawHtml={true} />
                         </div>
                     </div>
                 </div>
             ) : (
                 <div className="prose prose-invert max-w-none text-gray-400 prose-headings:text-white prose-headings:tracking-tighter prose-a:text-indigo-400 prose-code:text-indigo-300 prose-code:bg-white/5 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-lg prose-pre:bg-black/40 prose-pre:border prose-pre:border-white/5 prose-pre:rounded-2xl prose-img:rounded-3xl shadow-2xl">
-                    <ReactMarkdown 
-                        remarkPlugins={[remarkGfm]} 
-                        rehypePlugins={[rehypeRaw]}
-                        components={{ a: ({ ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" /> }}
-                    >
-                        {previewContent || selectedDoc.snippet || ''}
-                    </ReactMarkdown>
+                    <Markdown 
+                        content={previewContent || selectedDoc.snippet || ''} 
+                        allowRawHtml={true}
+                    />
                 </div>
             )}
         </div>

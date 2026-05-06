@@ -43,6 +43,7 @@ walkdir = "2.5.0"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 async-trait = "0.1"
+tauri-plugin-process = "2"
 
 [dev-dependencies]
 tempfile = { workspace = true }

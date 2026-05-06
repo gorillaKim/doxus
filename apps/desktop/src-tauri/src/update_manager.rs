@@ -180,12 +180,10 @@ impl PostUpdateHook for TauriReindexHook {
 }
 
 /// Tauri IPC command — delegates to `tauri_plugin_process::restart`.
-/// Implemented in Phase 5 when the process plugin is added.
 #[tauri::command]
-pub async fn relaunch_app() -> Result<(), String> {
-    // Placeholder: will invoke tauri_plugin_process::restart(app.env())
-    // once the plugin is registered in main.rs.
-    Err("relaunch_app: process plugin not yet registered".to_string())
+pub async fn relaunch_app(handle: tauri::AppHandle) -> Result<(), String> {
+    handle.restart();
+    Ok(())
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

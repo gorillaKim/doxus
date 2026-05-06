@@ -654,11 +654,11 @@ pub async fn plugin_validate_config(
 
 #[tauri::command]
 pub async fn plugin_open_url(url: String) -> Result<(), String> {
-    if url.starts_with("obsidian://") {
+    if url.starts_with("obsidian://") || url.starts_with("mailto:") || url.starts_with("tel:") {
         // Deep link protocols are allowed to be opened directly via 'open'
     } else {
         if !url.starts_with("https://") && !url.starts_with("http://") {
-            return Err("only http/https or obsidian:// URLs are allowed".into());
+            return Err("only http/https, obsidian://, mailto:, or tel: URLs are allowed".into());
         }
         validate_base_url(&url)?;
     }

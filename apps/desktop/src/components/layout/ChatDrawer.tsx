@@ -1,8 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import rehypeHighlight from 'rehype-highlight';
-import 'highlight.js/styles/github-dark.css';
+import { Markdown } from '../common/Markdown';
 import {
   useChatStore,
   AiProvider,
@@ -141,12 +138,7 @@ function MarkdownMessage({ content }: { content: string }) {
       [&_td]:px-3 [&_td]:py-1.5 [&_td]:text-gray-300 [&_td]:border [&_td]:border-gray-700
       [&_tr:nth-child(even)]:bg-gray-700/20
     ">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight]}
-      >
-        {content}
-      </ReactMarkdown>
+      <Markdown content={content} />
     </div>
   );
 }

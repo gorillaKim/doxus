@@ -1,9 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import rehypeHighlight from 'rehype-highlight';
-import 'highlight.js/styles/github-dark.css';
+import { Markdown } from '../components/common/Markdown';
 import { usePluginStore } from '../stores/usePluginStore';
 
 type TrustLevel = 'official' | 'verified' | 'unverified';
@@ -137,10 +134,7 @@ function PluginGuideModal({ plugin, onClose }: { plugin: Plugin; onClose: () => 
               prose-blockquote:border-indigo-500 prose-blockquote:text-gray-400 prose-blockquote:bg-gray-800/50 prose-blockquote:px-4 prose-blockquote:py-1 prose-blockquote:rounded-r
               prose-li:text-gray-300 prose-li:marker:text-gray-500
               [&_.hljs]:rounded-lg [&_.hljs]:text-xs [&_.hljs]:border [&_.hljs]:border-gray-700 [&_.hljs]:p-4 [&_.hljs]:overflow-auto">
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                rehypePlugins={[rehypeHighlight]}
-              >{content}</ReactMarkdown>
+              <Markdown content={content} />
             </div>
           )}
         </div>

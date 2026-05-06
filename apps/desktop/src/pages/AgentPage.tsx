@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { Markdown } from '../components/common/Markdown';
 
 interface McpStatus {
   connected: boolean;
@@ -251,9 +250,7 @@ function PreviewModal({ content, onClose }: { content: string; onClose: () => vo
         </div>
         
         <div className="flex-1 overflow-y-auto p-8 prose prose-invert prose-indigo max-w-none">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
-            {content}
-          </ReactMarkdown>
+          <Markdown content={content} />
         </div>
 
         <div className="p-6 border-t border-white/5 flex justify-end">
