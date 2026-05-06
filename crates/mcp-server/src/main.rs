@@ -80,9 +80,15 @@ async fn main() -> Result<()> {
             tracing::info!("[MCP] Starting background ONNX load...");
             match doxus_core::embedding::OnnxEmbedder::from_default_path() {
                 Ok(e) => {
-                    let mut guard = embedder_handle.lock().unwrap();
-                    *guard = Some(Arc::new(e));
-                    tracing::info!("[MCP] ONNX load complete. Hybrid search enabled.");
+                    match embedder_handle.lock() {
+                        Ok(mut guard) => {
+                            *guard = Some(Arc::new(e));
+                            tracing::info!("[MCP] ONNX load complete. Hybrid search enabled.");
+                        }
+                        Err(err) => {
+                            tracing::error!("[MCP] embedder mutex poisoned, cannot register ONNX: {err}");
+                        }
+                    }
                 }
                 Err(e) => {
                     tracing::warn!("[MCP] ONNX load failed: {}. Vector search disabled.", e);

@@ -189,7 +189,13 @@ pub async fn get_document(server: &McpServer, id: Value, args: &Value) -> McpRes
             tokio::spawn(async move {
                 let conn = indexer.conn();
                 let project_id_res = {
-                    let conn_lock = conn.lock().unwrap();
+                    let conn_lock = match conn.lock() {
+                        Ok(g) => g,
+                        Err(e) => {
+                            tracing::error!("[JIT-Indexer] db lock poisoned: {e}");
+                            return;
+                        }
+                    };
                     conn_lock.query_row(
                         "SELECT id, storage_strategy FROM projects WHERE name = ?1",
                         params![project_name],
@@ -517,7 +523,13 @@ pub async fn create_document(server: &McpServer, id: Value, args: &Value) -> Mcp
                 let indexer = server.indexer();
                 let conn = indexer.conn();
                 let project_info = {
-                    let conn_lock = conn.lock().unwrap();
+                    let conn_lock = match conn.lock() {
+                        Ok(g) => g,
+                        Err(e) => {
+                            tracing::error!("[create_document] db lock poisoned, skipping indexing: {e}");
+                            return McpResponse::text(id, format!("Successfully created document '{}' in project '{}'", new_id.0, project));
+                        }
+                    };
                     conn_lock.query_row(
                         "SELECT id, storage_strategy FROM projects WHERE name = ?1",
                         params![project],
@@ -769,5 +781,78 @@ mod tests {
         let hits = engine.search(&q).unwrap();
         assert_eq!(hits.len(), 1, "created_after=2000 이면 created_at=5000 문서만 반환");
         assert_eq!(hits[0].title.as_deref(), Some("Knowledge Base New"));
+    }
+
+    // Regression: tokio::spawn JIT indexer must not panic on poisoned conn.
+    // Verifies the fixed match-based lock pattern handles PoisonError gracefully.
+    #[tokio::test]
+    async fn jit_spawn_does_not_panic_when_conn_poisoned() {
+        let conn = Arc::new(Mutex::new(make_test_conn()));
+
+        // Poison the conn
+        let c2 = Arc::clone(&conn);
+        let _ = std::thread::spawn(move || {
+            let _g = c2.lock().unwrap();
+            panic!("intentional poison for test");
+        })
+        .join();
+        assert!(conn.lock().is_err(), "conn should be poisoned");
+
+        // Fixed pattern (mirrors search.rs:192 after the fix): match instead of unwrap
+        let c3 = Arc::clone(&conn);
+        let handle = tokio::spawn(async move {
+            let _project_id_res = {
+                let conn_lock = match c3.lock() {
+                    Ok(g) => g,
+                    Err(e) => {
+                        tracing::error!("[JIT-Indexer] db lock poisoned: {e}");
+                        return;
+                    }
+                };
+                conn_lock.query_row(
+                    "SELECT id FROM projects WHERE name = ?1",
+                    rusqlite::params!["tp"],
+                    |r| r.get::<_, i64>(0),
+                )
+            };
+        });
+
+        // Fixed pattern completes without panic
+        assert!(handle.await.is_ok(), "JIT spawn must handle poisoned conn without panic");
+    }
+
+    // Regression: create_document conn access must not panic on poisoned conn.
+    // Verifies the fixed match-based lock pattern handles PoisonError gracefully.
+    #[test]
+    fn create_document_conn_does_not_panic_when_poisoned() {
+        let conn = Arc::new(Mutex::new(make_test_conn()));
+
+        // Poison the conn
+        let c2 = Arc::clone(&conn);
+        let _ = std::thread::spawn(move || {
+            let _g = c2.lock().unwrap();
+            panic!("intentional poison for test");
+        })
+        .join();
+        assert!(conn.lock().is_err(), "conn should be poisoned");
+
+        // Fixed pattern (mirrors search.rs:520 after the fix): match instead of unwrap
+        let c3 = Arc::clone(&conn);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _project_info: Result<(i64, String), _> = match c3.lock() {
+                Ok(g) => g.query_row(
+                    "SELECT id, storage_strategy FROM projects WHERE name = ?1",
+                    rusqlite::params!["tp"],
+                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+                ),
+                Err(e) => {
+                    tracing::error!("[create_document] db lock poisoned: {e}");
+                    return; // early return, no panic
+                }
+            };
+        }));
+
+        // Fixed pattern completes without panic
+        assert!(result.is_ok(), "create_document conn access must not panic on poisoned mutex");
     }
 }

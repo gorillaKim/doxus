@@ -58,7 +58,7 @@ impl McpServer {
 
     /// Provides access to the embedding provider, if currently loaded.
     pub fn embedder(&self) -> Option<Arc<dyn EmbeddingProvider + Send + Sync>> {
-        self.embedder.lock().unwrap().clone()
+        self.embedder.lock().ok().and_then(|g| g.clone())
     }
 
     /// Provides access to the shared, mutable embedding provider holder.
@@ -90,5 +90,56 @@ impl McpServer {
     pub fn indexer(&self) -> doxus_core::indexing::IndexingService {
         use doxus_core::indexing::IndexingService;
         IndexingService::new(self.conn(), Arc::clone(&self.plugin_manager), self.engine())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn make_test_server() -> McpServer {
+        doxus_core::db::ensure_vec_extension();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        doxus_core::db::apply_pragmas(&conn).unwrap();
+        doxus_core::db::create_vec0_table(&conn).unwrap();
+        doxus_core::db::migrate(&conn).unwrap();
+        let conn = Arc::new(Mutex::new(conn));
+        let pm = Arc::new(doxus_core::plugin::PluginManager::new(PathBuf::from("/tmp")));
+        McpServer::new(conn, PathBuf::from(":memory:"), None, pm, PathBuf::from("/tmp"))
+    }
+
+    fn poison_mutex<T: Send + 'static>(mutex: &Arc<Mutex<T>>) {
+        let m = Arc::clone(mutex);
+        let _ = std::thread::spawn(move || {
+            let _g = m.lock().unwrap();
+            panic!("intentional poison for test");
+        })
+        .join();
+        assert!(mutex.lock().is_err(), "mutex must be poisoned after setup");
+    }
+
+    // TDD: embedder() must return None — not panic — when Mutex is poisoned.
+    // FAILS with current code (server.rs:61 uses .lock().unwrap()).
+    #[test]
+    fn embedder_returns_none_when_mutex_poisoned() {
+        let server = make_test_server();
+        poison_mutex(&server.embedder);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| server.embedder()));
+        assert!(result.is_ok(), "embedder() must not panic on poisoned mutex");
+        assert!(result.unwrap().is_none(), "embedder() must return None when poisoned");
+    }
+
+    // TDD: engine() must not panic when embedder Mutex is poisoned.
+    // engine() calls embedder() internally — same cascade.
+    // FAILS with current code.
+    #[test]
+    fn engine_does_not_panic_when_embedder_poisoned() {
+        let server = make_test_server();
+        poison_mutex(&server.embedder);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| server.engine()));
+        assert!(result.is_ok(), "engine() must not panic on poisoned embedder mutex");
     }
 }
