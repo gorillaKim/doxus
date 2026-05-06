@@ -81,6 +81,11 @@ jobs:
         run: npm ci
         working-directory: apps/desktop/src-tauri/sidecar
 
+      - name: Verify sidecar SDK bundled
+        run: |
+          test -f apps/desktop/src-tauri/sidecar/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs \
+            || { echo "::error::Sidecar SDK missing — npm ci failed silently"; exit 1; }
+
       # ── Build + publish (draft) ────────────────────────────────────────────
       # tauri-action generates latest.json and uploads it as a release asset.
       # After the job succeeds, go to GitHub Releases and click "Publish release"

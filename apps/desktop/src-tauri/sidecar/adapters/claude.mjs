@@ -41,19 +41,20 @@ export class ClaudeAdapter {
       log("Injected DOXUS_BRIDGE_TOKEN for doxus mcp");
     }
 
-    return {
+    // cliPath가 실제 파일시스템 경로일 때만 전달
+    // 경로 없으면 SDK 내장 cli.js를 사용하므로 시스템 claude 미설치 유저도 동작
+    const opts = {
       model,
       systemPrompt,
       mcpServers: mcpServersConfig,
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,
-      pathToClaudeCodeExecutable: cliPath,
       settings: {
         enabledPlugins: { "serena@claude-plugins-official": false },
         mcpServers: mcpServersConfig
       },
       // Serena 등 허가되지 않은 도구 차단
-      canUseTool: async (toolName, _input, opts) => {
+      canUseTool: async (toolName, _input, toolOpts) => {
         // doxus_* 또는 mcp__doxus__doxus_* 형태 허용
         const allowed =
           toolName.startsWith("doxus_") ||
@@ -61,12 +62,19 @@ export class ClaudeAdapter {
           ["Read", "LS", "Glob", "Grep", "WebSearch", "WebFetch"].includes(toolName);
         if (allowed) {
           log(`Allowed tool: ${toolName}`);
-          return { behavior: "allow", updatedPermissions: opts.suggestions };
+          return { behavior: "allow", updatedPermissions: toolOpts.suggestions };
         }
         log(`Blocked tool: ${toolName}`);
         return { behavior: "deny", message: `Tool '${toolName}' is not permitted in doxus chat.` };
       },
     };
+    if (cliPath && cliPath.includes("/")) {
+      opts.pathToClaudeCodeExecutable = cliPath;
+      log(`Using system claude: ${cliPath}`);
+    } else {
+      log("Using SDK bundled cli.js (no system claude path)");
+    }
+    return opts;
   }
 
   async query(sessionId, prompt, entry, emit) {
