@@ -136,7 +136,7 @@ export const TreeNodeView: React.FC<{
   selectedDoc: DocEntry | null;
   onSelect: (doc: DocEntry) => void;
 }> = ({ node, depth, selectedDoc, onSelect }) => {
-  const [isOpen, setIsOpen] = useState(depth === 0);
+  const [isOpen, setIsOpen] = useState(false);
   const { tooltip, onMouseEnter, onMouseLeave, onMouseMove } = useTooltip();
   
   const isSelected = node.doc && selectedDoc?.document_id === node.doc.document_id;

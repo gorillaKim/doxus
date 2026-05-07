@@ -22,6 +22,8 @@ fn is_transient_plugin_error(e: &doxus_plugin_sdk::PluginError) -> bool {
         e,
         doxus_plugin_sdk::PluginError::NetworkError(_)
             | doxus_plugin_sdk::PluginError::RateLimited { .. }
+            // Internal은 WASM 호출 실패(게스트 패닉, mutex 포이즈닝 등)를 래핑 — 일시적으로 간주
+            | doxus_plugin_sdk::PluginError::Internal(_)
     )
 }
 
@@ -46,6 +48,15 @@ impl<S: DocSource + Send + Sync> SyncRunner<S> {
         let mut results = Vec::new();
 
         for instance in due {
+            // incremental_sync를 지원하지 않는 플러그인은 건너뜀
+            if !self.source.capabilities().incremental_sync {
+                persist_audit(conn, &AuditEvent::PluginError {
+                    plugin_id: instance.plugin_id.clone(),
+                    message: "skipped: plugin does not support incremental_sync".into(),
+                });
+                continue;
+            }
+
             persist_audit(conn, &AuditEvent::SyncStart { source_instance_id: instance.id });
 
             let mut applied = 0usize;
@@ -161,6 +172,8 @@ mod tests {
         Transient,
         /// 일시적 오류 — RateLimited (재시도 가능)
         RateLimited,
+        /// 일시적 오류 — Internal (WASM 호출 실패, 재시도 가능)
+        Internal,
         /// 치명적 오류 — AuthExpired (즉시 전파)
         Fatal,
     }
@@ -170,6 +183,7 @@ mod tests {
         docs: Vec<RawDocument>,
         next_cursor: Option<String>,
         fail_mode: FailMode,
+        incremental_sync: bool,
     }
 
     impl MockSource {
@@ -179,37 +193,38 @@ mod tests {
                 docs,
                 next_cursor,
                 fail_mode: FailMode::None,
+                incremental_sync: true,
+            }
+        }
+
+        fn without_incremental_sync() -> Self {
+            Self {
+                call_count: Arc::new(AtomicUsize::new(0)),
+                docs: vec![],
+                next_cursor: None,
+                fail_mode: FailMode::None,
+                incremental_sync: false,
             }
         }
 
         /// 치명적 오류(AuthExpired)를 반환하는 소스
         fn failing_fatal() -> Self {
-            Self {
-                call_count: Arc::new(AtomicUsize::new(0)),
-                docs: vec![],
-                next_cursor: None,
-                fail_mode: FailMode::Fatal,
-            }
+            Self { call_count: Arc::new(AtomicUsize::new(0)), docs: vec![], next_cursor: None, fail_mode: FailMode::Fatal, incremental_sync: true }
         }
 
         /// 일시적 오류(NetworkError)를 반환하는 소스
         fn failing_transient() -> Self {
-            Self {
-                call_count: Arc::new(AtomicUsize::new(0)),
-                docs: vec![],
-                next_cursor: None,
-                fail_mode: FailMode::Transient,
-            }
+            Self { call_count: Arc::new(AtomicUsize::new(0)), docs: vec![], next_cursor: None, fail_mode: FailMode::Transient, incremental_sync: true }
         }
 
         /// 일시적 오류(RateLimited)를 반환하는 소스
         fn failing_rate_limited() -> Self {
-            Self {
-                call_count: Arc::new(AtomicUsize::new(0)),
-                docs: vec![],
-                next_cursor: None,
-                fail_mode: FailMode::RateLimited,
-            }
+            Self { call_count: Arc::new(AtomicUsize::new(0)), docs: vec![], next_cursor: None, fail_mode: FailMode::RateLimited, incremental_sync: true }
+        }
+
+        /// Internal 오류(WASM 호출 실패 시뮬레이션)를 반환하는 소스
+        fn failing_internal() -> Self {
+            Self { call_count: Arc::new(AtomicUsize::new(0)), docs: vec![], next_cursor: None, fail_mode: FailMode::Internal, incremental_sync: true }
         }
     }
 
@@ -226,7 +241,7 @@ mod tests {
 
         fn capabilities(&self) -> Capabilities {
             Capabilities {
-                incremental_sync: true,
+                incremental_sync: self.incremental_sync,
                 oauth: false,
                 native_search: false,
                 sync_policy: doxus_plugin_sdk::SyncPolicy::OnFocus,
@@ -255,6 +270,7 @@ mod tests {
                 FailMode::Fatal => return Err(PluginError::AuthExpired),
                 FailMode::Transient => return Err(PluginError::NetworkError("mock transient".into())),
                 FailMode::RateLimited => return Err(PluginError::RateLimited { retry_after_secs: 30 }),
+                FailMode::Internal => return Err(PluginError::Internal("mock wasm failure".into())),
                 FailMode::None => {}
             }
 
@@ -525,5 +541,63 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM audit_log WHERE event_type = 'plugin_error'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1, "plugin_error should be recorded in audit_log on sync failure");
+    }
+
+    // ── M2: incremental_sync=false 스킵 ────────────────────────────────────
+
+    #[tokio::test]
+    async fn run_once_skips_instance_when_incremental_sync_not_supported() {
+        let db = TestDb::new();
+        insert_instance(&db.conn);
+
+        let source = MockSource::without_incremental_sync();
+        let call_count = Arc::clone(&source.call_count);
+
+        let runner = SyncRunner::new(SyncScheduler::new(3600), source);
+        let results = runner.run_once(&db.conn).await.unwrap();
+
+        assert!(results.is_empty(), "non-incremental source should yield no results");
+        assert_eq!(call_count.load(Ordering::SeqCst), 0, "fetch_changes must NOT be called when incremental_sync=false");
+    }
+
+    #[tokio::test]
+    async fn run_once_incremental_sync_false_records_plugin_error_audit() {
+        let db = TestDb::new();
+        insert_instance(&db.conn);
+
+        let runner = SyncRunner::new(SyncScheduler::new(3600), MockSource::without_incremental_sync());
+        runner.run_once(&db.conn).await.unwrap();
+
+        let count: i64 = db.conn
+            .query_row("SELECT COUNT(*) FROM audit_log WHERE event_type = 'plugin_error'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "skipped instance should be recorded in audit_log as plugin_error");
+    }
+
+    // ── M3: Internal 오류는 transient ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn run_once_internal_error_is_transient_returns_ok() {
+        let db = TestDb::new();
+        insert_instance(&db.conn);
+
+        // Internal(WASM 호출 실패)은 일시적 → Ok([]) 반환, 전파 없음
+        let runner = SyncRunner::new(SyncScheduler::new(3600), MockSource::failing_internal());
+        let results = runner.run_once(&db.conn).await.unwrap();
+        assert!(results.is_empty(), "Internal error should be transient — no Err propagation");
+    }
+
+    #[tokio::test]
+    async fn run_once_internal_error_does_not_mark_instance_synced() {
+        let db = TestDb::new();
+        let id = insert_instance(&db.conn);
+
+        let runner = SyncRunner::new(SyncScheduler::new(3600), MockSource::failing_internal());
+        runner.run_once(&db.conn).await.unwrap();
+
+        let last_synced: Option<i64> = db.conn
+            .query_row("SELECT last_synced FROM source_instances WHERE id = ?1", rusqlite::params![id], |r| r.get(0))
+            .unwrap();
+        assert!(last_synced.is_none(), "instance must NOT be marked synced after Internal (transient) error");
     }
 }

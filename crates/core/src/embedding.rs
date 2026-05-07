@@ -597,9 +597,18 @@ mod tests {
         assert!(matches!(result, Err(EmbeddingError::ModelLoad(_))));
     }
 
-    #[test]
-    fn embedding_provider_is_object_safe() {
-        let _obj: Box<dyn EmbeddingProvider> = Box::new(NoOpEmbedder);
+    #[tokio::test]
+    async fn embedding_provider_is_object_safe_and_send_sync() {
+        use std::sync::Arc;
+        // Arc<dyn + Send + Sync> — Tauri State처럼 실사용 패턴 검증
+        let provider: Arc<dyn EmbeddingProvider + Send + Sync> = Arc::new(NoOpEmbedder);
+        assert_eq!(provider.dimension(), 0);
+        let result = provider.embed(&["hello"]).await.unwrap();
+        assert!(result.is_empty(), "NoOpEmbedder should return no vectors");
+        // Send bound: tokio::spawn으로 스레드 이동 가능한지 확인
+        let p = Arc::clone(&provider);
+        let dim = tokio::spawn(async move { p.dimension() }).await.unwrap();
+        assert_eq!(dim, 0);
     }
 
     #[test]

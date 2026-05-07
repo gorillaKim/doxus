@@ -40,6 +40,8 @@ pub struct WasmDocSourceAdapter {
     kv_store: KvStore,
     progress_tx: Option<broadcast::Sender<ProgressEvent>>,
     secret_store: Arc<dyn crate::secrets::SecretStore>,
+    /// WASM export 존재 여부는 정적이므로 생성 시 한 번만 확인해 캐싱
+    incremental_sync_cached: bool,
 }
 
 impl WasmDocSourceAdapter {
@@ -155,6 +157,9 @@ impl WasmDocSourceAdapter {
         let plugin = Plugin::new(&extism_manifest, [set_secret_fn, get_secret_fn, get_time_fn], true)
             .map_err(|e| PluginError::Internal(format!("wasm load failed: {e}")))?;
 
+        // WASM export는 정적 — 생성 시 한 번만 확인
+        let incremental_sync_cached = plugin.function_exists("fetch_changes");
+
         let kv_conn = rusqlite::Connection::open_in_memory()
             .map_err(|e| PluginError::Internal(format!("kv db init: {e}")))?;
         let kv_store = KvStore::with_connection(
@@ -179,6 +184,7 @@ impl WasmDocSourceAdapter {
             kv_store,
             progress_tx,
             secret_store,
+            incremental_sync_cached,
         })
     }
 
@@ -292,9 +298,10 @@ impl WasmDocSourceAdapter {
         let func = func.to_string();
 
         let result: Result<O, PluginError> = tokio::task::spawn_blocking(move || {
-            let mut guard = plugin
-                .lock()
-                .map_err(|_| PluginError::Internal("mutex poisoned".into()))?;
+            let mut guard = plugin.lock().map_err(|_| {
+                tracing::error!("wasm plugin mutex poisoned — aborting call '{}'", func);
+                PluginError::Internal("mutex poisoned".into())
+            })?;
             let output = guard
                 .call::<&[u8], &[u8]>(&func, &input_bytes)
                 .map_err(|e| PluginError::Internal(format!("wasm call '{func}' failed: {e}")))?;
@@ -344,14 +351,8 @@ impl DocSource for WasmDocSourceAdapter {
     }
 
     fn capabilities(&self) -> Capabilities {
-        let has_incremental = if let Ok(guard) = self.plugin.lock() {
-            guard.function_exists("fetch_changes")
-        } else {
-            false
-        };
-
         Capabilities {
-            incremental_sync: has_incremental,
+            incremental_sync: self.incremental_sync_cached,
             oauth: false,
             native_search: false,
             sync_policy: doxus_plugin_sdk::SyncPolicy::Interval { seconds: 7200 },
@@ -566,6 +567,18 @@ mod tests {
         assert!(!caps.oauth);
         assert!(!caps.native_search);
         assert!(matches!(caps.sync_policy, doxus_plugin_sdk::SyncPolicy::Interval { .. }));
+    }
+
+    #[test]
+    fn capabilities_is_consistent_and_does_not_need_plugin_lock() {
+        let adapter =
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None).unwrap();
+        // 캐싱 구현이라면 mutex lock 없이 동일한 값을 반환해야 함
+        let c1 = adapter.capabilities();
+        // plugin mutex를 외부에서 잠근 상태에서도 capabilities()는 블로킹 없이 반환
+        let _guard = adapter.plugin.lock().unwrap();
+        let c2 = adapter.capabilities();  // 이전 구현이라면 데드락, 캐싱이면 즉시 반환
+        assert_eq!(c1.incremental_sync, c2.incremental_sync);
     }
 
     // health_check_returns_unhealthy_for_minimal_wasm is defined below with other wasm bridge tests

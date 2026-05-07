@@ -173,10 +173,40 @@ mod tests {
         assert!(!should_ignore(Path::new("/vault/projects/work/plan.md")));
     }
 
+    #[test]
+    fn should_ignore_dot_git_mid_path() {
+        // .git이 중간 경로에 있어도 무시해야 함
+        assert!(should_ignore(Path::new("/repo/sub/.git/HEAD")));
+    }
+
+    #[test]
+    fn should_not_ignore_empty_path() {
+        // 빈 경로는 어떤 컴포넌트도 없으므로 무시하지 않음 (패닉 없어야 함)
+        assert!(!should_ignore(Path::new("")));
+    }
+
+    #[test]
+    fn should_ignore_hidden_md_file() {
+        // 숨김 파일이 .md 확장자여도 숨김 우선 → 무시
+        assert!(should_ignore(Path::new("/vault/.draft.md")));
+    }
+
+    #[test]
+    fn should_ignore_doxus_db_wal_and_shm() {
+        assert!(should_ignore(Path::new("/vault/doxus.db-wal")));
+        assert!(should_ignore(Path::new("/vault/doxus.db-shm")));
+    }
+
+    #[test]
+    fn should_not_ignore_file_named_similar_to_hidden() {
+        // "." 자체나 ".." 는 무시하지 않음
+        assert!(!should_ignore(Path::new("/vault/./notes.md")));
+    }
+
     async fn setup_watcher() -> (Arc<WatcherManager>, mpsc::Receiver<SyncTrigger>, TempDir, Arc<std::sync::Mutex<rusqlite::Connection>>) {
         let db = TestDb::new();
         let conn = Arc::new(std::sync::Mutex::new(db.conn));
-        let tmp = TempDir::new_in(".").unwrap();
+        let tmp = TempDir::new().unwrap();
         let pm = Arc::new(PluginManager::new(std::path::PathBuf::from("/tmp")));
         let engine = Arc::new(SearchEngine::with_embedder(conn.clone(), Arc::new(crate::embedding::NoOpEmbedder) as Arc<dyn crate::embedding::EmbeddingProvider + Send + Sync>));
         let indexer = Arc::new(IndexingService::new(conn.clone(), pm, engine));

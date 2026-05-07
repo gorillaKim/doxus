@@ -20,11 +20,12 @@ export const SearchSidebar = React.memo<SearchSidebarProps>(({
   hasSearch
 }) => {
   const [activeTab, setActiveTab] = useState('all');
-  const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
+  // 기본 상태: 모든 프로젝트 닫힘. 클릭 시 열린 프로젝트만 추적
+  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const getEmoji = usePluginStore(s => s.getEmoji);
 
   const toggleProject = (name: string) => {
-    setCollapsedProjects(prev => {
+    setExpandedProjects(prev => {
       const next = new Set(prev);
       if (next.has(name)) next.delete(name);
       else next.add(name);
@@ -116,7 +117,7 @@ export const SearchSidebar = React.memo<SearchSidebarProps>(({
       <div className="flex-1 overflow-y-auto no-scrollbar px-3 pb-20">
         {Array.from(filteredEntries.entries()).map(([projectName, group]) => {
           const tree = projectTrees.get(projectName);
-          const isCollapsed = collapsedProjects.has(projectName);
+          const isCollapsed = !expandedProjects.has(projectName);
 
           return (
             <div key={projectName} className="mb-4">
