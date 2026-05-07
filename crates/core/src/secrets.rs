@@ -315,6 +315,7 @@ pub fn store_plugin_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -489,7 +490,9 @@ mod tests {
     // ── UnifiedKeychainStore tests ───────────────────────────────────────────
 
     #[test]
+    #[serial]
     fn unified_store_namespace_isolation() {
+        std::env::set_var("DOXUS_SKIP_KEYCHAIN", "1");
         let store = UnifiedKeychainStore::new("test", "test_account");
         // Mock save/load not implemented yet, using in-memory part for now.
         store.set("svc1", "k1", "v1").unwrap();
@@ -500,7 +503,9 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn unified_store_get_not_found() {
+        std::env::set_var("DOXUS_SKIP_KEYCHAIN", "1");
         let store = UnifiedKeychainStore::new("test", "test_account");
         let err = store.get("svc", "missing").unwrap_err();
         assert!(matches!(err, SecretsError::NotFound(_)));

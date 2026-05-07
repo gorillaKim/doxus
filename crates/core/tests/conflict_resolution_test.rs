@@ -95,9 +95,9 @@ fn sync_loop_uses_conflict_resolution_skip_same_hash() {
 
     db.conn
         .execute(
-            "INSERT INTO documents(project_id, source_doc_id, content, content_hash, last_indexed)
-             VALUES (?1, 'doc-same', ?2, ?3, unixepoch())",
-            rusqlite::params![project_id, content, hash],
+            "INSERT INTO documents(project_id, source_doc_id, content_hash, last_indexed)
+             VALUES (?1, 'doc-same', ?2, unixepoch())",
+            rusqlite::params![project_id, hash],
         )
         .unwrap();
 

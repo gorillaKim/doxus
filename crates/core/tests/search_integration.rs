@@ -34,7 +34,7 @@ fn add_project(db: &TestDb, name: &str, display_name: &str, path: &str) -> i64 {
 #[test]
 fn register_project_index_document_and_search() {
     let db = TestDb::new();
-    let engine = SearchEngine::new(&db.conn);
+    let engine = SearchEngine::sync(&db.conn);
 
     // 1. 예제 프로젝트 생성
     let pid = add_project(&db, "my-notes", "My Notes", "/home/user/notes");
@@ -60,7 +60,7 @@ fn register_project_index_document_and_search() {
 #[test]
 fn search_scoped_to_single_project() {
     let db = TestDb::new();
-    let engine = SearchEngine::new(&db.conn);
+    let engine = SearchEngine::sync(&db.conn);
 
     let p_work = add_project(&db, "work-wiki", "Work Wiki", "/work/wiki");
     let p_personal = add_project(&db, "personal", "Personal", "/personal");
@@ -88,7 +88,7 @@ fn search_scoped_to_single_project() {
 #[test]
 fn multiple_documents_ranked_by_relevance() {
     let db = TestDb::new();
-    let engine = SearchEngine::new(&db.conn);
+    let engine = SearchEngine::sync(&db.conn);
 
     let pid = add_project(&db, "kb", "Knowledge Base", "/kb");
 
@@ -119,7 +119,7 @@ fn multiple_documents_ranked_by_relevance() {
 #[test]
 fn reindex_document_updates_content() {
     let db = TestDb::new();
-    let engine = SearchEngine::new(&db.conn);
+    let engine = SearchEngine::sync(&db.conn);
 
     let pid = add_project(&db, "blog", "Blog", "/blog");
 
@@ -158,7 +158,7 @@ fn reindex_document_updates_content() {
 #[test]
 fn disabled_project_excluded_from_search() {
     let db = TestDb::new();
-    let engine = SearchEngine::new(&db.conn);
+    let engine = SearchEngine::sync(&db.conn);
 
     let pid = add_project(&db, "archived", "Archived", "/archived");
 
@@ -185,7 +185,7 @@ fn disabled_project_excluded_from_search() {
 #[test]
 fn search_nonexistent_query_returns_empty() {
     let db = TestDb::new();
-    let engine = SearchEngine::new(&db.conn);
+    let engine = SearchEngine::sync(&db.conn);
 
     let pid = add_project(&db, "sample", "Sample", "/sample");
     engine
@@ -228,7 +228,7 @@ fn search_query_api_finds_indexed_document() {
         )
         .unwrap();
 
-    let engine = SearchEngine::new(&db.conn);
+    let engine = SearchEngine::sync(&db.conn);
     let query = SearchQuery::new("REST API").with_projects(vec![pid]).with_limit(5);
     let hits = engine.search(&query).unwrap();
 

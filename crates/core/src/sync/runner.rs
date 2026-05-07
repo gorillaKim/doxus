@@ -14,6 +14,17 @@ pub struct SyncResult {
     pub new_cursor: Option<String>,
 }
 
+/// 일시적(재시도 가능) 플러그인 오류인지 판별합니다.
+/// NetworkError / RateLimited → 일시적 → 이 인스턴스만 건너뜀
+/// 그 외(AuthExpired, ConfigInvalid 등) → 치명적 → 즉시 전파
+fn is_transient_plugin_error(e: &doxus_plugin_sdk::PluginError) -> bool {
+    matches!(
+        e,
+        doxus_plugin_sdk::PluginError::NetworkError(_)
+            | doxus_plugin_sdk::PluginError::RateLimited { .. }
+    )
+}
+
 /// Runs one sync cycle: fetches due instances via `SyncScheduler`, calls
 /// `fetch_changes` on the `DocSource`, then marks each instance synced.
 pub struct SyncRunner<S: DocSource> {
@@ -39,7 +50,8 @@ impl<S: DocSource + Send + Sync> SyncRunner<S> {
 
             let mut applied = 0usize;
             let mut current_cursor = instance.sync_cursor.clone();
-            
+            let mut sync_ok = true;
+
             loop {
                 let opts = FetchChangesOpts {
                     since: instance.last_synced.unwrap_or(0),
@@ -55,7 +67,14 @@ impl<S: DocSource + Send + Sync> SyncRunner<S> {
                             plugin_id: instance.plugin_id.clone(),
                             message: format!("Sync fetch error: {}", e),
                         });
-                        break; 
+                        if is_transient_plugin_error(&e) {
+                            // 일시적 오류(네트워크, 레이트 리밋)는 이 인스턴스만 건너뛰고 계속
+                            sync_ok = false;
+                            break;
+                        } else {
+                            // 인증 만료·설정 오류 등 치명적 오류는 즉시 전파
+                            return Err(SyncError::Plugin(e.to_string()));
+                        }
                     }
                 };
 
@@ -100,18 +119,20 @@ impl<S: DocSource + Send + Sync> SyncRunner<S> {
                 }
             }
 
-            sync_db
-                .mark_synced(instance.id, current_cursor.as_deref())
-                .map_err(SyncError::Db)?;
-            persist_audit(conn, &AuditEvent::SyncComplete {
-                source_instance_id: instance.id,
-                docs_synced: applied,
-            });
-            results.push(SyncResult {
-                instance_id: instance.id,
-                documents_updated: applied,
-                new_cursor: current_cursor,
-            });
+            if sync_ok {
+                sync_db
+                    .mark_synced(instance.id, current_cursor.as_deref())
+                    .map_err(SyncError::Db)?;
+                persist_audit(conn, &AuditEvent::SyncComplete {
+                    source_instance_id: instance.id,
+                    docs_synced: applied,
+                });
+                results.push(SyncResult {
+                    instance_id: instance.id,
+                    documents_updated: applied,
+                    new_cursor: current_cursor,
+                });
+            }
         }
 
         Ok(results)
@@ -132,12 +153,23 @@ mod tests {
 
     // ── Mock DocSource ─────────────────────────────────────────────────────────
 
+    #[derive(Clone, Default)]
+    enum FailMode {
+        #[default]
+        None,
+        /// 일시적 오류 — NetworkError (재시도 가능)
+        Transient,
+        /// 일시적 오류 — RateLimited (재시도 가능)
+        RateLimited,
+        /// 치명적 오류 — AuthExpired (즉시 전파)
+        Fatal,
+    }
+
     struct MockSource {
         call_count: Arc<AtomicUsize>,
-        /// documents returned per fetch_changes call
         docs: Vec<RawDocument>,
         next_cursor: Option<String>,
-        should_fail: bool,
+        fail_mode: FailMode,
     }
 
     impl MockSource {
@@ -146,16 +178,37 @@ mod tests {
                 call_count: Arc::new(AtomicUsize::new(0)),
                 docs,
                 next_cursor,
-                should_fail: false,
+                fail_mode: FailMode::None,
             }
         }
 
-        fn failing() -> Self {
+        /// 치명적 오류(AuthExpired)를 반환하는 소스
+        fn failing_fatal() -> Self {
             Self {
                 call_count: Arc::new(AtomicUsize::new(0)),
                 docs: vec![],
                 next_cursor: None,
-                should_fail: true,
+                fail_mode: FailMode::Fatal,
+            }
+        }
+
+        /// 일시적 오류(NetworkError)를 반환하는 소스
+        fn failing_transient() -> Self {
+            Self {
+                call_count: Arc::new(AtomicUsize::new(0)),
+                docs: vec![],
+                next_cursor: None,
+                fail_mode: FailMode::Transient,
+            }
+        }
+
+        /// 일시적 오류(RateLimited)를 반환하는 소스
+        fn failing_rate_limited() -> Self {
+            Self {
+                call_count: Arc::new(AtomicUsize::new(0)),
+                docs: vec![],
+                next_cursor: None,
+                fail_mode: FailMode::RateLimited,
             }
         }
     }
@@ -196,16 +249,28 @@ mod tests {
             })
         }
 
-        async fn fetch_changes(&self, _opts: FetchChangesOpts) -> Result<ChangeSet, PluginError> {
+        async fn fetch_changes(&self, opts: FetchChangesOpts) -> Result<ChangeSet, PluginError> {
             self.call_count.fetch_add(1, Ordering::SeqCst);
-            if self.should_fail {
-                return Err(PluginError::NetworkError("mock failure".into()));
+            match self.fail_mode {
+                FailMode::Fatal => return Err(PluginError::AuthExpired),
+                FailMode::Transient => return Err(PluginError::NetworkError("mock transient".into())),
+                FailMode::RateLimited => return Err(PluginError::RateLimited { retry_after_secs: 30 }),
+                FailMode::None => {}
             }
-            Ok(ChangeSet {
-                updated: self.docs.clone(),
-                deleted_ids: vec![],
-                next_cursor: self.next_cursor.clone(),
-            })
+
+            if opts.cursor.is_none() {
+                Ok(ChangeSet {
+                    updated: self.docs.clone(),
+                    deleted_ids: vec![],
+                    next_cursor: self.next_cursor.clone(),
+                })
+            } else {
+                Ok(ChangeSet {
+                    updated: vec![],
+                    deleted_ids: vec![],
+                    next_cursor: None,
+                })
+            }
         }
 
         async fn fetch_document(&self, id: &SourceDocId) -> Result<RawDocument, PluginError> {
@@ -316,13 +381,74 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_once_propagates_plugin_error() {
+    async fn run_once_fatal_error_propagates() {
         let db = TestDb::new();
         insert_instance(&db.conn);
 
-        let runner = SyncRunner::new(SyncScheduler::new(3600), MockSource::failing());
+        let runner = SyncRunner::new(SyncScheduler::new(3600), MockSource::failing_fatal());
         let err = runner.run_once(&db.conn).await.unwrap_err();
         assert!(matches!(err, SyncError::Plugin(_)));
+    }
+
+    #[tokio::test]
+    async fn run_once_transient_network_error_returns_ok_empty() {
+        let db = TestDb::new();
+        insert_instance(&db.conn);
+
+        // NetworkError는 일시적 → Ok([]) 반환, 에러 전파 없음
+        let runner = SyncRunner::new(SyncScheduler::new(3600), MockSource::failing_transient());
+        let results = runner.run_once(&db.conn).await.unwrap();
+        assert!(results.is_empty(), "transient error should yield no results, not Err");
+    }
+
+    #[tokio::test]
+    async fn run_once_rate_limited_returns_ok_empty() {
+        let db = TestDb::new();
+        insert_instance(&db.conn);
+
+        // RateLimited도 일시적 → Ok([]) 반환
+        let runner = SyncRunner::new(SyncScheduler::new(3600), MockSource::failing_rate_limited());
+        let results = runner.run_once(&db.conn).await.unwrap();
+        assert!(results.is_empty(), "rate-limited error should yield no results, not Err");
+    }
+
+    #[tokio::test]
+    async fn run_once_transient_error_does_not_write_sync_complete_audit() {
+        let db = TestDb::new();
+        insert_instance(&db.conn);
+
+        let runner = SyncRunner::new(SyncScheduler::new(3600), MockSource::failing_transient());
+        runner.run_once(&db.conn).await.unwrap();
+
+        // SyncStart 는 기록되지만 SyncComplete 는 기록되지 않아야 함
+        let start_count: i64 = db.conn
+            .query_row("SELECT COUNT(*) FROM audit_log WHERE event_type = 'sync_start'", [], |r| r.get(0))
+            .unwrap();
+        let complete_count: i64 = db.conn
+            .query_row("SELECT COUNT(*) FROM audit_log WHERE event_type = 'sync_complete'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(start_count, 1, "sync_start should still be recorded for transient failures");
+        assert_eq!(complete_count, 0, "sync_complete must NOT be recorded when sync was skipped due to transient error");
+    }
+
+    #[tokio::test]
+    async fn run_once_transient_error_does_not_mark_instance_synced() {
+        let db = TestDb::new();
+        let id = insert_instance(&db.conn);
+
+        let runner = SyncRunner::new(SyncScheduler::new(3600), MockSource::failing_transient());
+        runner.run_once(&db.conn).await.unwrap();
+
+        // 일시적 오류 후에는 mark_synced가 호출되지 않아야 함
+        // → 다음 사이클에서도 due로 남아야 함 (last_synced = NULL)
+        let last_synced: Option<i64> = db.conn
+            .query_row(
+                "SELECT last_synced FROM source_instances WHERE id = ?1",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(last_synced.is_none(), "instance should NOT be marked synced after transient error");
     }
 
     #[tokio::test]
@@ -391,7 +517,7 @@ mod tests {
     async fn run_once_writes_plugin_error_audit_log_on_failure() {
         let db = TestDb::new();
         insert_instance(&db.conn);
-        let source = MockSource::failing();
+        let source = MockSource::failing_fatal();
         let runner = SyncRunner::new(SyncScheduler::new(3600), source);
         let _ = runner.run_once(&db.conn).await; // expected to fail
 

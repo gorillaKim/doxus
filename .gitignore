@@ -16,3 +16,5 @@ request.json
 # Local files
 doxus.db
 scratch/
+# 테스트 TempDir::new_in(".")으로 생성되는 임시 디렉토리
+tmp*/

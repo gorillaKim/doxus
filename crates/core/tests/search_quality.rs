@@ -175,7 +175,7 @@ fn setup() -> (TestDb, i64) {
         )
         .unwrap();
 
-    let engine = SearchEngine::new(&db.conn);
+    let engine = SearchEngine::sync(&db.conn);
     for doc in CORPUS {
         engine
             .index_document(pid, doc.id, doc.title, doc.content, "full")
@@ -237,7 +237,7 @@ fn print_report(results: &[QualityResult]) {
 #[test]
 fn quality_s1_keyword_search() {
     let (db, pid) = setup();
-    let engine = SearchEngine::new(&db.conn);
+    let engine = SearchEngine::sync(&db.conn);
 
     // ⚠ FTS5 쿼리에서 '-' 는 NOT 연산자이므로 단독 사용 금지
     //   "sqlite-vec" → sqlite AND NOT vec (의도와 반대!)
@@ -273,7 +273,7 @@ fn quality_s1_keyword_search() {
 #[test]
 fn quality_s2_concept_search() {
     let (db, pid) = setup();
-    let engine = SearchEngine::new(&db.conn);
+    let engine = SearchEngine::sync(&db.conn);
 
     let cases: &[(&str, &str)] = &[
         ("벡터 유사도 KNN vec0",           "sqlite-vec"),
@@ -307,7 +307,7 @@ fn quality_s2_concept_search() {
 #[test]
 fn quality_s3_ranking_clarity() {
     let (db, pid) = setup();
-    let engine = SearchEngine::new(&db.conn);
+    let engine = SearchEngine::sync(&db.conn);
 
     let cases: &[(&str, &str)] = &[
         ("keyring Keychain secrets_get", "keychain-secrets"),
@@ -336,7 +336,7 @@ fn quality_s3_ranking_clarity() {
 #[test]
 fn quality_s4_document_discrimination() {
     let (db, pid) = setup();
-    let engine = SearchEngine::new(&db.conn);
+    let engine = SearchEngine::sync(&db.conn);
 
     {
         let query_obj = doxus_core::search::SearchQuery::new("sqlite vec KNN float32")
@@ -382,7 +382,7 @@ fn quality_s4_document_discrimination() {
 #[test]
 fn quality_s5_no_result_for_unrelated() {
     let (db, pid) = setup();
-    let engine = SearchEngine::new(&db.conn);
+    let engine = SearchEngine::sync(&db.conn);
 
     let unrelated = [
         "photosynthesis chlorophyll",

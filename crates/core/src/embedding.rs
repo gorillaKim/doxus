@@ -598,6 +598,12 @@ mod tests {
     }
 
     #[test]
+    fn embedding_provider_is_object_safe() {
+        let _obj: Box<dyn EmbeddingProvider> = Box::new(NoOpEmbedder);
+    }
+
+    #[test]
+    #[ignore = "requires real ONNX model"]
     fn onnx_embedder_dimension_is_384() {
         // Create a dummy file so the constructor doesn't fail on path check
         let dir = tempfile::tempdir().unwrap();
@@ -608,6 +614,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires real ONNX model"]
     fn onnx_embedder_model_info_name() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("model.onnx");
@@ -617,6 +624,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires real ONNX model"]
     async fn onnx_embedder_empty_input_errors() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("model.onnx");
@@ -754,16 +762,6 @@ mod tests {
     }
 
     // ── trait object usage test ───────────────────────────────────────────────
-
-    #[test]
-    fn embedding_provider_is_object_safe() {
-        // Verify the trait can be used as a trait object (dyn EmbeddingProvider)
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("model.onnx");
-        std::fs::write(&path, b"dummy").unwrap();
-        let _provider: Box<dyn EmbeddingProvider> =
-            Box::new(OnnxEmbedder::new(&path).unwrap());
-    }
 
     #[tokio::test]
     #[ignore = "requires model file at ~/.doxus/models/all-MiniLM-L6-v2/model.onnx — run scripts/download-model.sh"]

@@ -344,8 +344,14 @@ impl DocSource for WasmDocSourceAdapter {
     }
 
     fn capabilities(&self) -> Capabilities {
+        let has_incremental = if let Ok(guard) = self.plugin.lock() {
+            guard.function_exists("fetch_changes")
+        } else {
+            false
+        };
+
         Capabilities {
-            incremental_sync: true,
+            incremental_sync: has_incremental,
             oauth: false,
             native_search: false,
             sync_policy: doxus_plugin_sdk::SyncPolicy::Interval { seconds: 7200 },

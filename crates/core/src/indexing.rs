@@ -554,6 +554,7 @@ impl IndexingService {
 mod tests {
     use super::*;
     use crate::db::TestDb;
+    use serial_test::serial;
     use std::sync::Arc;
     use async_trait::async_trait;
     use doxus_plugin_sdk::{
@@ -566,6 +567,7 @@ mod tests {
     // ── Bug 1: inject_keychain_auth 이중 호출 테스트 ──────────────────────────
 
     #[tokio::test]
+    #[serial]
     async fn test_inject_keychain_auth_called_once_on_real_config() {
         // DOXUS_SKIP_KEYCHAIN=1 환경에서 inject_keychain_auth 단일/이중 호출 시
         // secrets에 api_token이 정확히 한 번만 주입되는지 확인 (멱등성)
