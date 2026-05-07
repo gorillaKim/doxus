@@ -25,6 +25,12 @@ jobs:
         with:
           workspaces: '. -> target'
 
+      - name: Create dummy sidecar binaries for clippy
+        run: |
+          mkdir -p apps/desktop/src-tauri/binaries
+          touch apps/desktop/src-tauri/binaries/doxus-mcp-aarch64-apple-darwin
+          touch apps/desktop/src-tauri/binaries/doxus-mcp-x86_64-apple-darwin
+
       - name: Clippy
         run: cargo clippy --workspace --all-features -- -D warnings
 
