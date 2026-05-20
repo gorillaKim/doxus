@@ -356,6 +356,9 @@ fn main() {
             p.join("doxus.db")
         });
     let conn = doxus_core::db::open(&db_path).expect("failed to open db");
+    if let Err(e) = doxus_core::db::checkpoint_db(&conn) {
+        eprintln!("[db] failed to run initial checkpoint: {e}");
+    }
     let plugins_dir = std::path::PathBuf::from(&home).join(".doxus/plugins");
     
     // Ensure plugins are synced from bundle to plugins_dir
@@ -648,6 +651,13 @@ fn main() {
                         if let Some(ref mut child) = *proc {
                             let _ = child.kill();
                             eprintln!("[mcp] HTTP server stopped on app exit");
+                        }
+                    }
+                    if let Ok(conn) = state.conn.lock() {
+                        if let Err(e) = doxus_core::db::checkpoint_db(&conn) {
+                            eprintln!("[db] checkpoint on exit failed: {e}");
+                        } else {
+                            eprintln!("[db] checkpoint on exit completed successfully");
                         }
                     }
                 });

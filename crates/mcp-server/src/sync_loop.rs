@@ -450,19 +450,38 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
 
             // ── 링크 해설 (위키링크 등 연결 고리 완성) ────────────────────────
             {
-                if let Ok(guard) = conn.lock() {
-                    tracing::info!("sync_loop: starting link resolution");
-                    match LinkResolver::resolve_all_unresolved_links(&guard) {
-                        Ok(count) if count > 0 => {
-                            tracing::info!(resolved_count = count, "sync_loop: link resolution completed");
+                tracing::info!("sync_loop: starting link resolution");
+                let mut has_more = true;
+                let mut total_resolved = 0;
+                while has_more {
+                    let resolved = {
+                        if let Ok(guard) = conn.lock() {
+                            match LinkResolver::resolve_unresolved_links_batch(&guard, 20) {
+                                Ok(count) => {
+                                    has_more = count == 20;
+                                    count
+                                }
+                                Err(e) => {
+                                    tracing::error!(error = %e, "sync_loop: link resolution batch failed");
+                                    break;
+                                }
+                            }
+                        } else {
+                            tracing::error!("sync_loop: connection lock poisoned in link resolution");
+                            break;
                         }
-                        Ok(_) => {
-                            tracing::debug!("sync_loop: no new links to resolve");
-                        }
-                        Err(e) => {
-                            tracing::error!(error = %e, "sync_loop: link resolution failed");
-                        }
+                    };
+                    total_resolved += resolved;
+                    if resolved > 0 {
+                        tokio::task::yield_now().await;
+                    } else {
+                        break;
                     }
+                }
+                if total_resolved > 0 {
+                    tracing::info!(resolved_count = total_resolved, "sync_loop: link resolution completed");
+                } else {
+                    tracing::debug!("sync_loop: no new links to resolve");
                 }
             }
 

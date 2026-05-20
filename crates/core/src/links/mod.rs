@@ -121,16 +121,30 @@ impl LinkResolver {
 
     /// Finds all links with NULL target_id and tries to resolve them.
     pub fn resolve_all_unresolved_links(conn: &rusqlite::Connection) -> Result<usize, String> {
+        let mut total = 0;
+        loop {
+            let scanned = Self::resolve_unresolved_links_batch(conn, 100)?;
+            total += scanned;
+            if scanned < 100 {
+                break;
+            }
+        }
+        Ok(total)
+    }
+
+    /// Resolves unresolved links up to a limit (batch).
+    pub fn resolve_unresolved_links_batch(conn: &rusqlite::Connection, limit: usize) -> Result<usize, String> {
         let mut stmt = conn
-            .prepare("SELECT id, source_id, target_raw FROM document_links WHERE target_id IS NULL")
+            .prepare("SELECT id, source_id, target_raw FROM document_links WHERE target_id IS NULL LIMIT ?1")
             .map_err(|e| e.to_string())?;
 
         let rows = stmt
-            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)))
+            .query_map([limit], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)))
             .map_err(|e| e.to_string())?;
 
-        let mut resolved_count = 0;
+        let mut scanned_count = 0;
         for row in rows.flatten() {
+            scanned_count += 1;
             let (link_id, source_doc_id, target_raw) = row;
             let project_id: Result<i64, _> = conn.query_row(
                 "SELECT project_id FROM documents WHERE id = ?1",
@@ -144,11 +158,20 @@ impl LinkResolver {
                         "UPDATE document_links SET target_id = ?1 WHERE id = ?2",
                         rusqlite::params![target_id, link_id]
                     );
-                    resolved_count += 1;
+                } else {
+                    let _ = conn.execute(
+                        "UPDATE document_links SET target_id = -1 WHERE id = ?1",
+                        rusqlite::params![link_id]
+                    );
                 }
+            } else {
+                let _ = conn.execute(
+                    "UPDATE document_links SET target_id = -1 WHERE id = ?1",
+                    rusqlite::params![link_id]
+                );
             }
         }
-        Ok(resolved_count)
+        Ok(scanned_count)
     }
 }
 
@@ -230,5 +253,60 @@ mod tests {
 
         // Resolve globally even if in different project (p2)
         assert_eq!(LinkResolver::resolve_link(&db.conn, 888, "unique-doc"), Some(doc_u_id));
+    }
+
+    #[tokio::test]
+    async fn test_link_resolution_concurrency() {
+        use std::sync::Arc;
+        let db = TestDb::new();
+        // 1. Setup multiple unresolved links
+        db.conn.execute("INSERT INTO projects(name, source_project_id, display_name, path, created_at, updated_at) VALUES ('p1', 'proj-1', 'P1', '/p1', 0, 0)", []).unwrap();
+        let p1_id = db.conn.last_insert_rowid();
+        db.conn.execute("INSERT INTO documents(project_id, source_doc_id, title, content_hash) VALUES (?1, 'doc-a', 'Doc A', 'h1')", [p1_id]).unwrap();
+        let doc_a_id = db.conn.last_insert_rowid();
+
+        // Generate 100 unresolved links
+        for _ in 0..100 {
+            db.conn.execute("INSERT INTO document_links(source_id, target_raw) VALUES (?1, 'doc-a')", [doc_a_id]).unwrap();
+        }
+
+        let conn_arc = Arc::new(std::sync::Mutex::new(db.conn));
+
+        // 2. Spawn a background task to resolve links in batches
+        let conn_clone = Arc::clone(&conn_arc);
+        let handle = tokio::spawn(async move {
+            let mut has_more = true;
+            let mut total_resolved = 0;
+            while has_more {
+                let resolved = {
+                    let guard = conn_clone.lock().unwrap();
+                    let res = LinkResolver::resolve_unresolved_links_batch(&guard, 10).unwrap();
+                    has_more = res == 10;
+                    res
+                };
+                total_resolved += resolved;
+                if resolved > 0 {
+                    tokio::task::yield_now().await;
+                } else {
+                    break;
+                }
+            }
+            total_resolved
+        });
+
+        // 3. Simultaneously query the DB in the main thread to ensure no lock hogging
+        for _ in 0..5 {
+            let start = std::time::Instant::now();
+            {
+                let _guard = conn_arc.lock().unwrap();
+                let _: i64 = _guard.query_row("SELECT 1", [], |r| r.get(0)).unwrap();
+            }
+            let duration = start.elapsed();
+            assert!(duration < std::time::Duration::from_millis(50), "Lock contention is too high during batch resolution: {:?}", duration);
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        let total = handle.await.unwrap();
+        assert_eq!(total, 100, "All 100 links should be resolved");
     }
 }

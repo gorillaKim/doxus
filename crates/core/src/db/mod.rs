@@ -122,8 +122,14 @@ pub fn open(path: &Path) -> Result<Connection, DbError> {
     apply_pragmas(&conn).map_err(DbError::Sqlite)?;
     create_vec0_table(&conn)?;
     migrate(&conn)?;
-    let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA shrink_memory;");
+    let _ = conn.execute_batch("PRAGMA shrink_memory;");
     Ok(conn)
+}
+
+/// Perform a manual WAL checkpoint (TRUNCATE) and shrink memory.
+pub fn checkpoint_db(conn: &Connection) -> Result<(), DbError> {
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA shrink_memory;")
+        .map_err(DbError::Sqlite)
 }
 
 /// Open a DB connection in Read-Only mode without running migrations.
@@ -751,4 +757,38 @@ mod tests {
         ).unwrap();
         assert_eq!(log_count, 1, "Log table should record the hash change");
     }
+
+    #[test]
+    fn test_checkpoint_db_truncates_wal() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test_checkpoint.db");
+        let wal_path = dir.path().join("test_checkpoint.db-wal");
+        
+        // 1. Create conn1, insert data and keep it open to ensure WAL file is kept
+        let conn1 = open(&db_path).unwrap();
+        conn1.execute("CREATE TABLE foo (bar TEXT);", []).unwrap();
+        conn1.execute("BEGIN TRANSACTION;", []).unwrap();
+        for i in 0..100 {
+            conn1.execute("INSERT INTO foo VALUES (?1);", [format!("data-{}", i)]).unwrap();
+        }
+        conn1.execute("COMMIT;", []).unwrap();
+        
+        assert!(wal_path.exists(), "WAL file should exist while connection is alive");
+        let initial_size = std::fs::metadata(&wal_path).unwrap().len();
+        assert!(initial_size > 0, "WAL file should have some content");
+
+        // 2. Open DB again (conn2). Under current code this truncates the WAL.
+        // We assert that it does NOT truncate on open (this will fail under current implementation).
+        let conn2 = open(&db_path).unwrap();
+        let opened_size = std::fs::metadata(&wal_path).unwrap().len();
+        assert_eq!(opened_size, initial_size, "WAL size should not be truncated on db::open");
+        
+        // 3. Close conn1 and perform manual checkpoint. This should truncate the WAL to 0.
+        drop(conn1);
+        checkpoint_db(&conn2).unwrap();
+        let checkpointed_size = std::fs::metadata(&wal_path).unwrap().len();
+        assert_eq!(checkpointed_size, 0, "WAL size should be 0 after explicit checkpoint_db(TRUNCATE)");
+    }
 }
+
+

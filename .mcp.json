@@ -1,3 +1,11 @@
 {
-  "mcpServers": {}
+  "mcpServers": {
+    "doxus": {
+      "type": "http",
+      "url": "http://127.0.0.1:1421/mcp",
+      "headers": {
+        "Authorization": "Bearer X79IFn3ZSDtqx42E94g1JZELt9r6HFeJ"
+      }
+    }
+  }
 }

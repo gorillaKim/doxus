@@ -194,7 +194,7 @@ impl DocumentService {
             tracing::info!("[DS] Checking cache for plugin: {}", plugin_id);
             if let Some(path) = &self.db_path {
                 ds_log("[DS] Opening independent DB for cache check..."); tracing::info!("[DS] Opening independent DB for cache check...");
-                let conn = crate::db::open(path).map_err(ServiceError::Db)?;
+                let conn = crate::db::open_readonly(path).map_err(ServiceError::Db)?;
                 ds_log("[DS] DB opened. Checking ContentCache..."); tracing::info!("[DS] DB opened. Checking ContentCache...");
                 let cache = ContentCache::new(&conn);
                 if let Ok(Some(data_json)) = cache.get_full(&plugin_id, source_doc_id) {
@@ -543,4 +543,53 @@ mod tests {
         let captured = config_capture.lock().unwrap().take().unwrap();
         assert_eq!(captured.fields.get("base_url").and_then(|v| v.as_str()), Some("http://test"));
     }
+
+    #[tokio::test]
+    async fn test_fetch_full_content_under_exclusive_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test_cache.db");
+        
+        // 1. Setup DB with project and cache data
+        {
+            let conn = crate::db::open(&db_path).unwrap();
+            conn.execute("INSERT INTO projects (name, display_name, path, source_type, config_json, created_at, updated_at) VALUES ('p1', 'P1', '/tmp', 'mock', '{\"cache_ttl_minutes\": 60}', 0, 0)", []).unwrap();
+            conn.execute("INSERT INTO documents (project_id, source_doc_id, title, content_hash) VALUES (1, 'd1', 't1', 'h1')", []).unwrap();
+            
+            // Insert cache entry
+            let cache = ContentCache::new(&conn);
+            let raw_doc = RawDocument {
+                id: SourceDocId("d1".to_string()),
+                title: Some("Cached Doc".into()),
+                content: "Cached Content".into(),
+                content_type: doxus_plugin_sdk::ContentType::Markdown,
+                url: None,
+                metadata: HashMap::new(),
+                tags: vec![],
+                aliases: vec![],
+                links: vec![],
+                created_at: None,
+                updated_at: None,
+                relative_path: None,
+            };
+            let data_json = serde_json::to_string(&raw_doc).unwrap();
+            cache.set_full("mock", "d1", "Cached Content", &data_json, 60).unwrap();
+        }
+
+        // 2. Open an exclusive write transaction in a separate connection to simulate concurrent write blocking
+        let exclusive_conn = crate::db::open(&db_path).unwrap();
+        exclusive_conn.execute("BEGIN EXCLUSIVE TRANSACTION;", []).unwrap();
+
+        // 3. Create DocumentService using path
+        let service = DocumentService::new_with_path(db_path.clone(), None);
+
+        // 4. Try to fetch content.
+        let result = service.fetch_full_content("p1", "d1").await;
+        
+        // Clean up exclusive transaction
+        exclusive_conn.execute("ROLLBACK;", []).ok();
+
+        let doc = result.unwrap();
+        assert_eq!(doc.content, "Cached Content");
+    }
 }
+

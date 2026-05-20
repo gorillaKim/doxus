@@ -66,6 +66,7 @@ name = "conflict_resolution_test"
 required-features = ["test-helpers"]
 
 [dev-dependencies]
+r2d2 = "0.8"
 tokio-test = { workspace = true }
 approx = "0.5"
 tempfile = "3"
