@@ -1,3 +1,5 @@
+#![allow(clippy::useless_conversion, clippy::needless_borrow)]
+
 pub mod html_convert;
 pub mod path_utils;
 
