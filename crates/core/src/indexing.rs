@@ -202,10 +202,12 @@ impl IndexingService {
                 let _ = LinkResolver::resolve_project_links(&conn, project_id);
             }
         }
-        // 인덱싱 종료 로그는 성공/실패와 무관하게 항상 기록
+        // 인덱싱 종료 로그 및 DB 메모리 회수 (성공/실패와 무관하게 항상 실행)
         {
             if let Ok(conn) = self.conn.write_conn() {
                 persist_audit(&conn, &AuditEvent::IndexComplete { project_id, docs_indexed: total });
+                let _ = conn.execute("PRAGMA shrink_memory", []);
+                let _ = conn.execute("PRAGMA wal_checkpoint(PASSIVE)", []);
             }
         }
 
@@ -315,7 +317,7 @@ impl IndexingService {
             if cursor.is_none() { break; }
         }
 
-        // last_fetched_at 갱신
+        // last_fetched_at 갱신 및 DB 메모리 회수
         if let Ok(conn) = self.conn.write_conn() {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -325,6 +327,8 @@ impl IndexingService {
                 "UPDATE projects SET last_fetched_at = ?1 WHERE name = ?2",
                 params![now, name],
             );
+            let _ = conn.execute("PRAGMA shrink_memory", []);
+            let _ = conn.execute("PRAGMA wal_checkpoint(PASSIVE)", []);
         }
 
         Ok(total)

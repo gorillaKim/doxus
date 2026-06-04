@@ -105,6 +105,8 @@ impl OnnxEmbedder {
             .map_err(|e| EmbeddingError::ModelLoad(e.to_string()))?
             .with_intra_threads(cpu_threads)
             .map_err(|e| EmbeddingError::ModelLoad(e.to_string()))?
+            .with_config_entry("session.use_memory_arena", "0")
+            .map_err(|e| EmbeddingError::ModelLoad(e.to_string()))?
             .commit_from_file(path)
             .map_err(|e| EmbeddingError::ModelLoad(e.to_string()))
     }
@@ -905,6 +907,65 @@ mod tests {
         {
             let session_guard = embedder.session.lock().unwrap();
             assert!(session_guard.is_none(), "Session should be dropped (None) after inactivity TTL");
+        }
+    }
+
+    fn get_current_rss_kb() -> Option<usize> {
+        let pid = std::process::id();
+        let output = std::process::Command::new("ps")
+            .args(&["-o", "rss=", "-p", &pid.to_string()])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let rss_str = String::from_utf8_lossy(&output.stdout);
+        rss_str.trim().parse::<usize>().ok()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn onnx_embedder_rss_memory_monitoring() {
+        let path = resolve_model_path();
+        if path.is_none() {
+            println!("Skipping onnx_embedder_rss_memory_monitoring test: real model not found");
+            return;
+        }
+        let path = path.unwrap();
+
+        // 1. 임베더를 아주 짧은 TTL로 생성
+        let mut embedder = OnnxEmbedder::new(&path).unwrap();
+        embedder = embedder.with_ttl(std::time::Duration::from_millis(100));
+
+        let rss_start = get_current_rss_kb().unwrap_or(0);
+        println!("RSS Start: {} KB", rss_start);
+
+        // 2. 대량의 임베딩 연산 수행하여 모델 로드 유도
+        let dummy_texts: Vec<String> = (0..100)
+            .map(|i| format!("This is dummy text paragraph number {} to perform bulk embedding memory testing.", i))
+            .collect();
+        let text_refs: Vec<&str> = dummy_texts.iter().map(|s| s.as_str()).collect();
+
+        let result = embedder.embed(&text_refs).await;
+        assert!(result.is_ok(), "Bulk embedding should succeed");
+
+        let rss_loaded = get_current_rss_kb().unwrap_or(0);
+        println!("RSS Loaded: {} KB (Diff: {} KB)", rss_loaded, rss_loaded.saturating_sub(rss_start));
+
+        // 3. TTL 만료 및 드롭 대기 (200ms)
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // 세션이 드롭되어 있어야 함
+        {
+            let session_guard = embedder.session.lock().unwrap();
+            assert!(session_guard.is_none(), "Session should be dropped after TTL");
+        }
+
+        let rss_dropped = get_current_rss_kb().unwrap_or(0);
+        println!("RSS Dropped: {} KB (Diff from Loaded: -{} KB)", rss_dropped, rss_loaded.saturating_sub(rss_dropped));
+
+        // 모델 세션이 드롭되면 RSS가 loaded 시점보다 유의미하게 작아져야 함
+        if rss_loaded > rss_start + 10000 { // 모델 로드로 10MB 이상 올라간 경우
+            assert!(rss_dropped < rss_loaded, "RSS should decrease after model session drop");
         }
     }
 }
