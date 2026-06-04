@@ -7,7 +7,7 @@ pub async fn list_scheduled_jobs(
     state: tauri::State<'_, Arc<crate::AppState>>,
     project_id: Option<i64>,
 ) -> Result<serde_json::Value, String> {
-    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = state.conn.get().map_err(|e| e.to_string())?;
     let sdb = SchedulerDb::new(&conn);
     
     let jobs = sdb.list_jobs(project_id).map_err(|e| e.to_string())?;
@@ -27,7 +27,7 @@ pub async fn create_scheduled_job(
     schedule_json: serde_json::Value,
     run_on_idle: bool,
 ) -> Result<serde_json::Value, String> {
-    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = state.conn.get().map_err(|e| e.to_string())?;
     let sdb = SchedulerDb::new(&conn);
     
     let exec = if executor == "system" { Executor::System } else { Executor::Agent };
@@ -63,7 +63,7 @@ pub async fn delete_scheduled_job(
     job_id: i64,
     disable_only: Option<bool>,
 ) -> Result<serde_json::Value, String> {
-    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = state.conn.get().map_err(|e| e.to_string())?;
     let sdb = SchedulerDb::new(&conn);
 
     if disable_only.unwrap_or(false) {
@@ -82,13 +82,13 @@ pub async fn get_job_history(
 ) -> Result<serde_json::Value, String> {
     // get_job_history is not yet fully implemented in SchedulerDb, 
     // but we can query it directly here as a stopgap
-    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = state.conn.get().map_err(|e| e.to_string())?;
     let mut stmt = conn.prepare(
         "SELECT id, started_at, finished_at, status, result_text, error_text 
          FROM job_runs WHERE job_id = ?1 ORDER BY started_at DESC LIMIT 50"
     ).map_err(|e| e.to_string())?;
 
-    let iter = stmt.query_map([job_id], |row| {
+    let iter = stmt.query_map([job_id], |row: &rusqlite::Row<'_>| {
         Ok(json!({
             "id": row.get::<_, i64>(0)?,
             "started_at": row.get::<_, i64>(1)?,
@@ -121,7 +121,7 @@ pub async fn update_scheduled_job(
     schedule_json: serde_json::Value,
     run_on_idle: bool,
 ) -> Result<serde_json::Value, String> {
-    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = state.conn.get().map_err(|e| e.to_string())?;
     let sdb = SchedulerDb::new(&conn);
     
     let exec = if executor == "system" { Executor::System } else { Executor::Agent };

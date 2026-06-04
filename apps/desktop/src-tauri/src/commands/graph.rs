@@ -33,7 +33,7 @@ pub(crate) fn get_graph_data_impl(conn: &rusqlite::Connection) -> Result<GraphDa
          JOIN projects p ON d.project_id = p.id"
     ).map_err(|e| e.to_string())?;
 
-    let doc_nodes: Vec<GraphNode> = stmt.query_map([], |r| {
+    let doc_nodes: Vec<GraphNode> = stmt.query_map([], |r: &rusqlite::Row<'_>| {
         let id: i64 = r.get(0)?;
         Ok(GraphNode {
             id: id.to_string(),
@@ -51,7 +51,7 @@ pub(crate) fn get_graph_data_impl(conn: &rusqlite::Connection) -> Result<GraphDa
     // 2. 태그 노드 수집 (유니크한 태그들)
     let mut stmt = conn.prepare("SELECT DISTINCT tag FROM document_tags")
         .map_err(|e| e.to_string())?;
-    let tags: Vec<String> = stmt.query_map([], |r| r.get(0))
+    let tags: Vec<String> = stmt.query_map([], |r: &rusqlite::Row<'_>| r.get(0))
         .map_err(|e| e.to_string())?
         .filter_map(|r| r.ok())
         .collect();
@@ -70,7 +70,7 @@ pub(crate) fn get_graph_data_impl(conn: &rusqlite::Connection) -> Result<GraphDa
     // resolved된 target_id가 있는 것만 수집
     let mut stmt = conn.prepare("SELECT source_id, target_id FROM document_links WHERE target_id IS NOT NULL")
         .map_err(|e| e.to_string())?;
-    let doc_links: Vec<GraphLink> = stmt.query_map([], |r| {
+    let doc_links: Vec<GraphLink> = stmt.query_map([], |r: &rusqlite::Row<'_>| {
         let sid: i64 = r.get(0)?;
         let tid: i64 = r.get(1)?;
         Ok(GraphLink {
@@ -87,7 +87,7 @@ pub(crate) fn get_graph_data_impl(conn: &rusqlite::Connection) -> Result<GraphDa
     // 4. 문서-태그 링크 (document_tags)
     let mut stmt = conn.prepare("SELECT document_id, tag FROM document_tags")
         .map_err(|e| e.to_string())?;
-    let tag_links: Vec<GraphLink> = stmt.query_map([], |r| {
+    let tag_links: Vec<GraphLink> = stmt.query_map([], |r: &rusqlite::Row<'_>| {
         let sid: i64 = r.get(0)?;
         let tag: String = r.get(1)?;
         Ok(GraphLink {
@@ -110,7 +110,7 @@ use std::sync::Arc;
 pub async fn get_graph_data(
     state: tauri::State<'_, Arc<crate::AppState>>,
 ) -> Result<serde_json::Value, String> {
-    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = state.conn.get().map_err(|e| e.to_string())?;
     let data = get_graph_data_impl(&conn)?;
     serde_json::to_value(data).map_err(|e| e.to_string())
 }

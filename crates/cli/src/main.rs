@@ -296,9 +296,9 @@ async fn handle_search(
 
     // Use hybrid search when ONNX embedder is available; otherwise fall back to FTS-only.
     let hits: Vec<doxus_core::search::Hit> = if let Some(emb) = embedder {
-        let search_conn = db::open(db_path).context("failed to open search connection")?;
+        let pool = db::create_pool(db_path).context("failed to create db pool")?;
         let engine = SearchEngine::with_embedder(
-            std::sync::Arc::new(std::sync::Mutex::new(search_conn)),
+            pool,
             emb,
         );
         engine.search_async(&query).await.map_err(|e: doxus_core::search::SearchError| anyhow::anyhow!(e))?

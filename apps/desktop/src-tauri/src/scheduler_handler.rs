@@ -60,11 +60,11 @@ impl TauriAgentHandler {
 
         // 1. Find target project path
         let target_project_path = {
-            let conn = self.state.conn.lock().map_err(|_| "DB lock failed")?;
+            let conn = self.state.conn.get().map_err(|e| e.to_string())?;
             conn.query_row(
                 "SELECT path FROM projects WHERE name = ?1",
                 [target_project_name],
-                |r| r.get::<_, String>(0)
+                |r: &rusqlite::Row<'_>| r.get::<_, String>(0)
             ).map_err(|e| format!("Target project '{}' not found: {}", target_project_name, e))?
         };
 

@@ -42,7 +42,7 @@ pub struct OAuthPending {
 pub type PendingMessages = Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>>;
 
 pub struct AppState {
-    pub conn: Arc<Mutex<Connection>>,
+    pub conn: doxus_core::db::DbPool,
     pub plugin_manager: Arc<PluginManager>,
     pub plugins_dir: PathBuf,
     pub oauth_pending: Mutex<HashMap<String, OAuthPending>>,
@@ -65,7 +65,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(
-        conn: Connection,
+        conn: doxus_core::db::DbPool,
         plugins_dir: PathBuf,
         sidecar_script: PathBuf,
         embedder: Arc<dyn EmbeddingProvider + Send + Sync>,
@@ -76,17 +76,18 @@ impl AppState {
 
         // App-start: clean up any expired cache entries from previous sessions
         {
-            let cache = doxus_core::cache::ContentCache::new(&conn);
-            if let Ok(n) = cache.cleanup_expired() {
-                if n > 0 {
-                    eprintln!("[cache] cleaned {n} expired entries on startup");
+            if let Ok(conn_guard) = conn.get() {
+                let cache = doxus_core::cache::ContentCache::new(&conn_guard);
+                if let Ok(n) = cache.cleanup_expired() {
+                    if n > 0 {
+                        eprintln!("[cache] cleaned {n} expired entries on startup");
+                    }
                 }
             }
         }
 
         let shared_embedder: SharedEmbedder = Arc::new(RwLock::new(embedder.clone()));
-        let conn_arc = Arc::new(Mutex::new(conn));
-        let search_engine = Arc::new(doxus_core::search::SearchEngine::with_embedder(conn_arc.clone(), embedder));
+        let search_engine = Arc::new(doxus_core::search::SearchEngine::with_embedder(conn.clone(), embedder));
 
         // 1. PluginManager를 먼저 생성하고 내장 플러그인 등록
         let mut plugin_manager = PluginManager::new(plugins_dir.clone());
@@ -103,7 +104,7 @@ impl AppState {
 
         // 2. 초기화된 plugin_manager를 IndexingService에 전달
         let indexing_service = Arc::new(doxus_core::indexing::IndexingService::new(
-            conn_arc.clone(),
+            conn.clone(),
             plugin_manager.clone(),
             search_engine.clone()
         ));
@@ -111,7 +112,7 @@ impl AppState {
         let (sync_manager, rx) = SyncManager::new(indexing_service.clone());
         let sync_manager = Arc::new(sync_manager);
         
-        let scheduler_manager = Arc::new(SchedulerManager::new(conn_arc.clone(), indexing_service));
+        let scheduler_manager = Arc::new(SchedulerManager::new(conn.clone(), indexing_service));
 
         let secret_store = Arc::new(UnifiedKeychainStore::new("doxus", "com.doxus.secrets.v1"));
 
@@ -128,7 +129,7 @@ impl AppState {
 
         (
             Self {
-                conn: conn_arc,
+                conn,
                 plugin_manager,
                 plugins_dir,
                 oauth_pending: Mutex::new(HashMap::new()),

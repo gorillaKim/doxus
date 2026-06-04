@@ -138,14 +138,14 @@ pub trait PostUpdateHook: Send + Sync {
 /// Production PostUpdateHook — emits Tauri events and spawns async reindex.
 pub struct TauriReindexHook {
     handle: tauri::AppHandle,
-    conn: std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>,
+    conn: doxus_core::db::DbPool,
     indexing: std::sync::Arc<doxus_core::indexing::IndexingService>,
 }
 
 impl TauriReindexHook {
     pub fn new(
         handle: tauri::AppHandle,
-        conn: std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>,
+        conn: doxus_core::db::DbPool,
         indexing: std::sync::Arc<doxus_core::indexing::IndexingService>,
     ) -> Self {
         Self { handle, conn, indexing }

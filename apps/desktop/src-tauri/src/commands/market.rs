@@ -197,7 +197,7 @@ pub async fn get_system_status() -> Result<serde_json::Value, String> {
 pub async fn get_plugin_logs(
     state: tauri::State<'_, Arc<crate::AppState>>,
 ) -> Result<serde_json::Value, String> {
-    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    let conn = state.conn.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare(
             "SELECT id, project_id, event_type, payload, occurred_at \
@@ -205,7 +205,7 @@ pub async fn get_plugin_logs(
         )
         .map_err(|e| e.to_string())?;
     let logs: Vec<serde_json::Value> = stmt
-        .query_map([], |r| {
+        .query_map([], |r: &rusqlite::Row<'_>| {
             Ok(serde_json::json!({
                 "id": r.get::<_, i64>(0)?,
                 "project_id": r.get::<_, Option<i64>>(1)?,
@@ -224,7 +224,7 @@ pub async fn get_plugin_logs(
 pub async fn clear_audit_log(
     state: tauri::State<'_, Arc<crate::AppState>>,
 ) -> Result<serde_json::Value, String> {
-    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    let conn = state.conn.get().map_err(|e| e.to_string())?;
     let deleted: usize = conn
         .execute("DELETE FROM audit_log", [])
         .map_err(|e| e.to_string())?;
@@ -237,12 +237,12 @@ pub async fn get_embedding_status(
 ) -> Result<serde_json::Value, String> {
     let embedder = state.embedder.read().await.clone();
     let info = embedder.model_info().clone();
-    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    let conn = state.conn.get().map_err(|e| e.to_string())?;
     let total_docs: i64 = conn
-        .query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM documents", [], |r: &rusqlite::Row<'_>| r.get(0))
         .unwrap_or(0);
     let embedded_chunks: i64 = conn
-        .query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM chunks", [], |r: &rusqlite::Row<'_>| r.get(0))
         .unwrap_or(0);
     let model_loaded = info.dimension > 0;
     let model = if model_loaded { format!("ONNX ({})", info.name) } else { "미활성 (모델 로드 실패)".to_string() };
@@ -276,10 +276,10 @@ pub async fn get_sync_status(
 pub async fn trigger_sync(
     state: tauri::State<'_, Arc<crate::AppState>>,
 ) -> Result<serde_json::Value, String> {
-    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    let conn = state.conn.get().map_err(|e| e.to_string())?;
     // source_instances 목록 조회
     let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM source_instances", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM source_instances", [], |r: &rusqlite::Row<'_>| r.get(0))
         .unwrap_or(0);
     // 실제 sync 실행은 SyncRunner가 담당 — 여기서는 last_synced를 초기화해 다음 스케줄 주기에 즉시 실행되도록 함
     conn.execute("UPDATE source_instances SET last_synced = 0", [])
@@ -339,7 +339,7 @@ pub async fn market_install_plugin(
             .install_from_url(&plugin_id, &download_url, checksum.as_deref())
             .map_err(|e| {
                 let msg = format!("Plugin installation failed for {}: {}", plugin_id, e);
-                if let Ok(conn) = conn_arc.lock() {
+                if let Ok(conn) = conn_arc.get() {
                     persist_audit(&conn, &AuditEvent::PluginError {
                         plugin_id: plugin_id.clone(),
                         message: msg,
@@ -703,8 +703,8 @@ fn is_safe_local_path(path: &str) -> bool {
 fn validate_base_url(url: &str) -> Result<(), String> {
     let parsed = reqwest::Url::parse(url).map_err(|e| format!("잘못된 URL: {}", e))?;
 
-    if parsed.scheme() != "https" && parsed.scheme() != "http" {
-        return Err("HTTP/HTTPS URL만 허용됩니다 (SSRF 방지)".to_string());
+    if parsed.scheme() != "https" {
+        return Err("HTTPS URL만 허용됩니다 (SSRF 방지)".to_string());
     }
 
     let host = parsed.host_str().ok_or_else(|| "URL에 호스트가 없습니다".to_string())?;
@@ -1167,12 +1167,12 @@ pub async fn plugin_get_cache_ttl(
     state: tauri::State<'_, Arc<crate::AppState>>,
     plugin_id: String,
 ) -> Result<serde_json::Value, String> {
-    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    let conn = state.conn.get().map_err(|e| e.to_string())?;
     let ttl: Option<i64> = conn.query_row(
         "SELECT CAST(value AS INTEGER) FROM plugin_kv
          WHERE plugin_id = ?1 AND namespace = 'settings' AND key = 'cache_ttl_minutes'",
         rusqlite::params![plugin_id],
-        |r| r.get(0),
+        |r: &rusqlite::Row<'_>| r.get(0),
     ).ok();
     Ok(serde_json::json!({ "cache_ttl_minutes": ttl }))
 }
@@ -1191,7 +1191,7 @@ pub async fn plugin_set_cache_ttl(
         }
     }
 
-    let conn = state.conn.lock().map_err(|e| e.to_string())?;
+    let conn = state.conn.get().map_err(|e| e.to_string())?;
     match ttl_minutes {
         Some(ttl) => {
             conn.execute(

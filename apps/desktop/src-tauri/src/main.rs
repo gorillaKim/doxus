@@ -355,9 +355,11 @@ fn main() {
             std::fs::create_dir_all(&p).ok();
             p.join("doxus.db")
         });
-    let conn = doxus_core::db::open(&db_path).expect("failed to open db");
-    if let Err(e) = doxus_core::db::checkpoint_db(&conn) {
-        eprintln!("[db] failed to run initial checkpoint: {e}");
+    let conn = doxus_core::db::create_pool(&db_path).expect("failed to open db");
+    if let Ok(conn_guard) = conn.get() {
+        if let Err(e) = doxus_core::db::checkpoint_db(&conn_guard) {
+            eprintln!("[db] failed to run initial checkpoint: {e}");
+        }
     }
     let plugins_dir = std::path::PathBuf::from(&home).join(".doxus/plugins");
     
@@ -443,7 +445,7 @@ fn main() {
                     conn_arc.clone(),
                     state_arc.sync_manager.indexing_service(),
                 );
-                match conn_arc.lock() {
+                match conn_arc.get() {
                     Ok(conn_guard) => {
                         match doxus_desktop_lib::update_manager::detect_and_migrate(
                             &conn_guard,
@@ -460,7 +462,7 @@ fn main() {
                     }
                     Err(e) => tracing::error!(
                         error = %e,
-                        "post-update migration skipped: db mutex poisoned"
+                        "post-update migration skipped: db pool error"
                     ),
                 }
             }
@@ -487,7 +489,7 @@ fn main() {
                 interval.tick().await; // skip immediate tick (startup cleanup done in AppState::new)
                 loop {
                     interval.tick().await;
-                    if let Ok(conn) = conn_arc_inner.lock() {
+                    if let Ok(conn) = conn_arc_inner.get() {
                         let cache = doxus_core::cache::ContentCache::new(&conn);
                         match cache.cleanup_expired() {
                             Ok(n) if n > 0 => {
@@ -653,7 +655,7 @@ fn main() {
                             eprintln!("[mcp] HTTP server stopped on app exit");
                         }
                     }
-                    if let Ok(conn) = state.conn.lock() {
+                    if let Ok(conn) = state.conn.get() {
                         if let Err(e) = doxus_core::db::checkpoint_db(&conn) {
                             eprintln!("[db] checkpoint on exit failed: {e}");
                         } else {

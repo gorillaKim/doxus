@@ -23,7 +23,7 @@ pub async fn get_stale_documents(
     project_id: Option<i64>,
     limit: Option<u32>,
 ) -> Result<serde_json::Value, String> {
-    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = state.conn.get().map_err(|e| e.to_string())?;
     let current_limit = limit.unwrap_or(20);
 
     let mut sql = "SELECT d.title, d.source_doc_id, p.name, df.freshness_score, d.updated_at 
@@ -91,7 +91,7 @@ pub async fn update_sensitivity_mode(
     // Phase 1 implementation uses a project-wide sensitivity mode.
     // However, the current DB migration `V33__freshness_config.sql` says:
     // "ALTER TABLE projects ADD COLUMN freshness_policy_json TEXT;"
-    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = state.conn.get().map_err(|e| e.to_string())?;
 
     let policy_str = json!({
         "sensitivity_mode": mode,

@@ -132,7 +132,7 @@ pub async fn increment_view_count(
     state: tauri::State<'_, Arc<crate::AppState>>,
     document_id: i64,
 ) -> Result<serde_json::Value, String> {
-    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = state.conn.get().map_err(|e| e.to_string())?;
     increment_view_count_impl(&conn, document_id)?;
     Ok(serde_json::json!({ "ok": true }))
 }
@@ -142,7 +142,7 @@ pub async fn get_top_documents(
     state: tauri::State<'_, Arc<crate::AppState>>,
     limit: Option<usize>,
 ) -> Result<serde_json::Value, String> {
-    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = state.conn.get().map_err(|e| e.to_string())?;
     let tops = get_top_documents_impl(&conn, limit.unwrap_or(5))?;
     Ok(serde_json::json!({ "documents": tops }))
 }
@@ -465,7 +465,7 @@ pub async fn add_project(
     source_type: Option<String>,
     config: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = state.conn.get().map_err(|e| e.to_string())?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
@@ -494,7 +494,7 @@ pub async fn toggle_project_status(
     name: String,
     status: String,
 ) -> Result<serde_json::Value, String> {
-    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = state.conn.get().map_err(|e| e.to_string())?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?
@@ -512,7 +512,7 @@ pub async fn remove_project(
     state: tauri::State<'_, Arc<crate::AppState>>,
     name: String,
 ) -> Result<serde_json::Value, String> {
-    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = state.conn.get().map_err(|e| e.to_string())?;
     let affected = conn.execute(
         "DELETE FROM projects WHERE name = ?1",
         rusqlite::params![name],
@@ -535,7 +535,7 @@ pub async fn search_documents(
 ) -> Result<serde_json::Value, String> {
     // 1. Resolve filters into project IDs in a scoped block
     let filter_ids: Vec<i64> = {
-        let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = state.conn.get().map_err(|e| e.to_string())?;
         let mut ids = std::collections::HashSet::new();
         
         if let Some(ref types) = source_types {
@@ -589,7 +589,7 @@ pub async fn search_documents(
     type DocInfo = (String, String, String, Vec<String>, i64, i64, serde_json::Value, String, Option<String>, String, f64, String);
     let mut doc_info: std::collections::HashMap<i64, DocInfo> = std::collections::HashMap::new();
     {
-        let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = state.conn.get().map_err(|e| e.to_string())?;
         for chunk in doc_ids.chunks(50) {
             let placeholders = chunk.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
             let sql = format!(
@@ -650,7 +650,7 @@ pub async fn search_documents(
     // Cache TTL lookup for active plugins
     let mut plugin_ttls: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
     {
-        let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = state.conn.get().map_err(|e| e.to_string())?;
         let mut stmt = conn.prepare("SELECT plugin_id, CAST(value AS INTEGER) FROM plugin_kv WHERE namespace = 'settings' AND key = 'cache_ttl_minutes'").map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))).map_err(|e| e.to_string())?;
         for row in rows.flatten() {
@@ -747,7 +747,7 @@ pub async fn search_documents(
 pub async fn search_engine_status(
     state: tauri::State<'_, Arc<crate::AppState>>,
 ) -> Result<serde_json::Value, String> {
-    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = state.conn.get().map_err(|e| e.to_string())?;
     let total_documents: i64 = conn
         .query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
@@ -770,11 +770,11 @@ pub async fn index_project(
 ) -> Result<serde_json::Value, String> {
     let embedder = state.embedder.read().await.clone();
     let engine = std::sync::Arc::new(SearchEngine::with_embedder(
-        std::sync::Arc::clone(&state.conn),
+        state.conn.clone(),
         embedder,
     ));
     let indexing_service = doxus_core::indexing::IndexingService::new(
-        std::sync::Arc::clone(&state.conn),
+        state.conn.clone(),
         std::sync::Arc::clone(&state.plugin_manager),
         engine,
     );
@@ -843,7 +843,7 @@ pub async fn trigger_reindex(
 
     // 2. 모든 활성 프로젝트 이름 가져오기
     let names: Vec<String> = {
-        let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = state.conn.get().map_err(|e| e.to_string())?;
         let mut stmt = conn.prepare("SELECT name FROM projects WHERE status = 'active'").map_err(|e| e.to_string())?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
         rows.filter_map(|r| r.ok()).collect()
@@ -925,11 +925,11 @@ pub async fn get_document_content(
         tauri::async_runtime::spawn(async move {
             let conn = indexer_clone.conn();
             let project_info = {
-                let conn_lock = conn.lock().unwrap_or_else(|e| e.into_inner());
+                let conn_lock = conn.get().expect("db pool error");
                 conn_lock.query_row(
                     "SELECT id, storage_strategy FROM projects WHERE name = ?1 OR source_project_id = ?1",
                     rusqlite::params![pname_clone],
-                    |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+                    |r: &rusqlite::Row<'_>| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
                 ).ok()
             };
 
@@ -956,7 +956,7 @@ pub async fn get_document_content(
 
     // 3. Fetch canonical title and metadata from DB (Source of truth for Doxus UI)
     let db_meta = {
-        let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = state.conn.get().map_err(|e| e.to_string())?;
         let row: Option<(Option<String>, Option<i64>, Option<i32>)> = conn.query_row(
             "SELECT d.title, d.last_indexed, p.cache_ttl \
              FROM documents d \
@@ -965,7 +965,7 @@ pub async fn get_document_content(
              AND (d.source_doc_id = ?2 OR d.file_path = ?2) \
              LIMIT 1",
             rusqlite::params![project_name, doc.id.0],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            |r: &rusqlite::Row<'_>| Ok((r.get(0)?, r.get(1)?, r.get(2)?))
         ).optional().unwrap_or(None);
         row
     };
@@ -974,7 +974,7 @@ pub async fn get_document_content(
 
     // 4. Fetch tags from DB
     let tags = {
-        let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = state.conn.get().map_err(|e| e.to_string())?;
         let mut tags: Vec<String> = Vec::new();
         let sql = "SELECT dt.tag FROM document_tags dt \
                    JOIN documents d ON dt.document_id = d.id \
@@ -1114,7 +1114,7 @@ pub async fn list_all_documents(
     limit: Option<usize>,
     offset: Option<usize>,
 ) -> Result<serde_json::Value, String> {
-    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = state.conn.get().map_err(|e| e.to_string())?;
     list_all_documents_impl(&conn, limit, offset)
 }
 
@@ -1122,8 +1122,8 @@ pub async fn list_all_documents(
 pub async fn count_all_documents(
     state: tauri::State<'_, Arc<crate::AppState>>,
 ) -> Result<i64, String> {
-    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
-    let count: i64 = conn.query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))
+    let conn = state.conn.get().map_err(|e| e.to_string())?;
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM documents", [], |r: &rusqlite::Row<'_>| r.get(0))
         .map_err(|e| e.to_string())?;
     Ok(count)
 }
@@ -1132,12 +1132,12 @@ pub async fn count_all_documents(
 pub async fn list_projects(
     state: tauri::State<'_, Arc<crate::AppState>>,
 ) -> Result<serde_json::Value, String> {
-    let conn = state.conn.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = state.conn.get().map_err(|e| e.to_string())?;
     let mut stmt = conn
         .prepare("SELECT id, name, display_name, path, status, COALESCE(source_type, 'obsidian'), freshness_policy_json FROM projects ORDER BY name")
         .map_err(|e| e.to_string())?;
     let projects: Vec<_> = stmt
-        .query_map([], |r| {
+        .query_map([], |r: &rusqlite::Row<'_>| {
             Ok(serde_json::json!({
                 "id": r.get::<_, i64>(0)?,
                 "name": r.get::<_, String>(1)?,
