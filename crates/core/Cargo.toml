@@ -12,6 +12,8 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 rusqlite = { workspace = true }
+r2d2 = { workspace = true }
+r2d2_sqlite = { workspace = true }
 once_cell = "1"
 anyhow = "1.0"
 memmap2 = "0.9"
@@ -66,7 +68,6 @@ name = "conflict_resolution_test"
 required-features = ["test-helpers"]
 
 [dev-dependencies]
-r2d2 = "0.8"
 tokio-test = { workspace = true }
 approx = "0.5"
 tempfile = "3"
