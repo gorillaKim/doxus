@@ -1,7 +1,7 @@
 use doxus_mcp::McpServer;
 use rusqlite::Connection;
 use serde_json::json;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tempfile::TempDir;
 
 fn setup_path_db() -> (doxus_core::db::DbPool, TempDir) {
@@ -78,17 +78,20 @@ fn insert_link(conn: &Connection, source_id: i64, target_id: i64) {
 #[tokio::test]
 async fn find_path_no_false_positive_on_prefix_ids() {
     let (pool, tmp) = setup_path_db();
-    let conn = pool.get().unwrap();
-    let proj_id = insert_project(&conn);
+    let _proj_id = {
+        let conn = pool.get().unwrap();
+        let proj_id = insert_project(&conn);
 
-    let id1 = insert_doc(&conn, proj_id, "doc-1");
-    let id10 = insert_doc(&conn, proj_id, "doc-10");
-    let id100 = insert_doc(&conn, proj_id, "doc-100");
+        let id1 = insert_doc(&conn, proj_id, "doc-1");
+        let id10 = insert_doc(&conn, proj_id, "doc-10");
+        let id100 = insert_doc(&conn, proj_id, "doc-100");
 
-    // doc-1 -> doc-10 -> doc-100
-    insert_link(&conn, id1, id10);
-    insert_link(&conn, id10, id100);
- 
+        // doc-1 -> doc-10 -> doc-100
+        insert_link(&conn, id1, id10);
+        insert_link(&conn, id10, id100);
+        proj_id
+    };
+
     let pm = Arc::new(doxus_core::plugin::PluginManager::new(tmp.path().to_path_buf()));
     let server = McpServer::new(pool, tmp.path().join("test.db"), None, pm, tmp.path().to_path_buf());
     let resp = server.dispatch_tool(
@@ -113,16 +116,19 @@ async fn find_path_no_false_positive_on_prefix_ids() {
 #[tokio::test]
 async fn find_path_detects_real_cycle_and_avoids_infinite_loop() {
     let (pool, tmp) = setup_path_db();
-    let conn = pool.get().unwrap();
-    let proj_id = insert_project(&conn);
- 
-    let ida = insert_doc(&conn, proj_id, "doc-a");
-    let idb = insert_doc(&conn, proj_id, "doc-b");
-    let _idc = insert_doc(&conn, proj_id, "doc-c");
- 
-    // doc-a -> doc-b -> doc-a (cycle), doc-c is unreachable
-    insert_link(&conn, ida, idb);
-    insert_link(&conn, idb, ida);
+    let _proj_id = {
+        let conn = pool.get().unwrap();
+        let proj_id = insert_project(&conn);
+     
+        let ida = insert_doc(&conn, proj_id, "doc-a");
+        let idb = insert_doc(&conn, proj_id, "doc-b");
+        let _idc = insert_doc(&conn, proj_id, "doc-c");
+     
+        // doc-a -> doc-b -> doc-a (cycle), doc-c is unreachable
+        insert_link(&conn, ida, idb);
+        insert_link(&conn, idb, ida);
+        proj_id
+    };
  
     let pm = Arc::new(doxus_core::plugin::PluginManager::new(tmp.path().to_path_buf()));
     let server = McpServer::new(pool, tmp.path().join("test.db"), None, pm, tmp.path().to_path_buf());

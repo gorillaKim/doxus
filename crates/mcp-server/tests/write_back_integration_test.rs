@@ -1,6 +1,6 @@
 // use rusqlite::Connection;
 use serde_json::json;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use doxus_mcp::McpServer;
 use async_trait::async_trait;
 use doxus_plugin_sdk::{DocSource, PluginConfig, PluginSecrets, SourceDocId, RawDocument, ContentType, PluginMetadata, PluginKind, Capabilities, SyncPolicy, FetchAllOpts, DocumentStream, HealthStatus, PluginError};
@@ -114,7 +114,7 @@ async fn test_create_document_with_immediate_sync() {
     let conn = server.conn();
     let mut doc_count = 0;
     for _ in 0..40 {
-        let c = conn.get().unwrap();
+        let c = conn.read_conn().unwrap();
         doc_count = c.query_row(
             "SELECT COUNT(*) FROM documents WHERE source_doc_id = 'mock-id.md'",
             [],
