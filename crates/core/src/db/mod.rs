@@ -26,14 +26,51 @@ pub fn apply_pragmas(conn: &Connection) -> SqlResult<()> {
     )
 }
 
-pub type DbPool = r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>;
+pub type R2d2Pool = r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>;
+
+#[derive(Clone, Debug)]
+pub struct DbPool {
+    read: R2d2Pool,
+    write: R2d2Pool,
+}
+
+impl DbPool {
+    pub fn read_conn(&self) -> Result<r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager>, r2d2::Error> {
+        self.read.get()
+    }
+
+    pub fn write_conn(&self) -> Result<r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager>, r2d2::Error> {
+        self.write.get()
+    }
+
+    pub fn get(&self) -> Result<r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager>, r2d2::Error> {
+        self.write.get()
+    }
+}
 
 #[derive(Debug)]
-pub struct DbConnectionCustomizer;
+pub struct DbWriteConnectionCustomizer;
 
-impl r2d2::CustomizeConnection<Connection, rusqlite::Error> for DbConnectionCustomizer {
+impl r2d2::CustomizeConnection<Connection, rusqlite::Error> for DbWriteConnectionCustomizer {
     fn on_acquire(&self, conn: &mut Connection) -> Result<(), rusqlite::Error> {
         apply_pragmas(conn)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct DbReadConnectionCustomizer;
+
+impl r2d2::CustomizeConnection<Connection, rusqlite::Error> for DbReadConnectionCustomizer {
+    fn on_acquire(&self, conn: &mut Connection) -> Result<(), rusqlite::Error> {
+        // Read-only connections do not need journal_mode or synchronous settings,
+        // and attempting to write them can fail or hang.
+        // We only apply basic read pragmas.
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             PRAGMA busy_timeout = 5000;
+             PRAGMA cache_size = -16000;",
+        )?;
         Ok(())
     }
 }
@@ -47,14 +84,27 @@ pub fn create_pool(path: &std::path::Path) -> Result<DbPool, DbError> {
         let _conn = open(path)?;
     }
 
-    // 2. Build the r2d2 pool with customizer to apply pragmas on new connections.
-    let manager = r2d2_sqlite::SqliteConnectionManager::file(path);
-    let pool = r2d2::Pool::builder()
-        .max_size(10)
-        .connection_customizer(Box::new(DbConnectionCustomizer))
-        .build(manager)?;
+    // 2. Build the write pool.
+    let write_manager = r2d2_sqlite::SqliteConnectionManager::file(path);
+    let write_pool = r2d2::Pool::builder()
+        .max_size(1)
+        .connection_customizer(Box::new(DbWriteConnectionCustomizer))
+        .build(write_manager)?;
+
+    // 3. Build the read pool.
+    let read_flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY 
+        | rusqlite::OpenFlags::SQLITE_OPEN_URI 
+        | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let read_manager = r2d2_sqlite::SqliteConnectionManager::file(path).with_flags(read_flags);
+    let read_pool = r2d2::Pool::builder()
+        .max_size(4)
+        .connection_customizer(Box::new(DbReadConnectionCustomizer))
+        .build(read_manager)?;
         
-    Ok(pool)
+    Ok(DbPool {
+        read: read_pool,
+        write: write_pool,
+    })
 }
 
 /// Run all migrations V1–V40 in order. Idempotent.

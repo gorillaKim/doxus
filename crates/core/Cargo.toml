@@ -77,3 +77,8 @@ serial_test = "3"
 
 [[test]]
 name = "wasm_confluence_refresh_test"
+
+[[test]]
+name = "db_concurrency_test"
+required-features = ["test-helpers"]
+
