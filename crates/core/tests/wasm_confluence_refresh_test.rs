@@ -29,6 +29,7 @@ async fn test_token_refresh_pushes_to_secret_backend() {
     // ── Setup ──────────────────────────────────────────────────────────────────
     let server = MockServer::start().await;
     let base_url = server.uri();
+    let port = server.address().port();
 
     // Mock: OAuth token refresh endpoint
     Mock::given(method("POST"))
@@ -39,6 +40,43 @@ async fn test_token_refresh_pushes_to_secret_backend() {
             "expires_in": 3600
         })))
         .expect(1) // 반드시 1번 호출돼야 함
+        .mount(&server)
+        .await;
+
+    // Mock: /api/v2/spaces?keys=TEST
+    Mock::given(method("GET"))
+        .and(path("/api/v2/spaces"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "results": [{
+                "id": "space-test-id",
+                "key": "TEST",
+                "name": "Test Space"
+            }],
+            "_links": {}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // Mock: /api/v2/spaces/space-test-id/pages?limit=250
+    Mock::given(method("GET"))
+        .and(path("/api/v2/spaces/space-test-id/pages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "results": [],
+            "_links": {}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // Mock: /api/v2/spaces/space-test-id/folders?limit=250
+    Mock::given(method("GET"))
+        .and(path("/api/v2/spaces/space-test-id/folders"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "results": [],
+            "_links": {}
+        })))
+        .expect(1)
         .mount(&server)
         .await;
 
@@ -54,9 +92,28 @@ async fn test_token_refresh_pushes_to_secret_backend() {
                 "_links": {"webui": "/display/TEST/Test-Page"},
                 "body": {"storage": {"value": "<p>Hello</p>"}},
                 "version": {"when": "2024-04-14T10:00:00Z"},
-                "space": {"key": "TEST"}
+                "space": {"id": "space-test-id", "key": "TEST"}
             }],
             "start": 0, "limit": 10, "size": 1
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // Mock: /api/v2/pages?id=page-1
+    Mock::given(method("GET"))
+        .and(path("/api/v2/pages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "results": [{
+                "id": "page-1",
+                "title": "Test Page",
+                "type": "page",
+                "_links": {"webui": "/display/TEST/Test-Page"},
+                "body": {"storage": {"value": "<p>Hello</p>"}},
+                "version": {"when": "2024-04-14T10:00:00Z"},
+                "spaceId": "space-test-id"
+            }],
+            "_links": {}
         })))
         .expect(1)
         .mount(&server)
@@ -72,7 +129,12 @@ async fn test_token_refresh_pushes_to_secret_backend() {
         version: "0.1.0".into(),
         abi_version: 1,
         // 허용 도메인: wiremock(127.0.0.1)만 허용 (프로덕션에선 atlassian.com 추가)
-        http_domains: vec!["127.0.0.1".into()],
+        http_domains: vec![
+            "127.0.0.1".into(),
+            "localhost".into(),
+            format!("127.0.0.1:{}", port),
+            format!("localhost:{}", port),
+        ],
         kv_namespaces: vec![],
         secrets: vec!["access_token".into(), "refresh_token".into(), "expires_at".into()],
     };
@@ -93,6 +155,7 @@ async fn test_token_refresh_pushes_to_secret_backend() {
         ("space_key".into(), json!("TEST")),
         ("client_id".into(), json!("client-123")),
         ("client_secret".into(), json!("secret-456")),
+        ("ancestor_id".into(), json!("ancestor-999")),
         // 핵심: OAuth 서버를 wiremock으로 리다이렉트
         ("oauth_base_url".into(), json!(base_url)),
     ].into();

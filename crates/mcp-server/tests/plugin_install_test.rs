@@ -5,37 +5,43 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 
-fn setup_db() -> (Connection, TempDir) {
+fn setup_db() -> (doxus_core::db::DbPool, TempDir) {
     let tmp = TempDir::new().unwrap();
-    let conn = Connection::open_in_memory().unwrap();
-    // Apply minimal schema needed for plugin_install
-    conn.execute_batch(
-        "PRAGMA foreign_keys = ON;
-         CREATE TABLE IF NOT EXISTS plugins (
-             id            TEXT PRIMARY KEY,
-             name          TEXT NOT NULL,
-             version       TEXT NOT NULL,
-             kind          TEXT NOT NULL DEFAULT 'external',
-             trust_level   TEXT NOT NULL DEFAULT 'unverified',
-             manifest_json TEXT NOT NULL DEFAULT '{}',
-             wasm_sha256   TEXT,
-             auto_update   INTEGER NOT NULL DEFAULT 0,
-             enabled       INTEGER NOT NULL DEFAULT 1,
-             installed_at  INTEGER NOT NULL
-         );",
-    )
-    .unwrap();
-    (conn, tmp)
+    let db_path = tmp.path().join("test.db");
+    let pool = doxus_core::db::create_pool(&db_path).unwrap();
+    {
+        let conn = pool.get().unwrap();
+        // Apply minimal schema needed for plugin_install
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE IF NOT EXISTS plugins (
+                 id            TEXT PRIMARY KEY,
+                 name          TEXT NOT NULL,
+                 version       TEXT NOT NULL,
+                 kind          TEXT NOT NULL DEFAULT 'external',
+                 trust_level   TEXT NOT NULL DEFAULT 'unverified',
+                 manifest_json TEXT NOT NULL DEFAULT '{}',
+                 wasm_sha256   TEXT,
+                 auto_update   INTEGER NOT NULL DEFAULT 0,
+                 enabled       INTEGER NOT NULL DEFAULT 1,
+                 installed_at  INTEGER NOT NULL
+             );",
+        )
+        .unwrap();
+    }
+    (pool, tmp)
 }
 
-fn make_server(conn: Connection, plugins_dir: PathBuf) -> McpServer {
+fn make_server(conn: doxus_core::db::DbPool, plugins_dir: PathBuf) -> McpServer {
     let pm = Arc::new(doxus_core::plugin::PluginManager::new(plugins_dir.clone()));
-    McpServer::new(Arc::new(Mutex::new(conn)), plugins_dir.clone(), None, pm, plugins_dir)
+    let db_path = plugins_dir.join("test.db");
+    McpServer::new(conn, db_path, None, pm, plugins_dir)
 }
 
-fn make_server_with_file_scheme(conn: Connection, plugins_dir: PathBuf) -> McpServer {
+fn make_server_with_file_scheme(conn: doxus_core::db::DbPool, plugins_dir: PathBuf) -> McpServer {
     let pm = Arc::new(doxus_core::plugin::PluginManager::new(plugins_dir.clone()));
-    McpServer::new_with_file_scheme(Arc::new(Mutex::new(conn)), plugins_dir.clone(), None, pm, plugins_dir)
+    let db_path = plugins_dir.join("test.db");
+    McpServer::new_with_file_scheme(conn, db_path, None, pm, plugins_dir)
 }
 
 // --- test 1: url 파라미터 없으면 DB-only 등록 성공 ---
@@ -97,24 +103,27 @@ async fn test_plugin_install_db_record_created() {
 
     // We need to query DB after dispatch, so use a file-based DB in tmp dir.
     let db_path = tmp.path().join("test.db");
-    let conn2 = Connection::open(&db_path).unwrap();
-    conn2.execute_batch(
-        "CREATE TABLE IF NOT EXISTS plugins (
-             id            TEXT PRIMARY KEY,
-             name          TEXT NOT NULL,
-             version       TEXT NOT NULL,
-             kind          TEXT NOT NULL DEFAULT 'external',
-             trust_level   TEXT NOT NULL DEFAULT 'unverified',
-             manifest_json TEXT NOT NULL DEFAULT '{}',
-             wasm_sha256   TEXT,
-             auto_update   INTEGER NOT NULL DEFAULT 0,
-             enabled       INTEGER NOT NULL DEFAULT 1,
-             installed_at  INTEGER NOT NULL
-         );",
-    )
-    .unwrap();
+    let pool2 = doxus_core::db::create_pool(&db_path).unwrap();
+    {
+        let conn2 = pool2.get().unwrap();
+        conn2.execute_batch(
+            "CREATE TABLE IF NOT EXISTS plugins (
+                 id            TEXT PRIMARY KEY,
+                 name          TEXT NOT NULL,
+                 version       TEXT NOT NULL,
+                 kind          TEXT NOT NULL DEFAULT 'external',
+                 trust_level   TEXT NOT NULL DEFAULT 'unverified',
+                 manifest_json TEXT NOT NULL DEFAULT '{}',
+                 wasm_sha256   TEXT,
+                 auto_update   INTEGER NOT NULL DEFAULT 0,
+                 enabled       INTEGER NOT NULL DEFAULT 1,
+                 installed_at  INTEGER NOT NULL
+             );",
+        )
+        .unwrap();
+    }
 
-    let server = make_server_with_file_scheme(conn2, plugins_dir);
+    let server = make_server_with_file_scheme(pool2, plugins_dir);
     let resp = server.dispatch_tool(
         "doxus_plugin_install",
         json!(1),
@@ -128,7 +137,7 @@ async fn test_plugin_install_db_record_created() {
         .query_row(
             "SELECT COUNT(*) FROM plugins WHERE id = 'com.test.plugin'",
             [],
-            |r| r.get(0),
+            |r: &rusqlite::Row<'_>| r.get(0),
         )
         .unwrap();
     assert_eq!(count, 1, "plugin record should be in DB");
@@ -137,7 +146,7 @@ async fn test_plugin_install_db_record_created() {
         .query_row(
             "SELECT version FROM plugins WHERE id = 'com.test.plugin'",
             [],
-            |r| r.get(0),
+            |r: &rusqlite::Row<'_>| r.get(0),
         )
         .unwrap();
     assert_eq!(version, "2.0.0");

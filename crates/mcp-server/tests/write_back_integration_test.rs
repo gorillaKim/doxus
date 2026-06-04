@@ -57,30 +57,27 @@ fn setup_server() -> McpServer {
         let _ = std::fs::remove_file(&db_path);
     }
     
-    // Create connection and migrate
-    doxus_core::db::ensure_vec_extension();
-    let conn = rusqlite::Connection::open(&db_path).unwrap();
-    doxus_core::db::apply_pragmas(&conn).unwrap();
-    doxus_core::db::create_vec0_table(&conn).unwrap();
-    doxus_core::db::migrate(&conn).unwrap();
-    
-    // Seed project with 'mock-source'
-    conn.execute(
-        "INSERT INTO projects (name, display_name, path, source_type, source_project_id, status, config_json, is_default, created_at, updated_at) VALUES ('test-proj', 'Test Project', '/tmp', 'mock-plugin', 'test-proj', 'active', '{\"fields\":{}}', 1, 0, 0)",
-        []
-    ).unwrap();
-    let project_id: i64 = conn.last_insert_rowid();
+    let pool = doxus_core::db::create_pool(&db_path).unwrap();
+    {
+        let conn = pool.get().unwrap();
+        // Seed project with 'mock-source'
+        conn.execute(
+            "INSERT INTO projects (name, display_name, path, source_type, source_project_id, status, config_json, is_default, created_at, updated_at) VALUES ('test-proj', 'Test Project', '/tmp', 'mock-plugin', 'test-proj', 'active', '{\"fields\":{}}', 1, 0, 0)",
+            []
+        ).unwrap();
+        let project_id: i64 = conn.last_insert_rowid();
 
-    // Must satisfy foreign key from source_instances to plugins
-    conn.execute(
-        "INSERT INTO plugins (id, name, version, installed_at) VALUES ('mock-plugin', 'Mock', '1.0.0', 0)",
-        []
-    ).unwrap();
+        // Must satisfy foreign key from source_instances to plugins
+        conn.execute(
+            "INSERT INTO plugins (id, name, version, installed_at) VALUES ('mock-plugin', 'Mock', '1.0.0', 0)",
+            []
+        ).unwrap();
 
-    conn.execute(
-        "INSERT INTO source_instances (project_id, plugin_id, name, config_json, created_at) VALUES (?1, 'mock-plugin', 'Mock Instance', '{\"fields\":{}}', 0)",
-        rusqlite::params![project_id]
-    ).unwrap();
+        conn.execute(
+            "INSERT INTO source_instances (project_id, plugin_id, name, config_json, created_at) VALUES (?1, 'mock-plugin', 'Mock Instance', '{\"fields\":{}}', 0)",
+            rusqlite::params![project_id]
+        ).unwrap();
+    }
 
     let mut pm = doxus_core::plugin::PluginManager::new(std::path::PathBuf::from("/tmp/doxus"));
     pm.register_factory("mock-plugin", || {
@@ -94,7 +91,7 @@ fn setup_server() -> McpServer {
         })
     });
     
-    McpServer::new(Arc::new(Mutex::new(conn)), db_path, None, Arc::new(pm), std::path::PathBuf::from("/tmp/plugins"))
+    McpServer::new(pool, db_path, None, Arc::new(pm), std::path::PathBuf::from("/tmp/plugins"))
 }
 
 #[tokio::test]
@@ -113,12 +110,21 @@ async fn test_create_document_with_immediate_sync() {
     
     assert!(resp.error.is_none(), "Tool call failed: {:?}", resp.error);
     
-    // Check if document exists in DB (Immediate Sync verification)
-    let doc_count: i64 = server.conn().lock().unwrap().query_row(
-        "SELECT COUNT(*) FROM documents WHERE source_doc_id = 'mock-id.md'",
-        [],
-        |r| r.get::<_ , Option<i64>>(0),
-    ).unwrap().unwrap_or(0);
+    // Check if document exists in DB (Immediate Sync verification with retry loop to allow async background indexing)
+    let conn = server.conn();
+    let mut doc_count = 0;
+    for _ in 0..40 {
+        let c = conn.get().unwrap();
+        doc_count = c.query_row(
+            "SELECT COUNT(*) FROM documents WHERE source_doc_id = 'mock-id.md'",
+            [],
+            |r: &rusqlite::Row<'_>| r.get::<_, Option<i64>>(0),
+        ).unwrap().unwrap_or(0);
+        if doc_count == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     
     assert_eq!(doc_count, 1, "Document should be synced to DB immediately after creation");
 }

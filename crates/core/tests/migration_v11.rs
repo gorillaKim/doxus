@@ -23,8 +23,8 @@ fn insert_project(db: &TestDb, name: &str) -> i64 {
 fn insert_document(db: &TestDb, project_id: i64, source_doc_id: &str) -> i64 {
     db.conn
         .execute(
-            "INSERT INTO documents (project_id, source_doc_id, content, content_hash, last_indexed)
-             VALUES (?1, ?2, 'hello', 'abc', unixepoch())",
+            "INSERT INTO documents (project_id, source_doc_id, content_hash, last_indexed)
+             VALUES (?1, ?2, 'abc', unixepoch())",
             params![project_id, source_doc_id],
         )
         .unwrap();

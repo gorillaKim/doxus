@@ -28,11 +28,11 @@ use tempfile::TempDir;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-fn open_test_db() -> (Arc<Mutex<Connection>>, TempDir) {
+fn open_test_db() -> (doxus_core::db::DbPool, TempDir) {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test.db");
-    let conn = db::open(&path).unwrap();
-    (Arc::new(Mutex::new(conn)), dir)
+    let pool = db::create_pool(&path).unwrap();
+    (pool, dir)
 }
 
 fn make_plugin_manager() -> Arc<doxus_core::plugin::PluginManager> {
@@ -65,6 +65,7 @@ impl EventSink for RecordingEventSink {
 /// while processing a due instance.
 #[tokio::test]
 async fn sync_loop_emits_progress_event() {
+    std::env::set_var("DOXUS_SKIP_KEYCHAIN", "1");
     use doxus_core::plugin::PluginManager;
 
     let vault_dir = TempDir::new().unwrap();
@@ -72,7 +73,7 @@ async fn sync_loop_emits_progress_event() {
 
     let (conn, _db_dir) = open_test_db();
     {
-        let guard = conn.lock().unwrap();
+        let guard = conn.get().unwrap();
         insert_obsidian_instance(&guard, vault_dir.path().to_str().unwrap());
     }
 
@@ -87,7 +88,7 @@ async fn sync_loop_emits_progress_event() {
 
     // interval_secs = 0 → always due
     let handle = spawn_sync_loop_with_sink(
-        Arc::clone(&conn),
+        conn.clone(),
         Arc::new(Mutex::new(None)),
         Arc::clone(&plugin_manager),
         0,
@@ -109,6 +110,7 @@ async fn sync_loop_emits_progress_event() {
 /// successful sync.
 #[tokio::test]
 async fn sync_loop_emits_complete_event() {
+    std::env::set_var("DOXUS_SKIP_KEYCHAIN", "1");
     use doxus_core::plugin::PluginManager;
 
     let vault_dir = TempDir::new().unwrap();
@@ -116,7 +118,7 @@ async fn sync_loop_emits_complete_event() {
 
     let (conn, _db_dir) = open_test_db();
     {
-        let guard = conn.lock().unwrap();
+        let guard = conn.get().unwrap();
         insert_obsidian_instance(&guard, vault_dir.path().to_str().unwrap());
     }
 
@@ -130,7 +132,7 @@ async fn sync_loop_emits_complete_event() {
     let sink = RecordingEventSink::default();
 
     let handle = spawn_sync_loop_with_sink(
-        Arc::clone(&conn),
+        conn.clone(),
         Arc::new(Mutex::new(None)),
         Arc::clone(&plugin_manager),
         0,
@@ -152,11 +154,12 @@ async fn sync_loop_emits_complete_event() {
 /// without panicking — this is the CLI-mode compatibility requirement.
 #[tokio::test]
 async fn sync_loop_noop_sink_does_not_panic() {
+    std::env::set_var("DOXUS_SKIP_KEYCHAIN", "1");
     use doxus_mcp::sync_loop::{NoopEventSink, spawn_sync_loop_with_sink};
 
     let (conn, _dir) = open_test_db();
     let handle = spawn_sync_loop_with_sink(
-        Arc::clone(&conn),
+        conn.clone(),
         Arc::new(Mutex::new(None)),
         make_plugin_manager(),
         1,

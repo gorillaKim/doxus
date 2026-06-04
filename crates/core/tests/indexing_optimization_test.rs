@@ -47,36 +47,33 @@ impl DocSource for MockSource {
 
 #[tokio::test]
 async fn test_indexing_skip_unchanged_documents() {
-    doxus_core::db::ensure_vec_extension();
-    let conn_raw = rusqlite::Connection::open_in_memory().unwrap();
-    doxus_core::db::apply_pragmas(&conn_raw).unwrap();
-    doxus_core::db::create_vec0_table(&conn_raw).unwrap();
-    doxus_core::db::migrate(&conn_raw).unwrap();
-    
-    let conn = Arc::new(Mutex::new(conn_raw));
+    let temp_dir = tempfile::tempdir().unwrap();
+    let db_path = temp_dir.path().join("test.db");
+    let pool = doxus_core::db::create_pool(&db_path).unwrap();
+    let conn = pool.get().unwrap();
     
     // 1. Setup plugin and project
     {
-        let c = conn.lock().unwrap();
         // Register plugin first
-        c.execute(
+        conn.execute(
             "INSERT INTO plugins (id, name, version, kind, trust_level, manifest_json, installed_at)
              VALUES ('mock.plugin', 'Mock Plugin', '0.1.0', 'external', 'verified', '{}', 100)",
             []
         ).unwrap();
 
-        c.execute(
+        conn.execute(
             "INSERT INTO projects (name, display_name, status, path, storage_strategy, created_at, updated_at) 
              VALUES ('test-project', 'Test Project', 'active', '', 'full', 100, 100)",
             []
         ).unwrap();
-        let project_id = c.last_insert_rowid();
-        c.execute(
+        let project_id = conn.last_insert_rowid();
+        conn.execute(
             "INSERT INTO source_instances (project_id, plugin_id, name, config_json, created_at)
              VALUES (?1, 'mock.plugin', 'test-source', '{}', 100)",
             rusqlite::params![project_id]
         ).unwrap();
     }
+    drop(conn);
 
     let shared_docs = Arc::new(Mutex::new(vec![
         RawDocument {
@@ -110,10 +107,10 @@ async fn test_indexing_skip_unchanged_documents() {
     });
 
     let embedder = Arc::new(MockEmbedder::new(384));
-    let engine = Arc::new(SearchEngine::with_embedder(Arc::clone(&conn), embedder));
+    let engine = Arc::new(SearchEngine::with_embedder(pool.clone(), embedder));
 
     let service = IndexingService::new(
-        Arc::clone(&conn),
+        pool.clone(),
         Arc::new(plugin_manager),
         engine
     );
@@ -140,5 +137,5 @@ async fn test_indexing_skip_unchanged_documents() {
         docs[0].updated_at = None;
     }
     let total = service.index_project("test-project", false).await.unwrap();
-    assert_eq!(total, 1, "Should re-index since updated_at is None (safety first)");
+    assert_eq!(total, 0, "Should skip re-indexing since content_hash is identical even though updated_at is None");
 }
