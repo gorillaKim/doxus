@@ -121,17 +121,16 @@ mod tests {
     use tower::ServiceExt;
 
     fn make_app(token: &str) -> (Router, Arc<McpServer>) {
-        doxus_core::db::ensure_vec_extension();
-        let conn = Connection::open_in_memory().expect("in-memory db");
-        doxus_core::db::apply_pragmas(&conn).expect("pragmas");
-        doxus_core::db::create_vec0_table(&conn).expect("vec0 table");
-        doxus_core::db::migrate(&conn).expect("migrate");
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let pool = doxus_core::db::create_pool(&db_path).unwrap();
+        Box::leak(Box::new(dir));
         let pm = Arc::new(doxus_core::plugin::PluginManager::new(
             std::path::PathBuf::from("/tmp/doxus-pm"),
         ));
         let server = Arc::new(McpServer::new(
-            Arc::new(Mutex::new(conn)),
-            std::path::PathBuf::from(":memory:"),
+            pool,
+            db_path,
             None,
             pm,
             std::path::PathBuf::from("/tmp/doxus-test-plugins"),

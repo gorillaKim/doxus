@@ -35,28 +35,25 @@ mod tests {
     use super::*;
     use rusqlite::{params, Connection};
     use serde_json::json;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     fn test_server() -> McpServer {
-        doxus_core::db::ensure_vec_extension();
-        let conn = Connection::open_in_memory().expect("in-memory db");
-        doxus_core::db::apply_pragmas(&conn).expect("pragmas");
-        doxus_core::db::create_vec0_table(&conn).expect("vec0 table");
-        doxus_core::db::migrate(&conn).expect("migrate");
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let pool = doxus_core::db::create_pool(&db_path).unwrap();
+        Box::leak(Box::new(dir));
         let pm = Arc::new(doxus_core::plugin::PluginManager::new(std::path::PathBuf::from("/tmp/doxus-pm")));
-        McpServer::new(Arc::new(Mutex::new(conn)), std::path::PathBuf::from(":memory:"), None, pm, std::path::PathBuf::from("/tmp/doxus-test-plugins"))
+        McpServer::new(pool, db_path, None, pm, std::path::PathBuf::from("/tmp/doxus-test-plugins"))
     }
 
     fn insert_project(server: &McpServer, name: &str, path: &str) {
-        server
-            .conn
-            .lock()
-            .unwrap()
-            .execute(
-                "INSERT INTO projects (name, display_name, path, source_project_id, created_at, updated_at) VALUES (?1, ?1, ?2, ?1, 0, 0)",
-                params![name, path],
-            )
-            .unwrap();
+        let conn = server.conn();
+        let c = conn.get().unwrap();
+        c.execute(
+            "INSERT INTO projects (name, display_name, path, source_project_id, created_at, updated_at) VALUES (?1, ?1, ?2, ?1, 0, 0)",
+            params![name, path],
+        )
+        .unwrap();
     }
 
     #[tokio::test]
@@ -112,11 +109,10 @@ mod tests {
         let resp =
             server.dispatch_tool("doxus_remove_project", json!(1), &json!({"name": "todel"})).await;
         assert!(resp.error.is_none());
-        let count: i64 = server
-            .conn
-            .lock()
-            .unwrap()
-            .query_row("SELECT COUNT(*) FROM projects WHERE name='todel'", [], |r| r.get(0))
+        let conn = server.conn();
+        let c = conn.get().unwrap();
+        let count: i64 = c
+            .query_row("SELECT COUNT(*) FROM projects WHERE name='todel'", [], |r: &rusqlite::Row<'_>| r.get(0))
             .unwrap();
         assert_eq!(count, 0);
     }

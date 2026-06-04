@@ -5,9 +5,9 @@ use serde_json::Value;
 
 pub fn list_projects(server: &McpServer, id: Value) -> McpResponse {
     let conn = server.conn();
-    let conn_lock = match conn.lock() {
+    let conn_lock = match conn.get() {
         Ok(l) => l,
-        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+        Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
     let mut stmt = match conn_lock.prepare(
         "SELECT name, display_name, status, path FROM projects ORDER BY name",
@@ -17,7 +17,7 @@ pub fn list_projects(server: &McpServer, id: Value) -> McpResponse {
     };
 
     let rows: Result<Vec<_>, _> = stmt
-        .query_map([], |r| {
+        .query_map([], |r: &rusqlite::Row<'_>| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -65,9 +65,9 @@ pub fn add_project(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     };
 
     let conn = server.conn();
-    let conn_lock = match conn.lock() {
+    let conn_lock = match conn.get() {
         Ok(l) => l,
-        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+        Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
 
     // projects + source_instances 동시 INSERT (atomic)
@@ -108,12 +108,12 @@ pub fn remove_project(server: &McpServer, id: Value, args: &Value) -> McpRespons
     };
 
     let conn = server.conn();
-    let conn_lock = match conn.lock() {
+    let conn_lock = match conn.get() {
         Ok(l) => l,
-        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+        Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
     let pid: Result<i64, _> = conn_lock
-        .query_row("SELECT id FROM projects WHERE name=?1", params![name], |r| r.get(0));
+        .query_row("SELECT id FROM projects WHERE name=?1", params![name], |r: &rusqlite::Row<'_>| r.get(0));
 
     match pid {
         Err(_) => McpResponse::err(id, -32602, format!("project '{name}' not found")),
@@ -165,9 +165,9 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
     };
 
     let conn = server.conn();
-    let conn_lock = match conn.lock() {
+    let conn_lock = match conn.get() {
         Ok(l) => l,
-        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+        Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
     type SourceRow = (i64, String, Option<String>, Option<i64>, String);
     let row: Result<SourceRow, _> = conn_lock.query_row(
@@ -177,7 +177,7 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
          WHERE p.name = ?1
          ORDER BY si.id LIMIT 1",
         params![name],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        |r: &rusqlite::Row<'_>| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
     );
 
     let (si_id, plugin_id, sync_cursor, last_synced, config_json) = match row {
@@ -193,7 +193,7 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
          JOIN source_instances si ON si.project_id = p.id
          WHERE si.id = ?1",
         params![si_id],
-        |r| r.get(0),
+        |r: &rusqlite::Row<'_>| r.get(0),
     ) {
         Ok(pid) => pid,
         Err(e) => return McpResponse::err(id, -32603, format!("project lookup: {e}")),
@@ -207,7 +207,7 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
             Err(e) => return McpResponse::err(id, -32603, format!("prepare known_ids: {e}")),
         };
         let ids: Result<Vec<String>, _> = stmt
-            .query_map(params![project_id], |r| r.get::<_, String>(0))
+            .query_map(params![project_id], |r: &rusqlite::Row<'_>| r.get::<_, String>(0))
             .map_err(|e| format!("query known_ids: {e}"))
             .and_then(|rows| rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string()));
         match ids {
@@ -272,7 +272,7 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
         let strategy: String = conn_lock.query_row(
             "SELECT storage_strategy FROM projects WHERE id = ?1",
             [project_id],
-            |r| r.get(0)
+            |r: &rusqlite::Row<'_>| r.get(0)
         ).unwrap_or_else(|_| "full".to_string());
 
         let engine = SyncSearchEngine::from_conn(&conn_lock);
@@ -375,13 +375,18 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     fn make_server(db: TestDb) -> McpServer {
-        let conn = Arc::new(Mutex::new(db.conn));
+        let conn = doxus_core::db::create_pool(std::path::Path::new(":memory:")).unwrap();
+        // TestDb의 conn에 이미 마이그레이션이 다 적용되어 있지만, McpServer::new에는 pool이 들어가야 하므로
+        // 임시 db 파일로 풀을 만들어서 전달하는 편이 더 낫다.
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let pool = doxus_core::db::create_pool(&db_path).unwrap();
         let pm = Arc::new(doxus_core::plugin::PluginManager::new(
             std::path::PathBuf::from("/tmp/plugins"),
         ));
         McpServer::new(
-            conn,
-            std::path::PathBuf::from("/tmp/test.db"),
+            pool,
+            db_path,
             None,
             pm,
             std::path::PathBuf::from("/tmp/plugins"),
@@ -401,7 +406,7 @@ mod tests {
         let resp = add_project(&server, serde_json::json!(1), &args);
         assert!(resp.result.is_some(), "add_project should succeed: {:?}", resp.error);
 
-        let count: i64 = server.conn().lock().unwrap()
+        let count: i64 = server.conn().get().unwrap()
             .query_row(
                 "SELECT COUNT(*) FROM source_instances si
                  JOIN projects p ON si.project_id = p.id
@@ -423,7 +428,7 @@ mod tests {
         let resp = add_project(&server, serde_json::json!(2), &args);
         assert!(resp.result.is_some(), "add_project should succeed: {:?}", resp.error);
 
-        let plugin_id: String = server.conn().lock().unwrap()
+        let plugin_id: String = server.conn().get().unwrap()
             .query_row(
                 "SELECT si.plugin_id FROM source_instances si
                  JOIN projects p ON si.project_id = p.id

@@ -5,9 +5,9 @@ use serde_json::{json, Value};
 
 pub fn list(server: &McpServer, id: Value) -> McpResponse {
     let conn = server.conn();
-    let conn_lock = match conn.lock() {
+    let conn_lock = match conn.get() {
         Ok(l) => l,
-        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+        Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
     let mut stmt = match conn_lock.prepare(
         "SELECT plugin_id, COUNT(*) as instances
@@ -20,7 +20,7 @@ pub fn list(server: &McpServer, id: Value) -> McpResponse {
     };
 
     let rows: Result<Vec<_>, _> = stmt
-        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+        .query_map([], |r: &rusqlite::Row<'_>| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
         .and_then(|it| it.collect());
 
     match rows {
@@ -89,9 +89,9 @@ pub async fn install(server: &McpServer, id: Value, args: &Value) -> McpResponse
     }
 
     let conn = server.conn();
-    let conn_lock = match conn.lock() {
+    let conn_lock = match conn.get() {
         Ok(l) => l,
-        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+        Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
     let result = conn_lock.execute(
         "INSERT OR IGNORE INTO plugins(id, name, version, kind, installed_at)
@@ -130,9 +130,9 @@ pub fn remove(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     }
 
     let conn = server.conn();
-    let conn_lock = match conn.lock() {
+    let conn_lock = match conn.get() {
         Ok(l) => l,
-        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+        Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
     let db_result = conn_lock.execute("DELETE FROM plugins WHERE id=?1", params![plugin_id]);
     match db_result {
@@ -150,9 +150,9 @@ pub fn update(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     let version = args["version"].as_str().unwrap_or("latest");
 
     let conn = server.conn();
-    let conn_lock = match conn.lock() {
+    let conn_lock = match conn.get() {
         Ok(l) => l,
-        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+        Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
     let n = conn_lock.execute(
         "UPDATE plugins SET version=?2 WHERE id=?1",
@@ -172,9 +172,9 @@ pub fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     };
 
     let conn = server.conn();
-    let conn_lock = match conn.lock() {
+    let conn_lock = match conn.get() {
         Ok(l) => l,
-        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+        Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
     let mut stmt = match conn_lock.prepare(
         "SELECT id, name, version, kind, trust_level FROM plugins
@@ -187,7 +187,7 @@ pub fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse {
 
     let pattern = format!("%{query}%");
     let rows: Result<Vec<_>, _> = stmt
-        .query_map(params![pattern], |r| {
+        .query_map(params![pattern], |r: &rusqlite::Row<'_>| {
             Ok(json!({
                 "id": r.get::<_, String>(0)?,
                 "name": r.get::<_, String>(1)?,
@@ -214,21 +214,21 @@ pub fn status(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     };
 
     let conn = server.conn();
-    let conn_lock = match conn.lock() {
+    let conn_lock = match conn.get() {
         Ok(l) => l,
-        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+        Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
     let row: Result<(String, String, i64), _> = conn_lock.query_row(
         "SELECT version, trust_level, enabled FROM plugins WHERE id=?1",
         params![plugin_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        |r: &rusqlite::Row<'_>| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     );
 
     match row {
         Err(_) => McpResponse::err(id, -32602, format!("plugin '{plugin_id}' not found")),
         Ok((version, trust, enabled)) => {
             let instances: i64 = conn_lock
-                .query_row("SELECT COUNT(*) FROM source_instances WHERE plugin_id=?1", params![plugin_id], |r| r.get(0))
+                .query_row("SELECT COUNT(*) FROM source_instances WHERE plugin_id=?1", params![plugin_id], |r: &rusqlite::Row<'_>| r.get(0))
                 .unwrap_or(0);
             let status = json!({
                 "id": plugin_id,
@@ -267,9 +267,9 @@ pub fn logs(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     );
 
     let conn = server.conn();
-    let conn_lock = match conn.lock() {
+    let conn_lock = match conn.get() {
         Ok(l) => l,
-        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+        Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
 
     let mut all_params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(plugin_id.to_string())];
@@ -283,7 +283,7 @@ pub fn logs(server: &McpServer, id: Value, args: &Value) -> McpResponse {
 
     let refs: Vec<&dyn rusqlite::ToSql> = all_params.iter().map(|b| b.as_ref()).collect();
     let rows: Result<Vec<_>, _> = stmt
-        .query_map(refs.as_slice(), |r| {
+        .query_map(refs.as_slice(), |r: &rusqlite::Row<'_>| {
             Ok(json!({
                 "level": r.get::<_, String>(0)?,
                 "message": r.get::<_, String>(1)?,
@@ -308,14 +308,14 @@ pub fn info(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     };
 
     let conn = server.conn();
-    let conn_lock = match conn.lock() {
+    let conn_lock = match conn.get() {
         Ok(l) => l,
-        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+        Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
     let row: Result<(String, String, String, String, i64, i64), _> = conn_lock.query_row(
         "SELECT version, kind, trust_level, manifest_json, enabled, installed_at FROM plugins WHERE id=?1",
         params![plugin_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+        |r: &rusqlite::Row<'_>| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
     );
 
     match row {

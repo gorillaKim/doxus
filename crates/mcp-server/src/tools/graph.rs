@@ -17,9 +17,9 @@ pub fn get_links(server: &McpServer, id: Value, args: &Value) -> McpResponse {
 fn links(server: &McpServer, id: Value, args: &Value, outgoing: bool) -> McpResponse {
     let project_opt = args["project"].as_str();
     let conn = server.conn();
-    let conn_lock = match conn.lock() {
+    let conn_lock = match conn.get() {
         Ok(l) => l,
-        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+        Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
 
     let (db_id, _, _) = match resolve_doc_id_optional_project(&conn_lock, project_opt, &args["id"]) {
@@ -31,7 +31,7 @@ fn links(server: &McpServer, id: Value, args: &Value, outgoing: bool) -> McpResp
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='document_links'",
             [],
-            |r| r.get::<_, i64>(0),
+            |r: &rusqlite::Row<'_>| r.get::<_, i64>(0),
         )
         .map(|c| c > 0)
         .unwrap_or(false);
@@ -60,7 +60,7 @@ fn links(server: &McpServer, id: Value, args: &Value, outgoing: bool) -> McpResp
     };
 
     let rows: Result<Vec<_>, _> = stmt
-        .query_map(params![db_id], |r| {
+        .query_map(params![db_id], |r: &rusqlite::Row<'_>| {
             Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
         })
         .and_then(|it| it.collect());
@@ -91,9 +91,9 @@ pub fn find_path(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     let max_hops = args["max_hops"].as_u64().unwrap_or(6) as usize;
 
     let conn = server.conn();
-    let conn_lock = match conn.lock() {
+    let conn_lock = match conn.get() {
         Ok(l) => l,
-        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+        Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
 
     let (from_db_id, _, from_proj) = match resolve_doc_id_optional_project(&conn_lock, project_opt, from) {
@@ -116,7 +116,7 @@ pub fn find_path(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     let table_exists: bool = conn_lock
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='document_links'",
-            [], |r| r.get::<_, i64>(0),
+            [], |r: &rusqlite::Row<'_>| r.get::<_, i64>(0),
         )
         .map(|c| c > 0)
         .unwrap_or(false);
@@ -139,7 +139,7 @@ pub fn find_path(server: &McpServer, id: Value, args: &Value) -> McpResponse {
          ORDER BY depth LIMIT 1";
 
     let result: Result<(String, i64), _> = conn_lock.query_row(
-        sql, params![from_db_id, to_db_id, max_hops as i64], |r| Ok((r.get(0)?, r.get(1)?))
+        sql, params![from_db_id, to_db_id, max_hops as i64], |r: &rusqlite::Row<'_>| Ok((r.get(0)?, r.get(1)?))
     );
 
     match result {
@@ -164,9 +164,9 @@ pub fn get_cluster(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     let depth = args["depth"].as_u64().unwrap_or(2).min(5) as i64;
 
     let conn = server.conn();
-    let conn_lock = match conn.lock() {
+    let conn_lock = match conn.get() {
         Ok(l) => l,
-        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+        Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
 
     let (start_db_id, _) = match resolve_doc_id(&conn_lock, project, &args["id"]) {
@@ -176,7 +176,7 @@ pub fn get_cluster(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     let table_exists: bool = conn_lock
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='document_links'",
-            [], |r| r.get::<_, i64>(0),
+            [], |r: &rusqlite::Row<'_>| r.get::<_, i64>(0),
         )
         .map(|c| c > 0)
         .unwrap_or(false);
@@ -204,7 +204,7 @@ pub fn get_cluster(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     };
 
     let rows: Result<Vec<_>, _> = stmt
-        .query_map(params![start_db_id, depth], |r| {
+        .query_map(params![start_db_id, depth], |r: &rusqlite::Row<'_>| {
             Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, i64>(2)?))
         })
         .and_then(|it| it.collect());
@@ -224,54 +224,56 @@ pub fn get_cluster(server: &McpServer, id: Value, args: &Value) -> McpResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusqlite::Connection;
     use serde_json::json;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
     use crate::server::McpServer;
 
-    fn setup_test_server() -> McpServer {
-        let conn = Connection::open_in_memory().unwrap();
-        doxus_core::db::apply_pragmas(&conn).unwrap();
-        
-        // Minimal schema for graph tools
-        conn.execute_batch("
-            CREATE TABLE projects (id INTEGER PRIMARY KEY, name TEXT UNIQUE, display_name TEXT, path TEXT, source_project_id TEXT, source_type TEXT, config_json TEXT, status TEXT, created_at INTEGER, updated_at INTEGER);
-            CREATE TABLE documents (id INTEGER PRIMARY KEY, project_id INTEGER, source_doc_id TEXT, title TEXT, file_path TEXT, url TEXT, metadata_json TEXT, last_indexed INTEGER, FOREIGN KEY(project_id) REFERENCES projects(id));
-            CREATE TABLE chunks (id INTEGER PRIMARY KEY, document_id INTEGER, content TEXT, chunk_index INTEGER, heading_path TEXT, start_byte INTEGER, end_byte INTEGER, FOREIGN KEY(document_id) REFERENCES documents(id));
-            CREATE TABLE document_links (source_id INTEGER, target_id INTEGER, target_raw TEXT, link_type TEXT);
-            CREATE VIRTUAL TABLE chunks_fts USING fts5(content, tokenize='porter');
-            CREATE TABLE content_cache (plugin_id TEXT, doc_id TEXT, content TEXT, cached_at INTEGER, expires_at INTEGER, PRIMARY KEY(plugin_id, doc_id));
-        ").unwrap();
-        
-        // Add a test project
-        conn.execute(
-            "INSERT INTO projects (name, display_name, path, source_project_id, source_type, config_json, status, created_at, updated_at) 
-             VALUES ('Brain', 'Brain', '/tmp/brain', 'brain', 'obsidian', '{}', 'active', 0, 0)",
-            []
-        ).unwrap();
-        let pid: i64 = conn.last_insert_rowid();
+    struct TestServer {
+        _temp_dir: tempfile::TempDir,
+        server: McpServer,
+    }
 
-        // Add two documents
-        conn.execute(
-            "INSERT INTO documents (project_id, source_doc_id, title, last_indexed) 
-             VALUES (?1, 'doc1', 'Rust Features', 100)",
-            params![pid]
-        ).unwrap();
-        conn.execute(
-            "INSERT INTO documents (project_id, source_doc_id, title, last_indexed) 
-             VALUES (?1, 'doc2', 'Rust Ownership', 101)",
-            params![pid]
-        ).unwrap();
+    fn setup_test_server() -> TestServer {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let pool = doxus_core::db::create_pool(&db_path).unwrap();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute_batch("
+                CREATE TABLE IF NOT EXISTS document_links (source_id INTEGER, target_id INTEGER, target_raw TEXT, link_type TEXT);
+            ").unwrap();
+            
+            // Add a test project
+            conn.execute(
+                "INSERT INTO projects (name, display_name, path, source_project_id, source_type, config_json, status, created_at, updated_at) 
+                 VALUES ('Brain', 'Brain', '/tmp/brain', 'brain', 'obsidian', '{}', 'active', 0, 0)",
+                []
+            ).unwrap();
+            let pid: i64 = conn.last_insert_rowid();
+
+            // Add two documents
+            conn.execute(
+                "INSERT INTO documents (project_id, source_doc_id, title, last_indexed, content_hash) 
+                 VALUES (?1, 'doc1', 'Rust Features', 100, 'hash1')",
+                params![pid]
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO documents (project_id, source_doc_id, title, last_indexed, content_hash) 
+                 VALUES (?1, 'doc2', 'Rust Ownership', 101, 'hash2')",
+                params![pid]
+            ).unwrap();
+        }
 
         let pm = Arc::new(doxus_core::plugin::PluginManager::new(std::path::PathBuf::from("/tmp/doxus-pm-test")));
-        McpServer::new(Arc::new(Mutex::new(conn)), std::path::PathBuf::from(":memory:"), None, pm, std::path::PathBuf::from("/tmp/doxus-plugins-test"))
+        let server = McpServer::new(pool, db_path, None, pm, std::path::PathBuf::from("/tmp/doxus-plugins-test"));
+        TestServer { _temp_dir: temp_dir, server }
     }
 
     #[test]
     fn test_resolve_doc_id_numeric_and_string() {
-        let server = setup_test_server();
-        let conn = server.conn();
-        let cl = conn.lock().unwrap();
+        let ts = setup_test_server();
+        let conn = ts.server.conn();
+        let cl = conn.get().unwrap();
 
         // 1. Resolve by source_doc_id (string)
         let (id1, sid1) = resolve_doc_id(&cl, "Brain", &json!("doc1")).unwrap();
@@ -290,12 +292,12 @@ mod tests {
 
     #[test]
     fn test_links_standardization() {
-        let server = setup_test_server();
+        let ts = setup_test_server();
         let args = json!({
             "project": "Brain",
             "id": 1 // numeric
         });
-        let resp = get_links(&server, json!(1), &args);
+        let resp = get_links(&ts.server, json!(1), &args);
         assert!(resp.error.is_none());
     }
 }

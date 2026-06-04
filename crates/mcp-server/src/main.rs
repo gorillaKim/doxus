@@ -2,7 +2,8 @@ use anyhow::Result;
 use doxus_mcp::{http_server::build_router, sync_loop::spawn_sync_loop, McpRequest, McpResponse, McpServer};
 use serde_json::json;
 use std::io::{BufRead, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -25,12 +26,14 @@ async fn main() -> Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
-    // Main connection used by McpServer.
-    let conn = doxus_core::db::open(&db_path)?;
+    // Main connection pool used by McpServer.
+    let conn = doxus_core::db::create_pool(&db_path)?;
     
     // Cleanup expired content cache on startup
     {
-        let cache = doxus_core::cache::ContentCache::new(&conn);
+        // For ContentCache we need a temporary connection from pool
+        let temp_conn = conn.get()?;
+        let cache = doxus_core::cache::ContentCache::new(&temp_conn);
         if let Ok(count) = cache.cleanup_expired() {
             if count > 0 {
                 tracing::info!("Purged {} expired cache entries on startup", count);
@@ -38,12 +41,9 @@ async fn main() -> Result<()> {
         }
     }
 
-    let conn = Arc::new(Mutex::new(conn));
-
-    // Separate connection for the background sync loop (SQLite WAL mode supports
+    // Separate connection pool for the background sync loop (SQLite WAL mode supports
     // concurrent readers; the sync loop only reads due-instance metadata).
-    let sync_conn = doxus_core::db::open(&db_path)?;
-    let sync_conn = Arc::new(Mutex::new(sync_conn));
+    let sync_conn = doxus_core::db::create_pool(&db_path)?;
 
     // Default sync interval: 10800 s (3 hours).  Override via DOXUS_SYNC_INTERVAL_SECS.
     let interval_secs: u64 = std::env::var("DOXUS_SYNC_INTERVAL_SECS")
@@ -71,7 +71,7 @@ async fn main() -> Result<()> {
     let plugins_dir = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".doxus/plugins");
-    let server = McpServer::new(Arc::clone(&conn), db_path.clone(), None, Arc::clone(&plugin_manager), plugins_dir);
+    let server = McpServer::new(conn.clone(), db_path.clone(), None, Arc::clone(&plugin_manager), plugins_dir);
     let embedder_handle = server.embedder_arc();
     
     // Background thread to load ONNX (only if enabled via env)

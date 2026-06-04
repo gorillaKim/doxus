@@ -69,15 +69,15 @@ pub fn reindex_status(server: &McpServer, id: Value, args: &Value) -> McpRespons
     };
 
     let conn = server.conn();
-    let conn_lock = match conn.lock() {
+    let conn_lock = match conn.get() {
         Ok(l) => l,
-        Err(_) => return McpResponse::err(id, -32603, "db lock poisoned"),
+        Err(e) => return McpResponse::err(id, -32603, format!("db pool error: {e}")),
     };
 
     let pid: Result<i64, _> = conn_lock.query_row(
         "SELECT id FROM projects WHERE name=?1",
         params![project],
-        |r| r.get(0),
+        |r: &rusqlite::Row<'_>| r.get(0),
     );
     let pid = match pid {
         Ok(p) => p,
@@ -92,7 +92,7 @@ pub fn reindex_status(server: &McpServer, id: Value, args: &Value) -> McpRespons
         Err(e) => return McpResponse::err(id, -32603, e.to_string()),
     };
 
-    let rows: Result<Vec<Value>, _> = stmt.query_map(params![pid], |r| {
+    let rows: Result<Vec<Value>, _> = stmt.query_map(params![pid], |r: &rusqlite::Row<'_>| {
         Ok(json!({
             "id": r.get::<_, i64>(0)?,
             "scope": r.get::<_, String>(1)?,
@@ -125,32 +125,36 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
-    fn make_server() -> (McpServer, i64) {
-        doxus_core::db::ensure_vec_extension();
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        doxus_core::db::apply_pragmas(&conn).unwrap();
-        doxus_core::db::create_vec0_table(&conn).unwrap();
-        doxus_core::db::migrate(&conn).unwrap();
-        let conn = Arc::new(Mutex::new(conn));
+    struct TestServer {
+        _temp_dir: tempfile::TempDir,
+        server: McpServer,
+        pid: i64,
+    }
+
+    fn make_server() -> TestServer {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let pool = doxus_core::db::create_pool(&db_path).unwrap();
         {
-            let c = conn.lock().unwrap();
-            c.execute(
+            let conn = pool.get().unwrap();
+            conn.execute(
                 "INSERT INTO projects(name, display_name, path, status, storage_strategy, created_at, updated_at) \
                  VALUES ('rp', 'ReindexProj', '/tmp', 'active', 'full', unixepoch(), unixepoch())",
                 [],
             ).unwrap();
         }
-        let pid: i64 = conn.lock().unwrap()
-            .query_row("SELECT id FROM projects WHERE name='rp'", [], |r| r.get::<_, i64>(0))
-            .unwrap();
+        let pid: i64 = {
+            let conn = pool.get().unwrap();
+            conn.query_row("SELECT id FROM projects WHERE name='rp'", [], |r| r.get::<_, i64>(0)).unwrap()
+        };
         let pm = Arc::new(doxus_core::plugin::PluginManager::new(PathBuf::from("/tmp")));
-        let server = McpServer::new(conn, PathBuf::from(":memory:"), None, pm, PathBuf::from("/tmp"));
-        (server, pid)
+        let server = McpServer::new(pool, db_path, None, pm, PathBuf::from("/tmp"));
+        TestServer { _temp_dir: temp_dir, server, pid }
     }
 
     fn insert_doc(server: &McpServer, pid: i64, sid: &str, title: &str) {
         let conn = server.conn();
-        let c = conn.lock().unwrap();
+        let c = conn.get().unwrap();
         let engine = SyncSearchEngine::from_conn(&c);
         let meta = DocMeta { created_at: Some(1000), updated_at: Some(1000), ..Default::default() };
         engine.index_document_with_meta(pid, sid, title, title, &meta, "full").unwrap();
@@ -165,16 +169,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_reindex_dry_run_returns_targets() {
-        let (server, pid) = make_server();
-        insert_doc(&server, pid, "d1", "Doc One");
-        insert_doc(&server, pid, "d2", "Doc Two");
+        let ts = make_server();
+        insert_doc(&ts.server, ts.pid, "d1", "Doc One");
+        insert_doc(&ts.server, ts.pid, "d2", "Doc Two");
 
         let args = json!({
             "project": "rp",
             "scope": "full",
             "dry_run": true,
         });
-        let resp = reindex_documents(&server, json!(1), &args).await;
+        let resp = reindex_documents(&ts.server, json!(1), &args).await;
         assert!(resp.error.is_none(), "오류 없음");
         let text = get_text(&resp);
         let v: Value = serde_json::from_str(&text).unwrap();
@@ -186,15 +190,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_reindex_status_returns_history() {
-        let (server, pid) = make_server();
-        insert_doc(&server, pid, "d1", "Doc One");
+        let ts = make_server();
+        insert_doc(&ts.server, ts.pid, "d1", "Doc One");
 
         // 먼저 dry_run으로 이력 생성
         let args = json!({ "project": "rp", "scope": "full", "dry_run": true });
-        reindex_documents(&server, json!(1), &args).await;
+        reindex_documents(&ts.server, json!(1), &args).await;
 
         // status 조회
-        let resp = reindex_status(&server, json!(2), &json!({ "project": "rp" }));
+        let resp = reindex_status(&ts.server, json!(2), &json!({ "project": "rp" }));
         assert!(resp.error.is_none(), "status 오류 없음");
         let text = get_text(&resp);
         let v: Value = serde_json::from_str(&text).unwrap();
@@ -205,16 +209,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_reindex_missing_project_returns_error() {
-        let (server, _) = make_server();
+        let ts = make_server();
         let args = json!({ "project": "nonexistent", "scope": "full" });
-        let resp = reindex_documents(&server, json!(1), &args).await;
+        let resp = reindex_documents(&ts.server, json!(1), &args).await;
         assert!(resp.error.is_some(), "존재하지 않는 프로젝트는 오류 반환");
     }
 
     #[tokio::test]
     async fn test_reindex_status_missing_project_returns_error() {
-        let (server, _) = make_server();
-        let resp = reindex_status(&server, json!(1), &json!({ "project": "ghost" }));
+        let ts = make_server();
+        let resp = reindex_status(&ts.server, json!(1), &json!({ "project": "ghost" }));
         assert!(resp.error.is_some(), "존재하지 않는 프로젝트는 오류 반환");
     }
 }

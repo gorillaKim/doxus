@@ -5,15 +5,15 @@ use serde_json::{json, Value};
 
 pub fn status(server: &McpServer, id: Value) -> McpResponse {
     let conn = server.conn();
-    let conn_lock = match conn.lock() {
+    let conn_lock = match conn.get() {
         Ok(l) => l,
-        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+        Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
     let projects: i64 = conn_lock
-        .query_row("SELECT COUNT(*) FROM projects WHERE source_type != 'workspace'", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM projects WHERE source_type != 'workspace'", [], |r: &rusqlite::Row<'_>| r.get(0))
         .unwrap_or(0);
     let documents: i64 = conn_lock
-        .query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM documents", [], |r: &rusqlite::Row<'_>| r.get(0))
         .unwrap_or(0);
     McpResponse::text(
         id,
@@ -25,18 +25,18 @@ pub fn status(server: &McpServer, id: Value) -> McpResponse {
 
 pub fn diagnose(server: &McpServer, id: Value) -> McpResponse {
     let conn = server.conn();
-    let conn_lock = match conn.lock() {
+    let conn_lock = match conn.get() {
         Ok(l) => l,
-        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+        Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
     let projects: i64 = conn_lock
-        .query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM projects", [], |r: &rusqlite::Row<'_>| r.get(0))
         .unwrap_or(0);
     let documents: i64 = conn_lock
-        .query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM documents", [], |r: &rusqlite::Row<'_>| r.get(0))
         .unwrap_or(0);
     let chunks: i64 = conn_lock
-        .query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM chunks", [], |r: &rusqlite::Row<'_>| r.get(0))
         .unwrap_or(0);
 
     let diag = json!({
@@ -62,31 +62,31 @@ pub fn diagnose(server: &McpServer, id: Value) -> McpResponse {
 
 pub fn system_report(server: &McpServer, id: Value) -> McpResponse {
     let conn = server.conn();
-    let conn_lock = match conn.lock() {
+    let conn_lock = match conn.get() {
         Ok(l) => l,
-        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+        Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
     let projects: i64 = conn_lock
-        .query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM projects", [], |r: &rusqlite::Row<'_>| r.get(0))
         .unwrap_or(0);
     let active_projects: i64 = conn_lock
         .query_row(
             "SELECT COUNT(*) FROM projects WHERE status='active'",
             [],
-            |r| r.get(0),
+            |r: &rusqlite::Row<'_>| r.get(0),
         )
         .unwrap_or(0);
     let documents: i64 = conn_lock
-        .query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM documents", [], |r: &rusqlite::Row<'_>| r.get(0))
         .unwrap_or(0);
     let chunks: i64 = conn_lock
-        .query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM chunks", [], |r: &rusqlite::Row<'_>| r.get(0))
         .unwrap_or(0);
     let plugins: i64 = conn_lock
         .query_row(
             "SELECT COUNT(DISTINCT plugin_id) FROM source_instances",
             [],
-            |r| r.get(0),
+            |r: &rusqlite::Row<'_>| r.get(0),
         )
         .unwrap_or(0);
 
@@ -124,14 +124,14 @@ pub fn explain_search(server: &McpServer, id: Value, args: &Value) -> McpRespons
     };
 
     let conn = server.conn();
-    let conn_lock = match conn.lock() {
+    let conn_lock = match conn.get() {
         Ok(l) => l,
-        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+        Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
     let row: Result<(Option<String>, String), _> = conn_lock.query_row(
         "SELECT d.title, d.content FROM documents d WHERE d.source_doc_id = ?1",
         params![document_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r: &rusqlite::Row<'_>| Ok((r.get(0)?, r.get(1)?)),
     );
 
     match row {
@@ -162,16 +162,16 @@ pub fn explain_search(server: &McpServer, id: Value, args: &Value) -> McpRespons
 
 pub fn agent_summary(server: &McpServer, id: Value) -> McpResponse {
     let conn = server.conn();
-    let conn_lock = match conn.lock() {
+    let conn_lock = match conn.get() {
         Ok(l) => l,
-        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+        Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
 
     let total_projects: i64 = conn_lock
-        .query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM projects", [], |r: &rusqlite::Row<'_>| r.get(0))
         .unwrap_or(0);
     let total_docs: i64 = conn_lock
-        .query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM documents", [], |r: &rusqlite::Row<'_>| r.get(0))
         .unwrap_or(0);
 
     let mut projects = Vec::new();
@@ -184,7 +184,7 @@ pub fn agent_summary(server: &McpServer, id: Value) -> McpResponse {
     );
 
     if let Ok(mut stmt) = stmt_result {
-        let rows = stmt.query_map([], |r| {
+        let rows = stmt.query_map([], |r: &rusqlite::Row<'_>| {
             Ok(json!({
                 "name": r.get::<_, String>(0)?,
                 "type": r.get::<_, String>(1)?,
@@ -203,7 +203,7 @@ pub fn agent_summary(server: &McpServer, id: Value) -> McpResponse {
         "SELECT tag, COUNT(*) as count FROM document_tags GROUP BY tag ORDER BY count DESC LIMIT 10"
     );
     if let Ok(mut stmt) = tags_stmt_result {
-        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+        if let Ok(rows) = stmt.query_map([], |r: &rusqlite::Row<'_>| r.get::<_, String>(0)) {
             top_tags = rows.filter_map(|r| r.ok()).collect();
         }
     }
@@ -217,7 +217,7 @@ pub fn agent_summary(server: &McpServer, id: Value) -> McpResponse {
          LIMIT 5"
     );
     if let Ok(mut stmt) = recent_stmt_result {
-        let rows = stmt.query_map([], |r| {
+        let rows = stmt.query_map([], |r: &rusqlite::Row<'_>| {
             Ok(json!({
                 "id": r.get::<_, String>(0)?,
                 "title": r.get::<_, Option<String>>(1)?,

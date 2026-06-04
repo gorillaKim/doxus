@@ -7,16 +7,16 @@ pub fn get_freshness_report(server: &McpServer, id: Value, args: &Value) -> McpR
     let project_name = args["project_name"].as_str();
 
     let conn = server.conn();
-    let conn_lock = match conn.lock() {
+    let conn_lock = match conn.get() {
         Ok(l) => l,
-        Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+        Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
 
     let pid = if let Some(name) = project_name {
         let res: Result<i64, _> = conn_lock.query_row(
             "SELECT id FROM projects WHERE name = ?1",
             rusqlite::params![name],
-            |r| r.get(0)
+            |r: &rusqlite::Row<'_>| r.get(0)
         );
         match res {
             Ok(pid) => Some(pid),
@@ -60,14 +60,14 @@ pub fn update_freshness_config(server: &McpServer, id: Value, args: &Value) -> M
 
     let conn = server.conn();
     let pid = {
-        let conn_lock = match conn.lock() {
+        let conn_lock = match conn.get() {
             Ok(l) => l,
-            Err(_) => return McpResponse::err(id.clone(), -32603, "db lock poisoned"),
+            Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
         };
         match conn_lock.query_row(
             "SELECT id FROM projects WHERE name = ?1",
             rusqlite::params![project_name],
-            |r| r.get(0)
+            |r: &rusqlite::Row<'_>| r.get(0)
         ) {
             Ok(pid) => pid,
             Err(e) => return McpResponse::err(id, -32602, format!("project not found: {e}")),
@@ -85,25 +85,17 @@ pub fn update_freshness_config(server: &McpServer, id: Value, args: &Value) -> M
 #[cfg(test)]
 mod tests {
     use super::*;
-    use doxus_core::db::{apply_pragmas, create_vec0_table, ensure_vec_extension, migrate};
-    use std::sync::{Arc, Mutex};
-
-    fn make_test_conn() -> rusqlite::Connection {
-        ensure_vec_extension();
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        apply_pragmas(&conn).unwrap();
-        create_vec0_table(&conn).unwrap();
-        migrate(&conn).unwrap();
-        conn
-    }
+    use std::sync::Arc;
 
     #[test]
     fn test_execute_get_freshness_report_no_project() {
-        let conn = make_test_conn();
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let pool = doxus_core::db::create_pool(&db_path).unwrap();
         // Since no projects or documents inserted, total_docs should be 0 safely
         let server = crate::server::McpServer::new(
-            Arc::new(Mutex::new(conn)),
-            std::path::PathBuf::from(":memory:"),
+            pool,
+            db_path,
             None,
             Arc::new(doxus_core::plugin::PluginManager::new(std::path::PathBuf::from("/tmp"))),
             std::path::PathBuf::from("/tmp"),

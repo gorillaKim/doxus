@@ -1,10 +1,10 @@
 use doxus_core::embedding::EmbeddingProvider;
-use rusqlite::Connection;
+use doxus_core::db::DbPool;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 pub struct McpServer {
-    pub(crate) conn: Arc<Mutex<Connection>>,
+    pub(crate) conn: DbPool,
     pub(crate) db_path: PathBuf,
     pub(crate) embedder: Arc<Mutex<Option<Arc<dyn EmbeddingProvider + Send + Sync>>>>,
     pub(crate) plugin_manager: Arc<doxus_core::plugin::PluginManager>,
@@ -14,7 +14,7 @@ pub struct McpServer {
 
 impl McpServer {
     pub fn new(
-        conn: Arc<Mutex<Connection>>,
+        conn: DbPool,
         db_path: PathBuf,
         embedder: Option<Arc<dyn EmbeddingProvider + Send + Sync>>,
         plugin_manager: Arc<doxus_core::plugin::PluginManager>,
@@ -31,7 +31,7 @@ impl McpServer {
     }
 
     pub fn new_with_file_scheme(
-        conn: Arc<Mutex<Connection>>,
+        conn: DbPool,
         db_path: PathBuf,
         embedder: Option<Arc<dyn EmbeddingProvider + Send + Sync>>,
         plugin_manager: Arc<doxus_core::plugin::PluginManager>,
@@ -47,9 +47,9 @@ impl McpServer {
         }
     }
 
-    /// Provides access to the underlying SQLite connection.
-    pub fn conn(&self) -> Arc<Mutex<Connection>> {
-        Arc::clone(&self.conn)
+    /// Provides access to the underlying SQLite connection pool.
+    pub fn conn(&self) -> DbPool {
+        self.conn.clone()
     }
 
     pub fn db_path(&self) -> std::path::PathBuf {
@@ -97,16 +97,20 @@ impl McpServer {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+    use tempfile::TempDir;
 
-    fn make_test_server() -> McpServer {
-        doxus_core::db::ensure_vec_extension();
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        doxus_core::db::apply_pragmas(&conn).unwrap();
-        doxus_core::db::create_vec0_table(&conn).unwrap();
-        doxus_core::db::migrate(&conn).unwrap();
-        let conn = Arc::new(Mutex::new(conn));
+    struct TestContext {
+        _temp_dir: TempDir,
+        server: McpServer,
+    }
+
+    fn make_test_server() -> TestContext {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let pool = doxus_core::db::create_pool(&db_path).unwrap();
         let pm = Arc::new(doxus_core::plugin::PluginManager::new(PathBuf::from("/tmp")));
-        McpServer::new(conn, PathBuf::from(":memory:"), None, pm, PathBuf::from("/tmp"))
+        let server = McpServer::new(pool, db_path, None, pm, PathBuf::from("/tmp"));
+        TestContext { _temp_dir: temp_dir, server }
     }
 
     fn poison_mutex<T: Send + 'static>(mutex: &Arc<Mutex<T>>) {
@@ -120,26 +124,23 @@ mod tests {
     }
 
     // TDD: embedder() must return None — not panic — when Mutex is poisoned.
-    // FAILS with current code (server.rs:61 uses .lock().unwrap()).
     #[test]
     fn embedder_returns_none_when_mutex_poisoned() {
-        let server = make_test_server();
-        poison_mutex(&server.embedder);
+        let ctx = make_test_server();
+        poison_mutex(&ctx.server.embedder);
 
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| server.embedder()));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.server.embedder()));
         assert!(result.is_ok(), "embedder() must not panic on poisoned mutex");
         assert!(result.unwrap().is_none(), "embedder() must return None when poisoned");
     }
 
     // TDD: engine() must not panic when embedder Mutex is poisoned.
-    // engine() calls embedder() internally — same cascade.
-    // FAILS with current code.
     #[test]
     fn engine_does_not_panic_when_embedder_poisoned() {
-        let server = make_test_server();
-        poison_mutex(&server.embedder);
+        let ctx = make_test_server();
+        poison_mutex(&ctx.server.embedder);
 
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| server.engine()));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.server.engine()));
         assert!(result.is_ok(), "engine() must not panic on poisoned embedder mutex");
     }
 }

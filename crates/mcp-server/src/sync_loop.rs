@@ -202,7 +202,7 @@ impl SyncLoopHandle {
 }
 
 pub fn spawn_sync_loop(
-    conn: Arc<std::sync::Mutex<rusqlite::Connection>>,
+    conn: doxus_core::db::DbPool,
     embedder: Arc<std::sync::Mutex<Option<Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>>>>,
     plugin_manager: Arc<PluginManager>,
     interval_secs: u64,
@@ -212,7 +212,7 @@ pub fn spawn_sync_loop(
 
 /// Spawn the background sync loop with an [`EventSink`] for UI notifications.
 pub fn spawn_sync_loop_with_sink<S: EventSink>(
-    conn: Arc<std::sync::Mutex<rusqlite::Connection>>,
+    conn: doxus_core::db::DbPool,
     embedder: Arc<std::sync::Mutex<Option<Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>>>>,
     plugin_manager: Arc<PluginManager>,
     interval_secs: u64,
@@ -227,10 +227,10 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
 
         loop {
             let due = {
-                let guard = match conn.lock() {
+                let guard = match conn.get() {
                     Ok(g) => g,
                     Err(e) => {
-                        tracing::error!("sync_loop: failed to lock connection: {e}");
+                        tracing::error!("sync_loop: failed to get connection: {e}");
                         break;
                     }
                 };
@@ -335,7 +335,7 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
                                     };
                                     if let Some(ref provider) = current_embedder {
                                         let engine = doxus_core::search::SearchEngine::with_embedder(
-                                            Arc::clone(&conn),
+                                            conn.clone(),
                                             Arc::clone(provider),
                                         );
                                         
@@ -389,7 +389,7 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
                                         tracing::info!(instance_id = inst.id, count = updated_count, "sync_loop: all batches completed");
                                     }
 
-                                    match conn.lock() {
+                                    match conn.get() {
                                         Ok(guard) => {
                                             let sync_db = SyncDb::new(&guard);
                                             if let Err(e) = sync_db.mark_synced(inst.id, new_cursor.as_deref()) {
@@ -404,7 +404,7 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
                                             tracing::error!(
                                                 instance_id = inst.id,
                                                 error = %e,
-                                                "sync_loop: connection lock poisoned, aborting loop"
+                                                "sync_loop: connection get error, aborting loop"
                                             );
                                             return;
                                         }
@@ -455,7 +455,7 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
                 let mut total_resolved = 0;
                 while has_more {
                     let resolved = {
-                        if let Ok(guard) = conn.lock() {
+                        if let Ok(guard) = conn.get() {
                             match LinkResolver::resolve_unresolved_links_batch(&guard, 20) {
                                 Ok(count) => {
                                     has_more = count == 20;
@@ -467,7 +467,7 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
                                 }
                             }
                         } else {
-                            tracing::error!("sync_loop: connection lock poisoned in link resolution");
+                            tracing::error!("sync_loop: connection get failed in link resolution");
                             break;
                         }
                     };
@@ -512,11 +512,11 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
 
-    fn open_test_db() -> (Arc<Mutex<Connection>>, TempDir) {
+    fn open_test_db() -> (doxus_core::db::DbPool, TempDir) {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("test.db");
-        let conn = db::open(&path).unwrap();
-        (Arc::new(Mutex::new(conn)), dir)
+        let pool = doxus_core::db::create_pool(&path).unwrap();
+        (pool, dir)
     }
 
     fn make_plugin_manager() -> Arc<doxus_core::plugin::PluginManager> {
@@ -547,13 +547,13 @@ mod tests {
 
         // Insert a source instance so due_instances returns something.
         {
-            let guard = conn.lock().unwrap();
+            let guard = conn.get().unwrap();
             insert_test_instance(&guard);
         }
 
         // Use a very short interval (100 ms) so we get multiple iterations quickly.
         let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
-        let conn_clone: Arc<Mutex<Connection>> = Arc::clone(&conn);
+        let conn_clone = conn.clone();
         let poll_count = Arc::new(AtomicUsize::new(0));
         let poll_count_clone = Arc::clone(&poll_count);
 
@@ -562,7 +562,7 @@ mod tests {
             let sleep_dur = Duration::from_millis(100);
             loop {
                 {
-                    let guard = conn_clone.lock().unwrap();
+                    let guard = conn_clone.get().unwrap();
                     let sync_db = SyncDb::new(&*guard);
                     if let Ok(due) = scheduler.due_instances(&sync_db) {
                         poll_count_clone.fetch_add(due.len(), Ordering::SeqCst);
@@ -729,7 +729,7 @@ mod tests {
 
         let (conn, _db_dir) = open_test_db();
         let instance_id = {
-            let guard = conn.lock().unwrap();
+            let guard = conn.get().unwrap();
             insert_obsidian_instance(&guard, vault_dir.path().to_str().unwrap())
         };
 
@@ -741,13 +741,13 @@ mod tests {
         let plugin_manager = Arc::new(pm);
 
         // interval_secs = 0 → always due
-        let handle = spawn_sync_loop(Arc::clone(&conn), Arc::new(Mutex::new(None)), Arc::clone(&plugin_manager), 0);
+        let handle = spawn_sync_loop(conn.clone(), Arc::new(Mutex::new(None)), Arc::clone(&plugin_manager), 0);
         // Give the loop time to run at least one iteration
         tokio::time::sleep(Duration::from_millis(200)).await;
         handle.shutdown().await;
 
         // Verify: last_synced should now be set for the instance
-        let guard = conn.lock().unwrap();
+        let guard = conn.get().unwrap();
         let last_synced: Option<i64> = guard
             .query_row(
                 "SELECT last_synced FROM source_instances WHERE id = ?1",
