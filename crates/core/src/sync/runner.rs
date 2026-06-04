@@ -113,6 +113,7 @@ impl<S: DocSource + Send + Sync> SyncRunner<S> {
                                         .map_err(|e| match e {
                                             crate::db::DbError::Sqlite(inner) => SyncError::Db(inner),
                                             crate::db::DbError::Migration { reason, .. } => SyncError::Plugin(reason),
+                                            crate::db::DbError::Pool(inner) => SyncError::Plugin(inner.to_string()),
                                         })?;
                                     applied += 1;
                                 }

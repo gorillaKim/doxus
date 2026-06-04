@@ -380,7 +380,7 @@ impl SyncManager {
 
     async fn get_project_plugin_id(&self, project_name: &str) -> Result<String, String> {
         let conn = self.indexing_service.conn();
-        let conn = conn.lock().map_err(|_| "db lock poisoned")?;
+        let conn = conn.get().map_err(|e| e.to_string())?;
         
         let plugin_id: String = conn.query_row(
             "SELECT COALESCE(si.plugin_id, p.source_type) 
@@ -388,7 +388,7 @@ impl SyncManager {
              LEFT JOIN source_instances si ON p.id = si.project_id 
              WHERE p.name = ?1",
             rusqlite::params![project_name],
-            |row| row.get(0)
+            |row: &rusqlite::Row<'_>| row.get(0)
         ).map_err(|e| e.to_string())?;
 
         Ok(plugin_id)
@@ -398,29 +398,32 @@ impl SyncManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::TestDb;
+    use crate::db::DbPool;
     use crate::plugin::PluginManager;
     use crate::search::SearchEngine;
 
-    async fn setup_manager() -> (Arc<SyncManager>, Arc<std::sync::Mutex<rusqlite::Connection>>) {
-        let db = TestDb::new();
-        let conn = Arc::new(std::sync::Mutex::new(db.conn));
+    async fn setup_manager() -> (Arc<SyncManager>, DbPool, tempfile::TempDir) {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let pool = crate::db::create_pool(&db_path).unwrap();
         let pm = Arc::new(PluginManager::new(std::path::PathBuf::from("/tmp")));
-        let engine = Arc::new(SearchEngine::with_embedder(conn.clone(), Arc::new(crate::embedding::NoOpEmbedder) as Arc<dyn crate::embedding::EmbeddingProvider + Send + Sync>));
-        let indexer = Arc::new(IndexingService::new(conn.clone(), pm, engine));
+        let engine = Arc::new(SearchEngine::with_embedder(pool.clone(), Arc::new(crate::embedding::NoOpEmbedder) as Arc<dyn crate::embedding::EmbeddingProvider + Send + Sync>));
+        let indexer = Arc::new(IndexingService::new(pool.clone(), pm, engine));
         let (mgr, _) = SyncManager::new(indexer);
-        (Arc::new(mgr), conn)
+        (Arc::new(mgr), pool, temp_dir)
     }
 
     #[tokio::test]
     async fn test_should_sync_on_focus() {
-        let (mgr, conn) = setup_manager().await;
+        let (mgr, pool, _temp) = setup_manager().await;
+        let conn = pool.get().unwrap();
         
-        conn.lock().unwrap().execute(
+        conn.execute(
             "INSERT INTO projects (name, display_name, path, sync_policy_json, created_at, updated_at)
              VALUES ('proj1', 'P1', '', '{\"type\":\"on_focus\"}', 0, 0)",
             []
         ).unwrap();
+        drop(conn);
 
         // 1. Focus trigger -> true
         assert!(mgr.should_sync("proj1", &SyncTrigger::Focus).await);
@@ -431,13 +434,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_should_sync_interval() {
-        let (mgr, conn) = setup_manager().await;
+        let (mgr, pool, _temp) = setup_manager().await;
+        let conn = pool.get().unwrap();
         
-        conn.lock().unwrap().execute(
+        conn.execute(
             "INSERT INTO projects (name, display_name, path, sync_policy_json, created_at, updated_at)
              VALUES ('proj1', 'P1', '', '{\"type\":\"interval\",\"seconds\":60}', 0, 0)",
             []
         ).unwrap();
+        drop(conn);
 
         // No record of last sync -> true
         assert!(mgr.should_sync("proj1", &SyncTrigger::Periodic).await);
@@ -450,7 +455,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_manual_task_marking() {
-        let (mgr, _) = setup_manager().await;
+        let (mgr, _, _temp) = setup_manager().await;
         let project = "manual_proj";
 
         // 1. Initial state

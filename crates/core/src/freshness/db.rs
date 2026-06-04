@@ -1,11 +1,10 @@
-use rusqlite::Connection;
-use std::sync::{Arc, Mutex};
+use crate::db::{DbError, DbPool};
 use super::score::{RetentionTier, SensitivityMode, Thresholds, calculate_freshness, score_to_status};
 
 use serde::{Serialize, Deserialize};
 
 pub struct FreshnessService {
-    conn: Arc<Mutex<Connection>>,
+    conn: DbPool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -19,23 +18,23 @@ pub struct FreshnessReport {
 }
 
 impl FreshnessService {
-    pub fn new(conn: Arc<Mutex<Connection>>) -> Self {
+    pub fn new(conn: DbPool) -> Self {
         Self { conn }
     }
 
     /// Recalculates all scores in the database
-    pub fn recalculate_all(&self) -> Result<usize, rusqlite::Error> {
+    pub fn recalculate_all(&self) -> Result<usize, DbError> {
         self.recalculate_internal(None)
     }
 
     /// Recalculates scores for a specific project
-    pub fn recalculate_project(&self, project_id: i64) -> Result<usize, rusqlite::Error> {
+    pub fn recalculate_project(&self, project_id: i64) -> Result<usize, DbError> {
         self.recalculate_internal(Some(project_id))
     }
 
     /// Recalculates scores for a specific document
-    pub fn recalculate_document(&self, doc_id: i64) -> Result<(), rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+    pub fn recalculate_document(&self, doc_id: i64) -> Result<(), DbError> {
+        let conn = self.conn.get()?;
         let now = chrono::Utc::now().timestamp();
         
         let mut stmt = conn.prepare("
@@ -83,8 +82,8 @@ impl FreshnessService {
         Ok(())
     }
 
-    fn recalculate_internal(&self, project_id: Option<i64>) -> Result<usize, rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+    fn recalculate_internal(&self, project_id: Option<i64>) -> Result<usize, DbError> {
+        let conn = self.conn.get()?;
         let now = chrono::Utc::now().timestamp();
         
         let mut sql = "
@@ -142,8 +141,8 @@ impl FreshnessService {
         Ok(count)
     }
 
-    pub fn get_stale_docs(&self, project_id: Option<i64>, limit: u32) -> Result<Vec<i64>, rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+    pub fn get_stale_docs(&self, project_id: Option<i64>, limit: u32) -> Result<Vec<i64>, DbError> {
+        let conn = self.conn.get()?;
         let mut sql = "SELECT df.document_id FROM document_freshness df 
                        JOIN documents d ON df.document_id = d.id 
                        WHERE df.status IN ('stale', 'aging')".to_string();
@@ -166,8 +165,8 @@ impl FreshnessService {
     }
 
     /// Generates an aggregated freshness report for a project (or all if None)
-    pub fn get_project_freshness_report(&self, project_id: Option<i64>) -> Result<FreshnessReport, rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+    pub fn get_project_freshness_report(&self, project_id: Option<i64>) -> Result<FreshnessReport, DbError> {
+        let conn = self.conn.get()?;
         
         let mut sql = "SELECT 
             COUNT(d.id) as total,
@@ -207,8 +206,8 @@ impl FreshnessService {
         project_id: i64, 
         source_doc_id: &str, 
         tier: Option<&str>
-    ) -> Result<bool, rusqlite::Error> {
-        let conn = self.conn.lock().unwrap();
+    ) -> Result<bool, DbError> {
+        let conn = self.conn.get()?;
         
         // Find document_id
         let doc_id: i64 = match conn.query_row(
@@ -238,13 +237,13 @@ impl FreshnessService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::TestDb;
 
     #[test]
     fn test_recalculate_all() {
-        let db = TestDb::new();
-        let service = FreshnessService::new(Arc::new(Mutex::new(db.conn)));
-        // Note: Without inserting fake documents, count is 0
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let pool = crate::db::create_pool(&db_path).unwrap();
+        let service = FreshnessService::new(pool);
         let count = service.recalculate_all().unwrap();
         assert_eq!(count, 0);
     }

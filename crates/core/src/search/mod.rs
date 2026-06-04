@@ -5,7 +5,7 @@ use crate::search::highlighter::Highlighter;
 use rusqlite::{params, Connection};
 use sha2::{Sha256, Digest};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::collections::hash_map::Entry;
 use tracing;
 use thiserror::Error;
@@ -22,6 +22,8 @@ pub enum SearchError {
     LockPoisoned,
     #[error("task join error: {0}")]
     Join(String),
+    #[error("connection pool error: {0}")]
+    Pool(#[from] r2d2::Error),
 }
 
 impl From<EmbeddingError> for SearchError {
@@ -233,18 +235,18 @@ impl From<SearchHit> for Hit {
 }
 
 pub struct SearchEngine {
-    conn: Arc<Mutex<Connection>>,
+    conn: crate::db::DbPool,
     embedder: Arc<dyn EmbeddingProvider + Send + Sync>,
 }
 
 impl SearchEngine {
-    pub fn with_embedder(conn: Arc<Mutex<Connection>>, embedder: Arc<dyn EmbeddingProvider + Send + Sync>) -> Self {
+    pub fn with_embedder(conn: crate::db::DbPool, embedder: Arc<dyn EmbeddingProvider + Send + Sync>) -> Self {
         Self { conn, embedder }
     }
 
     pub async fn rebuild_vector_table(&self) -> Result<(), SearchError> {
         let dim = self.embedder.dimension();
-        let conn = self.conn.lock().map_err(|_| SearchError::LockPoisoned)?;
+        let conn = self.conn.get()?;
         conn.execute_batch(&format!(
             "DROP TABLE IF EXISTS chunk_embeddings;
              CREATE VIRTUAL TABLE chunk_embeddings USING vec0(
@@ -259,9 +261,9 @@ impl SearchEngine {
         SyncSearchEngine::from_conn(conn)
     }
 
-    pub fn new_fts_only(conn: Connection) -> Self {
+    pub fn new_fts_only(pool: crate::db::DbPool) -> Self {
         Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn: pool,
             embedder: Arc::new(crate::embedding::NoOpEmbedder) as Arc<dyn EmbeddingProvider + Send + Sync>,
         }
     }
@@ -343,13 +345,13 @@ impl SearchEngine {
                 }
                 }
 
-                let conn = Arc::clone(&self.conn);
+                let pool = self.conn.clone();
                 let sub_chunk_counts_moved = std::mem::take(&mut sub_chunk_counts);
                 let sub_chunks_moved = std::mem::take(&mut sub_chunks);
 
                 tokio::task::spawn_blocking(move || -> Result<(), SearchError> {
-                    let mut conn_guard = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
-                    let tx = conn_guard.transaction()?;
+                    let mut conn = pool.get()?;
+                    let tx = conn.transaction()?;
 
                     let mut current_chunk_offset = 0;
                     for (doc_idx, req) in sub_batch.into_iter().enumerate() {
@@ -390,9 +392,9 @@ impl SearchEngine {
 
         // Single WAL checkpoint after all sub-batches complete — avoids per-batch
         // lock contention and blocking the conn for multiple checkpoint cycles.
-        let conn = Arc::clone(&self.conn);
+        let pool = self.conn.clone();
         tokio::task::spawn_blocking(move || {
-            if let Ok(c) = conn.lock() {
+            if let Ok(c) = pool.get() {
                 let _ = c.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
                 let _ = c.execute_batch("PRAGMA shrink_memory;");
             }
@@ -420,7 +422,7 @@ impl SearchEngine {
             chunk_embeddings.push(bytes);
         }
 
-        let conn = Arc::clone(&self.conn);
+        let pool = self.conn.clone();
         let source_doc_id = params.source_doc_id.to_string();
         let title = params.title.to_string();
         let content = params.content.to_string();
@@ -429,7 +431,7 @@ impl SearchEngine {
         let meta = params.meta;
 
         tokio::task::spawn_blocking(move || -> Result<(), SearchError> {
-            let conn = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
+            let conn = pool.get()?;
             index_document_sync(
                 &conn,
                 SyncIndexParams {
@@ -464,11 +466,11 @@ impl SearchEngine {
             }
         };
 
-        let conn = Arc::clone(&self.conn);
+        let pool = self.conn.clone();
         let query_clone = query.clone();
         
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
+            let conn = pool.get()?;
             let mut paged_hits: Vec<Hit> = hits.into_iter()
                 .skip(query_clone.offset)
                 .take(query_clone.limit)
@@ -505,10 +507,10 @@ impl SearchEngine {
     }
 
     async fn fts_search_async(&self, query: &SearchQuery) -> Result<Vec<SearchHit>, SearchError> {
-        let conn = Arc::clone(&self.conn);
+        let pool = self.conn.clone();
         let query_clone = query.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
+            let conn = pool.get()?;
             fts_search_sync(&conn, &query_clone)
         }).await?
     }
@@ -522,11 +524,11 @@ impl SearchEngine {
         let quantized = crate::embedding::quantize_to_i8(&emb);
         let emb_bytes: Vec<u8> = quantized.into_iter().map(|i| i as u8).collect();
 
-        let conn = Arc::clone(&self.conn);
+        let pool = self.conn.clone();
         let query_clone = query.clone();
 
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().map_err(|_| SearchError::LockPoisoned)?;
+            let conn = pool.get()?;
             vector_search_sync(&conn, &emb_bytes, &query_clone)
         }).await?
     }

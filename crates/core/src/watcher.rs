@@ -121,7 +121,6 @@ fn should_ignore(path: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::TestDb;
     use crate::plugin::PluginManager;
     use crate::search::SearchEngine;
     use std::path::Path;
@@ -203,29 +202,32 @@ mod tests {
         assert!(!should_ignore(Path::new("/vault/./notes.md")));
     }
 
-    async fn setup_watcher() -> (Arc<WatcherManager>, mpsc::Receiver<SyncTrigger>, TempDir, Arc<std::sync::Mutex<rusqlite::Connection>>) {
-        let db = TestDb::new();
-        let conn = Arc::new(std::sync::Mutex::new(db.conn));
+    async fn setup_watcher() -> (Arc<WatcherManager>, mpsc::Receiver<SyncTrigger>, TempDir, crate::db::DbPool, TempDir) {
+        let db_tmp = TempDir::new().unwrap();
+        let db_path = db_tmp.path().join("test.db");
+        let pool = crate::db::create_pool(&db_path).unwrap();
         let tmp = TempDir::new().unwrap();
         let pm = Arc::new(PluginManager::new(std::path::PathBuf::from("/tmp")));
-        let engine = Arc::new(SearchEngine::with_embedder(conn.clone(), Arc::new(crate::embedding::NoOpEmbedder) as Arc<dyn crate::embedding::EmbeddingProvider + Send + Sync>));
-        let indexer = Arc::new(IndexingService::new(conn.clone(), pm, engine));
+        let engine = Arc::new(SearchEngine::with_embedder(pool.clone(), Arc::new(crate::embedding::NoOpEmbedder) as Arc<dyn crate::embedding::EmbeddingProvider + Send + Sync>));
+        let indexer = Arc::new(IndexingService::new(pool.clone(), pm, engine));
         let (tx, rx) = mpsc::channel(32);
         let wm = Arc::new(WatcherManager::new(indexer, tx));
-        (wm, rx, tmp, conn)
+        (wm, rx, tmp, pool, db_tmp)
     }
 
     #[tokio::test]
     #[ignore = "flaky on some environments (macos fsevents)"]
     async fn test_watcher_ignores_hidden_files() {
-        let (wm, mut rx, tmp, conn) = setup_watcher().await;
+        let (wm, mut rx, tmp, pool, _db_tmp) = setup_watcher().await;
+        let conn = pool.get().unwrap();
         let root = tmp.path().to_string_lossy().to_string();
 
-        conn.lock().unwrap().execute(
+        conn.execute(
             "INSERT INTO projects (name, display_name, path, sync_policy_json, created_at, updated_at)
              VALUES ('watch-ignore-test', 'WatchIgnore', '', ?1, 0, 0)",
             [format!("{{\"type\":\"realtime\",\"root\":\"{}\",\"ignore_patterns\":[],\"extensions\":[]}}", root)]
         ).unwrap();
+        drop(conn);
 
         wm.start_watching("watch-ignore-test").await.unwrap();
         tokio::time::sleep(Duration::from_millis(500)).await;

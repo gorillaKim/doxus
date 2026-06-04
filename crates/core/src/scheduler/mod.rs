@@ -20,15 +20,14 @@ pub trait AgentHandler: Send + Sync {
 }
 
 pub struct SchedulerManager {
-    // std::sync::Mutex hold time must be minimized in async contexts
-    conn: Arc<Mutex<rusqlite::Connection>>,
+    conn: crate::db::DbPool,
     indexer: Arc<IndexingService>,
     agent_handler: Mutex<Option<Arc<dyn AgentHandler>>>,
 }
 
 impl SchedulerManager {
     pub fn new(
-        conn: Arc<Mutex<rusqlite::Connection>>,
+        conn: crate::db::DbPool,
         indexer: Arc<IndexingService>,
     ) -> Self {
         Self { 
@@ -53,7 +52,7 @@ impl SchedulerManager {
         let conn_clone = self.conn.clone();
 
         let due_jobs = tokio::task::spawn_blocking(move || {
-            let conn = conn_clone.lock().unwrap();
+            let conn = conn_clone.get().unwrap();
             let sdb = SchedulerDb::new(&conn);
             sdb.due_jobs(now, is_idle).unwrap_or_default()
         }).await.unwrap_or_default();
@@ -95,7 +94,7 @@ impl SchedulerManager {
 
                 // Record result back to DB
                 let _ = tokio::task::spawn_blocking(move || {
-                    let conn = conn_clone.lock().unwrap();
+                    let conn = conn_clone.get().unwrap();
                     let sdb = SchedulerDb::new(&conn);
                     if result.success {
                         let _ = sdb.mark_completed(job.id, &result.message);
@@ -111,7 +110,7 @@ impl SchedulerManager {
         let conn_clone = self.conn.clone();
         
         // This is called on startup. Run synchronously.
-        let conn = conn_clone.lock().unwrap();
+        let conn = conn_clone.get().unwrap();
         let sdb = SchedulerDb::new(&conn);
         let existing = sdb.list_jobs(None).unwrap_or_default();
         

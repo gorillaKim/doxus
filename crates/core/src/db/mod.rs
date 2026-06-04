@@ -11,6 +11,8 @@ pub enum DbError {
     Sqlite(#[from] rusqlite::Error),
     #[error("migration failed (V{version}): {reason}")]
     Migration { version: u32, reason: String },
+    #[error("connection pool error: {0}")]
+    Pool(#[from] r2d2::Error),
 }
 
 /// Apply SQLite PRAGMAs recommended for doxus.
@@ -22,6 +24,37 @@ pub fn apply_pragmas(conn: &Connection) -> SqlResult<()> {
          PRAGMA busy_timeout = 5000;
          PRAGMA cache_size = -16000;",
     )
+}
+
+pub type DbPool = r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>;
+
+#[derive(Debug)]
+pub struct DbConnectionCustomizer;
+
+impl r2d2::CustomizeConnection<Connection, rusqlite::Error> for DbConnectionCustomizer {
+    fn on_acquire(&self, conn: &mut Connection) -> Result<(), rusqlite::Error> {
+        apply_pragmas(conn)?;
+        Ok(())
+    }
+}
+
+/// Create a connection pool for doxus database.
+pub fn create_pool(path: &std::path::Path) -> Result<DbPool, DbError> {
+    ensure_vec_extension();
+    
+    // 1. Initialize schema and run migrations on a single connection first.
+    {
+        let _conn = open(path)?;
+    }
+
+    // 2. Build the r2d2 pool with customizer to apply pragmas on new connections.
+    let manager = r2d2_sqlite::SqliteConnectionManager::file(path);
+    let pool = r2d2::Pool::builder()
+        .max_size(10)
+        .connection_customizer(Box::new(DbConnectionCustomizer))
+        .build(manager)?;
+        
+    Ok(pool)
 }
 
 /// Run all migrations V1–V40 in order. Idempotent.

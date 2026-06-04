@@ -1,6 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use rusqlite::params;
 use crate::indexing::IndexingService;
+use crate::db::DbPool;
 
 pub enum ReindexScope {
     Full,
@@ -34,12 +35,12 @@ pub struct ReindexResult {
 }
 
 pub struct ReindexService {
-    conn: Arc<Mutex<rusqlite::Connection>>,
+    conn: DbPool,
     indexing: Arc<IndexingService>,
 }
 
 impl ReindexService {
-    pub fn new(conn: Arc<Mutex<rusqlite::Connection>>, indexing: Arc<IndexingService>) -> Self {
+    pub fn new(conn: DbPool, indexing: Arc<IndexingService>) -> Self {
         Self { conn, indexing }
     }
 
@@ -53,7 +54,7 @@ impl ReindexService {
 
         // 1. 프로젝트 ID 조회
         let project_id: i64 = {
-            let conn = self.conn.lock().map_err(|_| "db lock poisoned".to_string())?;
+            let conn = self.conn.get().map_err(|e| e.to_string())?;
             conn.query_row(
                 "SELECT id FROM projects WHERE name = ?1",
                 params![project_name],
@@ -94,11 +95,11 @@ impl ReindexService {
 
         // content_hash 맵 조회 (force=false 시 스킵 판단용)
         let hash_map: std::collections::HashMap<String, String> = if !options.force {
-            let conn = self.conn.lock().map_err(|_| "db lock poisoned".to_string())?;
+            let conn = self.conn.get().map_err(|e| e.to_string())?;
             let mut stmt = conn.prepare(
                 "SELECT source_doc_id, content_hash FROM documents WHERE project_id = ?1"
             ).map_err(|e| e.to_string())?;
-            let pairs: Vec<(String, String)> = stmt.query_map(params![project_id], |r| {
+            let pairs: Vec<(String, String)> = stmt.query_map(params![project_id], |r: &rusqlite::Row<'_>| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
             }).map_err(|e| e.to_string())?
             .filter_map(|r| r.ok())
@@ -110,7 +111,7 @@ impl ReindexService {
 
         // 스토리지 전략 조회
         let strategy: String = {
-            let conn = self.conn.lock().map_err(|_| "db lock poisoned".to_string())?;
+            let conn = self.conn.get().map_err(|e| e.to_string())?;
             conn.query_row(
                 "SELECT storage_strategy FROM projects WHERE id = ?1",
                 params![project_id],
@@ -128,7 +129,7 @@ impl ReindexService {
 
                 // 문서 내용 조회
                 let row: Result<(Option<String>, String), _> = {
-                    let conn = self.conn.lock().map_err(|_| "db lock poisoned".to_string())?;
+                    let conn = self.conn.get().map_err(|e| e.to_string())?;
                     conn.query_row(
                         "SELECT title, content_hash FROM documents WHERE project_id = ?1 AND source_doc_id = ?2",
                         params![project_id, sid],
@@ -178,13 +179,13 @@ impl ReindexService {
     }
 
     fn collect_targets(&self, project_id: i64, scope: &ReindexScope) -> Result<Vec<String>, String> {
-        let conn = self.conn.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let conn = self.conn.get().map_err(|e| e.to_string())?;
         match scope {
             ReindexScope::Full => {
                 let mut stmt = conn.prepare(
                     "SELECT source_doc_id FROM documents WHERE project_id = ?1"
                 ).map_err(|e| e.to_string())?;
-                let ids: Result<Vec<_>, _> = stmt.query_map(params![project_id], |r| r.get(0))
+                let ids: Result<Vec<_>, _> = stmt.query_map(params![project_id], |r: &rusqlite::Row<'_>| r.get(0))
                     .map_err(|e| e.to_string())?
                     .collect::<Result<Vec<String>, _>>();
                 ids.map_err(|e| e.to_string())
@@ -210,7 +211,7 @@ impl ReindexService {
                 if let Some(v) = created_before { params_vec.push(Box::new(*v)); }
                 let param_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
                 let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-                let ids: Vec<String> = stmt.query_map(param_refs.as_slice(), |r| r.get(0))
+                let ids: Vec<String> = stmt.query_map(param_refs.as_slice(), |r: &rusqlite::Row<'_>| r.get(0))
                     .map_err(|e| e.to_string())?
                     .filter_map(|r| r.ok())
                     .collect();
@@ -220,7 +221,7 @@ impl ReindexService {
     }
 
     fn load_raw_document(&self, project_id: i64, sid: &str) -> Result<doxus_plugin_sdk::RawDocument, String> {
-        let conn = self.conn.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let conn = self.conn.get().map_err(|e| e.to_string())?;
         type RawDocData = (Option<String>, Option<String>, Option<i64>, Option<i64>, Option<String>);
         let (title, url, created_at, updated_at, metadata_json): RawDocData = conn.query_row(
             "SELECT title, url, created_at, updated_at, metadata_json FROM documents WHERE project_id = ?1 AND source_doc_id = ?2",
@@ -233,7 +234,7 @@ impl ReindexService {
             let mut stmt = conn.prepare(
                 "SELECT chunk_index, COALESCE(content, '') FROM chunks WHERE document_id = (SELECT id FROM documents WHERE project_id=?1 AND source_doc_id=?2) ORDER BY chunk_index"
             ).map_err(|e| e.to_string())?;
-            let rows: Vec<(i64, String)> = stmt.query_map(params![project_id, sid], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            let rows: Vec<(i64, String)> = stmt.query_map(params![project_id, sid], |r: &rusqlite::Row<'_>| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
                 .map_err(|e| e.to_string())?
                 .filter_map(|r| r.ok())
                 .collect();
@@ -272,7 +273,7 @@ impl ReindexService {
             ReindexScope::Documents(v) => format!("documents:{}", v.len()),
             ReindexScope::DateRange { .. } => "date_range".to_string(),
         };
-        let conn = self.conn.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let conn = self.conn.get().map_err(|e| e.to_string())?;
         tracing::debug!(
             project_id = entry.project_id, scope = %scope_str, status = entry.status,
             total = entry.total, processed = entry.processed, skipped = entry.skipped,
@@ -303,17 +304,17 @@ struct HistoryEntry<'a> {
 /// `last_run_version` should be updated after this returns, not after the queue drains,
 /// so that a mid-run app restart resumes correctly (idempotent via content-hash on next run).
 pub async fn force_reindex_all_projects(
-    conn: Arc<Mutex<rusqlite::Connection>>,
+    conn: DbPool,
     indexing: Arc<IndexingService>,
 ) -> Result<usize, String> {
     let project_names: Vec<String> = {
-        let c = conn.lock().map_err(|_| "db lock poisoned".to_string())?;
+        let c = conn.get().map_err(|e| e.to_string())?;
         let mut stmt = c
             .prepare("SELECT name FROM projects WHERE status = 'active'")
             .map_err(|e| e.to_string())?;
         // Bind to a named variable so `stmt`/`c` drop before the block result is returned.
         let names: Vec<String> = stmt
-            .query_map([], |r| r.get::<_, String>(0))
+            .query_map([], |r: &rusqlite::Row<'_>| r.get::<_, String>(0))
             .map_err(|e| e.to_string())?
             .filter_map(|r| r.ok())
             .collect();
@@ -349,29 +350,24 @@ pub async fn force_reindex_all_projects(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::TestDb;
     use crate::embedding::NoOpEmbedder;
     use crate::plugin::PluginManager;
     use crate::search::{SearchEngine, SyncSearchEngine, DocMeta};
     use std::path::PathBuf;
+    use tempfile::TempDir;
 
-    fn make_service(_db: &TestDb) -> (Arc<Mutex<rusqlite::Connection>>, Arc<IndexingService>) {
-        // TestDb는 conn을 소유하므로 Arc 없이 직접 사용할 수 없음
-        // 새 in-memory DB를 만들고 서비스 구성
-        crate::db::ensure_vec_extension();
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        crate::db::apply_pragmas(&conn).unwrap();
-        crate::db::create_vec0_table(&conn).unwrap();
-        crate::db::migrate(&conn).unwrap();
-        let conn = Arc::new(Mutex::new(conn));
+    fn make_service() -> (DbPool, Arc<IndexingService>, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let pool = crate::db::create_pool(&db_path).unwrap();
         let pm = Arc::new(PluginManager::new(PathBuf::from("/tmp")));
-        let engine = Arc::new(SearchEngine::with_embedder(conn.clone(), Arc::new(NoOpEmbedder)));
-        let indexing = Arc::new(IndexingService::new(conn.clone(), pm, engine));
-        (conn, indexing)
+        let engine = Arc::new(SearchEngine::with_embedder(pool.clone(), Arc::new(NoOpEmbedder)));
+        let indexing = Arc::new(IndexingService::new(pool.clone(), pm, engine));
+        (pool, indexing, temp_dir)
     }
 
-    fn insert_project(conn: &Arc<Mutex<rusqlite::Connection>>, name: &str) -> i64 {
-        let c = conn.lock().unwrap();
+    fn insert_project(pool: &DbPool, name: &str) -> i64 {
+        let c = pool.get().unwrap();
         c.execute(
             "INSERT INTO projects(name, display_name, path, status, storage_strategy, created_at, updated_at) \
              VALUES (?1, ?1, '/tmp', 'active', 'full', unixepoch(), unixepoch())",
@@ -380,26 +376,21 @@ mod tests {
         c.query_row("SELECT id FROM projects WHERE name=?1", params![name], |r| r.get::<_, i64>(0)).unwrap()
     }
 
-    fn insert_doc(conn: &Arc<Mutex<rusqlite::Connection>>, pid: i64, sid: &str, title: &str, created_at: i64) {
-        let c = conn.lock().unwrap();
+    fn insert_doc(pool: &DbPool, pid: i64, sid: &str, title: &str, created_at: i64) {
+        let c = pool.get().unwrap();
         let engine = SyncSearchEngine::from_conn(&c);
         let meta = DocMeta { created_at: Some(created_at), updated_at: Some(created_at), ..Default::default() };
         engine.index_document_with_meta(pid, sid, title, title, &meta, "full").unwrap();
     }
 
-    // ── Step 4 TDD 테스트 ──────────────────────────────────────────────────
-
-    // ── force_reindex_all_projects TDD ───────────────────────────────────────
-
     #[tokio::test]
     async fn test_force_reindex_all_active_excludes_disabled() {
-        let db = TestDb::new();
-        let (conn, indexing) = make_service(&db);
+        let (pool, indexing, _temp) = make_service();
 
-        insert_project(&conn, "active-1");
-        insert_project(&conn, "active-2");
+        insert_project(&pool, "active-1");
+        insert_project(&pool, "active-2");
         {
-            let c = conn.lock().unwrap();
+            let c = pool.get().unwrap();
             c.execute(
                 "INSERT INTO projects(name, display_name, path, status, storage_strategy, created_at, updated_at) \
                  VALUES ('disabled-p', 'Disabled', '/tmp', 'disabled', 'full', unixepoch(), unixepoch())",
@@ -407,27 +398,25 @@ mod tests {
             ).unwrap();
         }
 
-        let count = force_reindex_all_projects(conn.clone(), indexing).await.unwrap();
+        let count = force_reindex_all_projects(pool.clone(), indexing).await.unwrap();
         assert_eq!(count, 2, "active 프로젝트 2개만 재인덱싱 대상이어야 함");
     }
 
     #[tokio::test]
     async fn test_force_reindex_all_returns_zero_when_no_active() {
-        let db = TestDb::new();
-        let (conn, indexing) = make_service(&db);
-        let count = force_reindex_all_projects(conn.clone(), indexing).await.unwrap();
+        let (pool, indexing, _temp) = make_service();
+        let count = force_reindex_all_projects(pool.clone(), indexing).await.unwrap();
         assert_eq!(count, 0, "active 프로젝트 없으면 0 반환");
     }
 
     #[tokio::test]
     async fn test_dry_run_returns_targets_without_db_change() {
-        let db = TestDb::new(); // 마이그레이션 완료된 DB - 실제로 사용하지 않고 make_service 내부에서 새 conn 생성
-        let (conn, indexing) = make_service(&db);
-        let pid = insert_project(&conn, "proj");
-        insert_doc(&conn, pid, "doc1", "Document One", 1000);
-        insert_doc(&conn, pid, "doc2", "Document Two", 2000);
+        let (pool, indexing, _temp) = make_service();
+        let pid = insert_project(&pool, "proj");
+        insert_doc(&pool, pid, "doc1", "Document One", 1000);
+        insert_doc(&pool, pid, "doc2", "Document Two", 2000);
 
-        let service = ReindexService::new(conn.clone(), indexing);
+        let service = ReindexService::new(pool.clone(), indexing);
         let result = service.reindex(
             "proj",
             ReindexScope::Full,
@@ -440,7 +429,8 @@ mod tests {
         assert_eq!(result.dry_run_targets.as_ref().unwrap().len(), 2);
 
         // reindex_history에 기록됐는지 확인
-        let count: i64 = conn.lock().unwrap().query_row(
+        let c = pool.get().unwrap();
+        let count: i64 = c.query_row(
             "SELECT COUNT(*) FROM reindex_history WHERE project_id=?1 AND status='dry_run'",
             params![pid], |r| r.get(0)
         ).unwrap();
@@ -449,13 +439,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_scope_document_single() {
-        let db = TestDb::new();
-        let (conn, indexing) = make_service(&db);
-        let pid = insert_project(&conn, "proj2");
-        insert_doc(&conn, pid, "alpha", "Alpha Doc", 1000);
-        insert_doc(&conn, pid, "beta", "Beta Doc", 2000);
+        let (pool, indexing, _temp) = make_service();
+        let pid = insert_project(&pool, "proj2");
+        insert_doc(&pool, pid, "alpha", "Alpha Doc", 1000);
+        insert_doc(&pool, pid, "beta", "Beta Doc", 2000);
 
-        let service = ReindexService::new(conn.clone(), indexing);
+        let service = ReindexService::new(pool.clone(), indexing);
         let result = service.reindex(
             "proj2",
             ReindexScope::Document("alpha".to_string()),
@@ -463,21 +452,18 @@ mod tests {
         ).await.unwrap();
 
         assert_eq!(result.total, 1, "단일 문서 대상");
-        // in-memory SQLite + spawn_blocking 환경에서는 SQL logic error가 발생할 수 있음
-        // total=1이고 processed+errors=1임을 확인 (호출 자체는 성공)
         assert_eq!(result.processed + result.errors.len(), 1, "처리 시도가 1건이어야 함");
     }
 
     #[tokio::test]
     async fn test_scope_date_range_filter() {
-        let db = TestDb::new();
-        let (conn, indexing) = make_service(&db);
-        let pid = insert_project(&conn, "proj3");
-        insert_doc(&conn, pid, "old-doc", "Old Doc", 1000);
-        insert_doc(&conn, pid, "mid-doc", "Mid Doc", 3000);
-        insert_doc(&conn, pid, "new-doc", "New Doc", 5000);
+        let (pool, indexing, _temp) = make_service();
+        let pid = insert_project(&pool, "proj3");
+        insert_doc(&pool, pid, "old-doc", "Old Doc", 1000);
+        insert_doc(&pool, pid, "mid-doc", "Mid Doc", 3000);
+        insert_doc(&pool, pid, "new-doc", "New Doc", 5000);
 
-        let service = ReindexService::new(conn.clone(), indexing);
+        let service = ReindexService::new(pool.clone(), indexing);
         let result = service.reindex(
             "proj3",
             ReindexScope::DateRange { created_after: Some(2000), created_before: Some(4000) },
@@ -490,19 +476,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_reindex_history_recorded() {
-        let db = TestDb::new();
-        let (conn, indexing) = make_service(&db);
-        let pid = insert_project(&conn, "proj4");
-        insert_doc(&conn, pid, "d1", "Doc 1", 1000);
+        let (pool, indexing, _temp) = make_service();
+        let pid = insert_project(&pool, "proj4");
+        insert_doc(&pool, pid, "d1", "Doc 1", 1000);
 
-        let service = ReindexService::new(conn.clone(), indexing);
+        let service = ReindexService::new(pool.clone(), indexing);
         service.reindex(
             "proj4",
             ReindexScope::Full,
             ReindexOptions { force: true, ..Default::default() },
         ).await.unwrap();
 
-        let count: i64 = conn.lock().unwrap().query_row(
+        let c = pool.get().unwrap();
+        let count: i64 = c.query_row(
             "SELECT COUNT(*) FROM reindex_history WHERE project_id=?1",
             params![pid], |r| r.get(0),
         ).unwrap();
@@ -511,14 +497,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_force_reindex_all_writes_reindex_history() {
-        let db = TestDb::new();
-        let (conn, indexing) = make_service(&db);
-        let pid = insert_project(&conn, "history-proj");
-        insert_doc(&conn, pid, "doc-a", "Doc A", 1000);
+        let (pool, indexing, _temp) = make_service();
+        let pid = insert_project(&pool, "history-proj");
+        insert_doc(&pool, pid, "doc-a", "Doc A", 1000);
 
-        force_reindex_all_projects(conn.clone(), indexing).await.unwrap();
+        force_reindex_all_projects(pool.clone(), indexing).await.unwrap();
 
-        let count: i64 = conn.lock().unwrap().query_row(
+        let c = pool.get().unwrap();
+        let count: i64 = c.query_row(
             "SELECT COUNT(*) FROM reindex_history WHERE project_id = ?1",
             params![pid],
             |r| r.get(0),
@@ -528,19 +514,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_force_false_skips_unchanged_docs() {
-        let db = TestDb::new();
-        let (conn, indexing) = make_service(&db);
-        let pid = insert_project(&conn, "proj5");
-        insert_doc(&conn, pid, "stable", "Stable Doc", 1000);
+        let (pool, indexing, _temp) = make_service();
+        let pid = insert_project(&pool, "proj5");
+        insert_doc(&pool, pid, "stable", "Stable Doc", 1000);
 
-        let service = ReindexService::new(conn.clone(), indexing);
+        let service = ReindexService::new(pool.clone(), indexing);
         let result = service.reindex(
             "proj5",
             ReindexScope::Full,
             ReindexOptions { force: false, ..Default::default() },
         ).await.unwrap();
 
-        // force=false 이면 content_hash가 있는 문서는 skipped
         assert_eq!(result.skipped, 1, "hash 있는 문서는 스킵");
         assert_eq!(result.processed, 0);
     }
