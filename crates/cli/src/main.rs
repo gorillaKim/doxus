@@ -94,11 +94,15 @@ async fn main() -> Result<()> {
 
     let conn = db::open(&db_path).context("failed to open database")?;
 
-    // Try to load ONNX embedder; fall back to FTS-only silently.
-    let embedder: Option<std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>> =
-        doxus_core::embedding::OnnxEmbedder::from_default_path()
-            .map(|e| std::sync::Arc::new(e) as std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>)
-            .ok();
+    // Load default embedder based on configuration (ONNX, Ollama, or NoOp/FTS-only).
+    let embedder: Option<std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>> = {
+        let e = doxus_core::embedding::get_default_embedder();
+        if e.dimension() > 0 {
+            Some(e)
+        } else {
+            None
+        }
+    };
 
     match cli.command {
         Commands::Project(args) => handle_project(&conn, args.action)?,
@@ -341,9 +345,11 @@ fn handle_status(conn: &rusqlite::Connection) -> Result<()> {
     let chunk_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))?;
 
-    let embed_mode = match doxus_core::embedding::OnnxEmbedder::from_default_path() {
-        Ok(_) => "ONNX (multilingual-e5-small)".to_string(),
-        Err(_) => "FTS-only (no embedding model)".to_string(),
+    let embedder = doxus_core::embedding::get_default_embedder();
+    let embed_mode = if embedder.dimension() > 0 {
+        format!("{} ({})", embedder.model_info().name, if embedder.model_info().path.is_some() { "ONNX" } else { "Ollama" })
+    } else {
+        "FTS-only (no embedding model)".to_string()
     };
 
     println!("doxus status");

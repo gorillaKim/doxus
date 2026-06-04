@@ -74,25 +74,23 @@ async fn main() -> Result<()> {
     let server = McpServer::new(conn.clone(), db_path.clone(), None, Arc::clone(&plugin_manager), plugins_dir);
     let embedder_handle = server.embedder_arc();
     
-    // Background thread to load ONNX (only if enabled via env)
+    // Background thread to load default embedder (only if enabled via env)
     if std::env::var("DOXUS_ENABLE_ONNX").is_ok() {
         std::thread::spawn(move || {
-            tracing::info!("[MCP] Starting background ONNX load...");
-            match doxus_core::embedding::OnnxEmbedder::from_default_path() {
-                Ok(e) => {
-                    match embedder_handle.lock() {
-                        Ok(mut guard) => {
-                            *guard = Some(Arc::new(e));
-                            tracing::info!("[MCP] ONNX load complete. Hybrid search enabled.");
-                        }
-                        Err(err) => {
-                            tracing::error!("[MCP] embedder mutex poisoned, cannot register ONNX: {err}");
-                        }
+            tracing::info!("[MCP] Resolving default embedder...");
+            let embedder = doxus_core::embedding::get_default_embedder();
+            if embedder.dimension() > 0 {
+                match embedder_handle.lock() {
+                    Ok(mut guard) => {
+                        *guard = Some(embedder);
+                        tracing::info!("[MCP] Embedder load complete. Hybrid search enabled.");
+                    }
+                    Err(err) => {
+                        tracing::error!("[MCP] embedder mutex poisoned, cannot register embedder: {err}");
                     }
                 }
-                Err(e) => {
-                    tracing::warn!("[MCP] ONNX load failed: {}. Vector search disabled.", e);
-                }
+            } else {
+                tracing::warn!("[MCP] No active embedding model available. Vector search disabled.");
             }
         });
     } else {

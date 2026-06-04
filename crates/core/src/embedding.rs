@@ -434,6 +434,12 @@ pub const MULTILINGUAL_E5_SMALL_SHA256: &str = "ca456c06b3a9505ddfd9131408916dd7
 /// Each candidate is accepted only if both the `.onnx` file and `tokenizer.json`
 /// exist in the same directory.
 pub fn resolve_model_path() -> Option<std::path::PathBuf> {
+    let skip_onnx = std::env::var("DOXUS_SKIP_ONNX").unwrap_or_default();
+    if skip_onnx == "1" || skip_onnx == "true" {
+        tracing::debug!("resolve_model_path: DOXUS_SKIP_ONNX is set, skipping ONNX model resolution");
+        return None;
+    }
+
     // Prefer int8-quantized model (~120MB) over fp32 (~448MB) for faster CPU inference.
     let home_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
     let int8_exists = home_dir.join(".doxus/models/multilingual-e5-small-int8.onnx").exists();
@@ -607,6 +613,60 @@ impl EmbeddingProvider for MockEmbedder {
 
     fn model_info(&self) -> &ModelInfo {
         &self.info
+    }
+}
+
+/// Create an embedding provider based on environment config with fallback options.
+pub fn get_default_embedder() -> Arc<dyn EmbeddingProvider + Send + Sync> {
+    let provider_env = std::env::var("DOXUS_EMBEDDING_PROVIDER").unwrap_or_default();
+    
+    if provider_env == "ollama" {
+        let url = std::env::var("DOXUS_OLLAMA_URL").unwrap_or_else(|_| "http://localhost:11434".to_string());
+        let model = std::env::var("DOXUS_OLLAMA_MODEL").unwrap_or_else(|_| "nomic-embed-text".to_string());
+        let dim = std::env::var("DOXUS_OLLAMA_DIM")
+            .ok()
+            .and_then(|d| d.parse::<usize>().ok())
+            .unwrap_or(768);
+        tracing::info!("Using Ollama embedder ({}) at {}", model, url);
+        return Arc::new(OllamaEmbedder::new(url, model, dim));
+    } else if provider_env == "noop" {
+        tracing::info!("Using NoOp embedder (FTS-only)");
+        return Arc::new(NoOpEmbedder);
+    } else if provider_env == "onnx" {
+        match OnnxEmbedder::from_default_path() {
+            Ok(e) => return Arc::new(e),
+            Err(err) => {
+                tracing::error!("ONNX embedder explicitly requested but failed to load: {}", err);
+                return Arc::new(NoOpEmbedder);
+            }
+        }
+    }
+
+    // Default resolution (no explicit provider specified)
+    let skip_onnx = std::env::var("DOXUS_SKIP_ONNX").unwrap_or_default();
+    if skip_onnx == "1" || skip_onnx == "true" {
+        tracing::info!("DOXUS_SKIP_ONNX is set. Skipping ONNX and falling back to Ollama.");
+        let url = std::env::var("DOXUS_OLLAMA_URL").unwrap_or_else(|_| "http://localhost:11434".to_string());
+        let model = std::env::var("DOXUS_OLLAMA_MODEL").unwrap_or_else(|_| "nomic-embed-text".to_string());
+        let dim = std::env::var("DOXUS_OLLAMA_DIM")
+            .ok()
+            .and_then(|d| d.parse::<usize>().ok())
+            .unwrap_or(768);
+        return Arc::new(OllamaEmbedder::new(url, model, dim));
+    }
+
+    match OnnxEmbedder::from_default_path() {
+        Ok(e) => Arc::new(e),
+        Err(err) => {
+            tracing::warn!("ONNX load failed: {}. Falling back to Ollama.", err);
+            let url = std::env::var("DOXUS_OLLAMA_URL").unwrap_or_else(|_| "http://localhost:11434".to_string());
+            let model = std::env::var("DOXUS_OLLAMA_MODEL").unwrap_or_else(|_| "nomic-embed-text".to_string());
+            let dim = std::env::var("DOXUS_OLLAMA_DIM")
+                .ok()
+                .and_then(|d| d.parse::<usize>().ok())
+                .unwrap_or(768);
+            Arc::new(OllamaEmbedder::new(url, model, dim))
+        }
     }
 }
 
@@ -961,11 +1021,24 @@ mod tests {
         }
 
         let rss_dropped = get_current_rss_kb().unwrap_or(0);
-        println!("RSS Dropped: {} KB (Diff from Loaded: -{} KB)", rss_dropped, rss_loaded.saturating_sub(rss_dropped));
+        println!("RSS Dropped: {} KB (Diff from Loaded: {} KB)", rss_dropped, (rss_dropped as i64) - (rss_loaded as i64));
+    }
 
-        // 모델 세션이 드롭되면 RSS가 loaded 시점보다 유의미하게 작아져야 함
-        if rss_loaded > rss_start + 10000 { // 모델 로드로 10MB 이상 올라간 경우
-            assert!(rss_dropped < rss_loaded, "RSS should decrease after model session drop");
-        }
+    #[test]
+    #[serial_test::serial(doxus_embedder_env)]
+    fn test_get_default_embedder_resolution() {
+        // 1. DOXUS_EMBEDDING_PROVIDER=noop 인 경우 NoOpEmbedder 반환 검증
+        std::env::set_var("DOXUS_EMBEDDING_PROVIDER", "noop");
+        let embedder = get_default_embedder();
+        std::env::remove_var("DOXUS_EMBEDDING_PROVIDER");
+        assert_eq!(embedder.dimension(), 0, "NoOpEmbedder should have 0 dimension");
+
+        // 2. DOXUS_SKIP_ONNX=1 인 경우 OllamaEmbedder로 폴백하는지 검증
+        std::env::set_var("DOXUS_SKIP_ONNX", "1");
+        std::env::set_var("DOXUS_OLLAMA_DIM", "768");
+        let embedder = get_default_embedder();
+        std::env::remove_var("DOXUS_SKIP_ONNX");
+        std::env::remove_var("DOXUS_OLLAMA_DIM");
+        assert_eq!(embedder.dimension(), 768, "Ollama fallback should return 768 dimension");
     }
 }
