@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::{session::Session, value::TensorRef};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use tokenizers::Tokenizer;
 
@@ -79,13 +79,36 @@ const EMBED_BATCH_SIZE: usize = 32;
 /// ONNX-backed embedding provider using all-MiniLM-L6-v2
 pub struct OnnxEmbedder {
     info: ModelInfo,
-    /// `None` when constructed with an invalid model file.
-    session: Option<Mutex<Session>>,
-    /// `None` when constructed without a tokenizer.json.
+    model_path: std::path::PathBuf,
+    session: Arc<Mutex<Option<Session>>>,
     tokenizer: Option<Tokenizer>,
+    last_used: Arc<Mutex<std::time::Instant>>,
+    session_ttl: std::time::Duration,
 }
 
 impl OnnxEmbedder {
+    pub fn with_ttl(mut self, ttl: std::time::Duration) -> Self {
+        self.session_ttl = ttl;
+        self
+    }
+
+    /// Helper method to load ONNX runtime session on demand.
+    fn load_session(path: &std::path::Path) -> Result<Session, EmbeddingError> {
+        let cpu_threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .min(8);
+
+        Session::builder()
+            .map_err(|e| EmbeddingError::ModelLoad(e.to_string()))?
+            .with_optimization_level(GraphOptimizationLevel::Level3)
+            .map_err(|e| EmbeddingError::ModelLoad(e.to_string()))?
+            .with_intra_threads(cpu_threads)
+            .map_err(|e| EmbeddingError::ModelLoad(e.to_string()))?
+            .commit_from_file(path)
+            .map_err(|e| EmbeddingError::ModelLoad(e.to_string()))
+    }
+
     /// Create an embedder from a model `.onnx` file.
     /// The tokenizer is loaded from `<model_dir>/tokenizer.json`.
     /// If the model file is not a valid ONNX model or tokenizer.json is missing,
@@ -115,21 +138,6 @@ impl OnnxEmbedder {
             }))
             .expect("failed to set truncation");
         }
-        
-        let cpu_threads = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4)
-            .min(8);
-
-        let session = Session::builder()
-            .map_err(|e| EmbeddingError::ModelLoad(e.to_string()))?
-            .with_optimization_level(GraphOptimizationLevel::Level3)
-            .map_err(|e| EmbeddingError::ModelLoad(e.to_string()))?
-            .with_intra_threads(cpu_threads)
-            .map_err(|e| EmbeddingError::ModelLoad(e.to_string()))?
-            .commit_from_file(&path)
-            .map(Mutex::new)
-            .map_err(|e| EmbeddingError::ModelLoad(e.to_string()))?;
 
         Ok(Self {
             info: ModelInfo {
@@ -138,8 +146,11 @@ impl OnnxEmbedder {
                 max_tokens: 512,
                 path: Some(path_clone.to_string_lossy().to_string()),
             },
-            session: Some(session),
+            model_path: path_clone,
+            session: Arc::new(Mutex::new(None)),
             tokenizer,
+            last_used: Arc::new(Mutex::new(std::time::Instant::now())),
+            session_ttl: std::time::Duration::from_secs(300),
         })
     }
 }
@@ -154,12 +165,53 @@ impl EmbeddingProvider for OnnxEmbedder {
         let tokenizer = self.tokenizer.as_ref().ok_or_else(|| {
             EmbeddingError::Tokenizer("tokenizer not loaded".to_string())
         })?;
-        let mut session = self
+
+        let mut session_guard = self
             .session
-            .as_ref()
-            .ok_or_else(|| EmbeddingError::Inference("ONNX session not loaded".to_string()))?
             .lock()
             .map_err(|e| EmbeddingError::Inference(format!("session lock poisoned: {e}")))?;
+
+        if session_guard.is_none() {
+            let loaded_session = Self::load_session(&self.model_path)?;
+            *session_guard = Some(loaded_session);
+
+            let session_clone = Arc::clone(&self.session);
+            let last_used_clone = Arc::clone(&self.last_used);
+            let ttl = self.session_ttl;
+
+            tokio::spawn(async move {
+                let check_interval = ttl.min(std::time::Duration::from_millis(50));
+                loop {
+                    tokio::time::sleep(check_interval).await;
+
+                    let last_used_val = match last_used_clone.lock() {
+                        Ok(guard) => *guard,
+                        Err(_) => break, // poisoned
+                    };
+
+                    if last_used_val.elapsed() >= ttl {
+                        let mut session_guard = match session_clone.lock() {
+                            Ok(guard) => guard,
+                            Err(_) => break, // poisoned
+                        };
+                        *session_guard = None;
+                        tracing::debug!("ONNX session dropped due to inactivity (TTL: {:?})", ttl);
+                        break;
+                    }
+                }
+            });
+        }
+
+        let session = session_guard
+            .as_mut()
+            .ok_or_else(|| EmbeddingError::Inference("ONNX session not loaded".to_string()))?;
+
+        {
+            let mut last_used = self.last_used.lock().map_err(|e| {
+                EmbeddingError::Inference(format!("last_used lock poisoned: {e}"))
+            })?;
+            *last_used = std::time::Instant::now();
+        }
 
         let dim = self.info.dimension;
         let mut embeddings = Vec::with_capacity(texts.len());
@@ -814,5 +866,45 @@ mod tests {
             sim_similar > sim_different,
             "similar pair should be more similar"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn onnx_embedder_lazy_loading_and_drop() {
+        let path = resolve_model_path();
+        if path.is_none() {
+            println!("Skipping onnx_embedder_lazy_loading_and_drop test: real model not found");
+            return;
+        }
+        let path = path.unwrap();
+
+        // 1. 생성 시점 검증 (Lazy Loading)
+        let mut embedder = OnnxEmbedder::new(&path).unwrap();
+        embedder = embedder.with_ttl(std::time::Duration::from_millis(100));
+
+        // 생성 직후에는 세션이 None이어야 함 (실패 지점 1)
+        {
+            let session_guard = embedder.session.lock().unwrap();
+            assert!(session_guard.is_none(), "Session should be None initially (Lazy Loading)");
+        }
+
+        // 2. embed 호출 시점 검증 (On-demand loading)
+        let result = embedder.embed(&["hello world"]).await;
+        assert!(result.is_ok(), "Embedding should succeed with real model");
+
+        // 호출 직후에는 세션이 Some이어야 함
+        {
+            let session_guard = embedder.session.lock().unwrap();
+            assert!(session_guard.is_some(), "Session should be loaded (Some) after embed call");
+        }
+
+        // 3. TTL 이후 드롭 검증 (자동 드롭)
+        // 100ms TTL이 지나도록 200ms 대기
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // 세션이 None으로 드롭되어 있어야 함 (실패 지점 2)
+        {
+            let session_guard = embedder.session.lock().unwrap();
+            assert!(session_guard.is_none(), "Session should be dropped (None) after inactivity TTL");
+        }
     }
 }
