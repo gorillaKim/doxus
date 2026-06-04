@@ -90,7 +90,7 @@ impl DocumentService {
                 
                 (pid, stype, cjson, fpath)
             } else {
-                let conn = self.conn.get()?;
+                let conn = self.conn.read_conn()?;
                 let (pid, stype, cjson) = conn.query_row(
                     "SELECT id, source_type, config_json FROM projects WHERE name = ?1",
                     params![project_name],
@@ -150,7 +150,7 @@ impl DocumentService {
                                 }).ok()
                             })
                         } else {
-                            self.conn.get().ok().and_then(|c| {
+                            self.conn.read_conn().ok().and_then(|c| {
                                 c.query_row(meta_query, params![project_name, source_doc_id, path_str], |r| {
                                     let title: Option<String> = r.get(0)?;
                                     let created: Option<i64> = r.get(1)?;
@@ -209,7 +209,7 @@ impl DocumentService {
                 ds_log("[DS] Cache MISS."); tracing::info!("[DS] Cache MISS.");
             } else {
                 ds_log("[DS] Getting connection for cache check..."); tracing::info!("[DS] Getting connection for cache check...");
-                let conn = self.conn.get()?;
+                let conn = self.conn.read_conn()?;
                 let cache = ContentCache::new(&conn);
                 if let Ok(Some(data_json)) = cache.get_full(&plugin_id, source_doc_id) {
                     if let Ok(doc) = serde_json::from_str::<doxus_plugin_sdk::RawDocument>(&data_json) {
@@ -247,7 +247,7 @@ impl DocumentService {
                 // Initialize plugin
                 if let Err(e) = source.initialize(plugin_config, plugin_secrets).await {
                     let msg = format!("Failed to initialize plugin: {}", e);
-                    if let Ok(conn) = self.conn.get() {
+                    if let Ok(conn) = self.conn.write_conn() {
                         persist_audit(&conn, &AuditEvent::PluginError {
                             plugin_id: plugin_id.clone(),
                             message: msg,
@@ -282,7 +282,7 @@ impl DocumentService {
                                     let cache = ContentCache::new(&conn);
                                     let _ = cache.set_full(&plugin_id, source_doc_id, &doc.content, &data_json, ttl_minutes);
                                 }
-                            } else if let Ok(conn) = self.conn.get() {
+                            } else if let Ok(conn) = self.conn.write_conn() {
                                 let cache = ContentCache::new(&conn);
                                 let _ = cache.set_full(&plugin_id, source_doc_id, &doc.content, &data_json, ttl_minutes);
                             }
@@ -304,7 +304,7 @@ impl DocumentService {
                             if let Ok(conn) = crate::db::open(path) {
                                 persist_audit(&conn, &event);
                             }
-                        } else if let Ok(conn) = self.conn.get() {
+                        } else if let Ok(conn) = self.conn.write_conn() {
                             persist_audit(&conn, &event);
                         }
 
@@ -348,7 +348,7 @@ impl DocumentService {
                 cache.invalidate(&pid, source_doc_id)?;
                 (stype, pid)
             } else {
-                let conn = self.conn.get()?;
+                let conn = self.conn.write_conn()?;
                 let stype: String = conn.query_row(
                     "SELECT source_type FROM projects WHERE name = ?1",
                     params![project_name],
@@ -383,7 +383,7 @@ impl DocumentService {
                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                 ).map_err(|_| ServiceError::NotFound(format!("Project '{}' not found", project_name)))?
             } else {
-                let conn = self.conn.get()?;
+                let conn = self.conn.read_conn()?;
                 conn.query_row(
                     "SELECT source_type, config_json FROM projects WHERE name = ?1",
                     params![project_name],
@@ -410,7 +410,7 @@ impl DocumentService {
         source.initialize(plugin_config, plugin_secrets).await
             .map_err(|e| {
                 let msg = format!("Failed to initialize plugin {}: {}", plugin_id, e);
-                if let Ok(conn) = self.conn.get() {
+                if let Ok(conn) = self.conn.write_conn() {
                     persist_audit(&conn, &AuditEvent::PluginError {
                         plugin_id: plugin_id.clone(),
                         message: msg.clone(),
@@ -421,7 +421,7 @@ impl DocumentService {
 
         if !source.supports_write() {
             let msg = format!("Plugin {} does not support write operations", plugin_id);
-            if let Ok(conn) = self.conn.get() {
+            if let Ok(conn) = self.conn.write_conn() {
                 persist_audit(&conn, &AuditEvent::PluginError {
                     plugin_id: plugin_id.clone(),
                     message: msg.clone(),
@@ -434,7 +434,7 @@ impl DocumentService {
             .await
             .map_err(|e| {
                 let msg = format!("Failed to create document in plugin {}: {}", plugin_id, e);
-                if let Ok(conn) = self.conn.get() {
+                if let Ok(conn) = self.conn.write_conn() {
                     persist_audit(&conn, &AuditEvent::PluginError {
                         plugin_id: plugin_id.clone(),
                         message: msg.clone(),

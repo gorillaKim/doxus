@@ -246,7 +246,7 @@ impl SearchEngine {
 
     pub async fn rebuild_vector_table(&self) -> Result<(), SearchError> {
         let dim = self.embedder.dimension();
-        let conn = self.conn.get()?;
+        let conn = self.conn.write_conn()?;
         conn.execute_batch(&format!(
             "DROP TABLE IF EXISTS chunk_embeddings;
              CREATE VIRTUAL TABLE chunk_embeddings USING vec0(
@@ -350,7 +350,7 @@ impl SearchEngine {
                 let sub_chunks_moved = std::mem::take(&mut sub_chunks);
 
                 tokio::task::spawn_blocking(move || -> Result<(), SearchError> {
-                    let mut conn = pool.get()?;
+                    let mut conn = pool.write_conn()?;
                     let tx = conn.transaction()?;
 
                     let mut current_chunk_offset = 0;
@@ -431,7 +431,7 @@ impl SearchEngine {
         let meta = params.meta;
 
         tokio::task::spawn_blocking(move || -> Result<(), SearchError> {
-            let conn = pool.get()?;
+            let conn = pool.write_conn()?;
             index_document_sync(
                 &conn,
                 SyncIndexParams {
@@ -470,7 +470,7 @@ impl SearchEngine {
         let query_clone = query.clone();
         
         tokio::task::spawn_blocking(move || {
-            let conn = pool.get()?;
+            let conn = pool.read_conn()?;
             let mut paged_hits: Vec<Hit> = hits.into_iter()
                 .skip(query_clone.offset)
                 .take(query_clone.limit)
@@ -510,7 +510,7 @@ impl SearchEngine {
         let pool = self.conn.clone();
         let query_clone = query.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = pool.get()?;
+            let conn = pool.read_conn()?;
             fts_search_sync(&conn, &query_clone)
         }).await?
     }
@@ -528,7 +528,7 @@ impl SearchEngine {
         let query_clone = query.clone();
 
         tokio::task::spawn_blocking(move || {
-            let conn = pool.get()?;
+            let conn = pool.read_conn()?;
             vector_search_sync(&conn, &emb_bytes, &query_clone)
         }).await?
     }

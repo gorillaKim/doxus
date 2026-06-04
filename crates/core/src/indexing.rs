@@ -48,7 +48,7 @@ impl IndexingService {
         let mut plugin = self.plugin_manager.get_source(&plugin_id)
             .ok_or_else(|| {
                 let msg = format!("플러그인을 찾을 수 없습니다: {plugin_id}");
-                if let Ok(conn) = self.conn.get() {
+                if let Ok(conn) = self.conn.write_conn() {
                     persist_audit(&conn, &AuditEvent::PluginError {
                         plugin_id: plugin_id.clone(),
                         message: msg.clone(),
@@ -70,7 +70,7 @@ impl IndexingService {
         plugin.initialize(final_config, secrets).await
             .map_err(|e| {
                 let msg = format!("플러그인 초기화 실패: {e}");
-                if let Ok(conn) = self.conn.get() {
+                if let Ok(conn) = self.conn.write_conn() {
                     persist_audit(&conn, &AuditEvent::PluginError {
                         plugin_id: plugin_id.clone(),
                         message: msg.clone(),
@@ -81,7 +81,7 @@ impl IndexingService {
 
         // 1. 인덱싱 시작 로그
         {
-            if let Ok(conn) = self.conn.get() {
+            if let Ok(conn) = self.conn.write_conn() {
                 persist_audit(&conn, &AuditEvent::IndexStart { project_id });
             }
         }
@@ -198,13 +198,13 @@ impl IndexingService {
         // 3. 뒷정리: fetch가 완전히 성공한 경우에만 삭제 및 링크 해결
         if result.is_ok() {
             let _ = self.remove_deleted_documents(project_id, sync_start_time).await;
-            if let Ok(conn) = self.conn.get() {
+            if let Ok(conn) = self.conn.write_conn() {
                 let _ = LinkResolver::resolve_project_links(&conn, project_id);
             }
         }
         // 인덱싱 종료 로그는 성공/실패와 무관하게 항상 기록
         {
-            if let Ok(conn) = self.conn.get() {
+            if let Ok(conn) = self.conn.write_conn() {
                 persist_audit(&conn, &AuditEvent::IndexComplete { project_id, docs_indexed: total });
             }
         }
@@ -223,7 +223,7 @@ impl IndexingService {
         on_progress: impl Fn(usize, usize) + Send,
     ) -> Result<usize, String> {
         let last_fetched_at: Option<i64> = {
-            let conn = self.conn.get().map_err(|e| e.to_string())?;
+            let conn = self.conn.read_conn().map_err(|e| e.to_string())?;
             conn.query_row(
                 "SELECT last_fetched_at FROM projects WHERE name = ?1",
                 params![name],
@@ -316,7 +316,7 @@ impl IndexingService {
         }
 
         // last_fetched_at 갱신
-        if let Ok(conn) = self.conn.get() {
+        if let Ok(conn) = self.conn.write_conn() {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
@@ -376,7 +376,7 @@ impl IndexingService {
         new_updated_at: Option<i64>,
         new_content_hash: Option<&str>,
     ) -> bool {
-        let conn = match self.conn.get() {
+        let conn = match self.conn.read_conn() {
             Ok(c) => c,
             Err(_) => return true,
         };
@@ -434,7 +434,7 @@ impl IndexingService {
     }
 
     pub async fn get_project_policy(&self, name: &str) -> Result<SyncPolicy, String> {
-        let conn = self.conn.get().map_err(|e| e.to_string())?;
+        let conn = self.conn.read_conn().map_err(|e| e.to_string())?;
         let policy_json: Option<String> = conn.query_row(
             "SELECT sync_policy_json FROM projects WHERE name = ?1",
             params![name],
@@ -448,7 +448,7 @@ impl IndexingService {
     }
 
     async fn get_project_config(&self, name: &str) -> Result<(i64, String, String, String, String, SyncPolicy), String> {
-        let conn = self.conn.get().map_err(|e| e.to_string())?;
+        let conn = self.conn.read_conn().map_err(|e| e.to_string())?;
         let row = conn.query_row(
             "SELECT p.id, si.plugin_id, si.config_json, p.path, p.storage_strategy, p.sync_policy_json
              FROM projects p
@@ -507,7 +507,7 @@ impl IndexingService {
     }
 
     pub fn list_active_projects(&self) -> Result<Vec<String>, String> {
-        let conn = self.conn.get().map_err(|e| e.to_string())?;
+        let conn = self.conn.read_conn().map_err(|e| e.to_string())?;
         let mut stmt = conn.prepare("SELECT name FROM projects WHERE status = 'active'")
             .map_err(|e| e.to_string())?;
         
@@ -526,7 +526,7 @@ impl IndexingService {
         project_id: i64,
         sync_start_time: i64,
     ) -> Result<usize, String> {
-        let conn = self.conn.get().map_err(|e| e.to_string())?;
+        let conn = self.conn.write_conn().map_err(|e| e.to_string())?;
 
         // sync_start_time보다 이전에 인델싱된 문서는 이번 세션에서 발견되지 않은 것이므로 삭제합니다.
         let removed = conn.execute(
@@ -542,7 +542,7 @@ impl IndexingService {
 
     /// 문서의 인덱싱 시점(last_indexed)만 업데이트합니다. (내용 변경 없이 유지 시 사용)
     async fn update_last_indexed(&self, project_id: i64, source_doc_id: &str, timestamp: i64) -> Result<(), String> {
-        let conn = self.conn.get().map_err(|e| e.to_string())?;
+        let conn = self.conn.write_conn().map_err(|e| e.to_string())?;
         conn.execute(
             "UPDATE documents SET last_indexed = ?1 WHERE project_id = ?2 AND source_doc_id = ?3",
             params![timestamp, project_id, source_doc_id],
