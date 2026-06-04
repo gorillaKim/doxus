@@ -17,7 +17,7 @@ pub fn get_links(server: &McpServer, id: Value, args: &Value) -> McpResponse {
 fn links(server: &McpServer, id: Value, args: &Value, outgoing: bool) -> McpResponse {
     let project_opt = args["project"].as_str();
     let conn = server.conn();
-    let conn_lock = match conn.get() {
+    let conn_lock = match conn.read_conn() {
         Ok(l) => l,
         Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
@@ -91,7 +91,7 @@ pub fn find_path(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     let max_hops = args["max_hops"].as_u64().unwrap_or(6) as usize;
 
     let conn = server.conn();
-    let conn_lock = match conn.get() {
+    let conn_lock = match conn.read_conn() {
         Ok(l) => l,
         Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
@@ -164,7 +164,7 @@ pub fn get_cluster(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     let depth = args["depth"].as_u64().unwrap_or(2).min(5) as i64;
 
     let conn = server.conn();
-    let conn_lock = match conn.get() {
+    let conn_lock = match conn.read_conn() {
         Ok(l) => l,
         Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };

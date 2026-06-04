@@ -525,7 +525,7 @@ pub async fn create_document(server: &McpServer, id: Value, args: &Value) -> Mcp
                 tokio::spawn(async move {
                     let conn = indexer.conn();
                     let project_info = {
-                        let conn_lock = match conn.get() {
+                        let conn_lock = match conn.read_conn() {
                             Ok(g) => g,
                             Err(e) => {
                                 tracing::error!("[create_document] db pool error, skipping indexing: {e}");
