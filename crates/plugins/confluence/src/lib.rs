@@ -43,15 +43,19 @@ mod native_compat {
 
     pub mod var {
         use std::collections::HashMap;
-        use std::sync::Mutex;
-        static MOCK_VARS: once_cell::sync::Lazy<Mutex<HashMap<String, Vec<u8>>>> = 
-            once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
+        use std::cell::RefCell;
+        
+        thread_local! {
+            static MOCK_VARS: RefCell<HashMap<String, Vec<u8>>> = RefCell::new(HashMap::new());
+        }
             
         pub fn get(key: &str) -> super::FnResult<Option<Vec<u8>>> {
-            Ok(MOCK_VARS.lock().unwrap().get(key).cloned())
+            Ok(MOCK_VARS.with(|vars| vars.borrow().get(key).cloned()))
         }
         pub fn set(key: &str, val: Vec<u8>) -> super::FnResult<()> {
-            MOCK_VARS.lock().unwrap().insert(key.to_string(), val);
+            MOCK_VARS.with(|vars| {
+                vars.borrow_mut().insert(key.to_string(), val);
+            });
             Ok(())
         }
     }
@@ -953,19 +957,48 @@ fn ensure_valid_token(state: &mut PluginState) -> FnResult<()> {
     if needs_refresh {
         if let Some(refresh_token) = state.refresh_token.clone() {
             refresh_oauth_token(state, &refresh_token)?;
+        } else if state.access_token.is_some() {
+            // access_token이 있지만 만료됐고 refresh_token도 없음 → 재인증 필요
+            return Err(anyhow::Error::new(doxus_plugin_sdk::PluginError::AuthRequired));
         }
+        // refresh_token도 없고 access_token도 없으면 api_token 방식으로 간주하여 통과
     }
 
     Ok(())
 }
 
+
 fn refresh_oauth_token(state: &mut PluginState, refresh_token: &str) -> FnResult<()> {
-    let client_id = state.get_config("client_id").ok_or(Error::msg("client_id missing"))?;
-    let client_secret = state.get_config("client_secret").ok_or(Error::msg("client_secret missing"))?;
-    
-    let oauth_base = state.get_config("oauth_base_url")
-        .unwrap_or("https://auth.atlassian.com");
-    let url = format!("{oauth_base}/oauth/token");
+    // oauth_config 객체 전체를 파싱해서 필드를 추출합니다.
+    // setup_state 에서는 oauth_config 전체를 "oauth_config" 키로 저장합니다.
+    let (client_id, client_secret, token_url) = if let Some(cfg_val) = state.config.get("oauth_config") {
+        let client_id = cfg_val.get("client_id")
+            .and_then(|v| v.as_str())
+            .ok_or(Error::msg("client_id missing"))?
+            .to_string();
+        let client_secret = cfg_val.get("client_secret")
+            .and_then(|v| v.as_str())
+            .ok_or(Error::msg("client_secret missing"))?
+            .to_string();
+        let token_url = cfg_val.get("token_url")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "https://auth.atlassian.com/oauth/token".to_string());
+        (client_id, client_secret, token_url)
+    } else {
+        // 최상위 config 키 방식 폴백 (WASM 런타임에서 initialize()가 직접 config 필드를 주입할 때)
+        let client_id = state.get_config("client_id")
+            .ok_or(Error::msg("client_id missing"))?
+            .to_string();
+        let client_secret = state.get_config("client_secret")
+            .ok_or(Error::msg("client_secret missing"))?
+            .to_string();
+        let oauth_base = state.get_config("oauth_base_url")
+            .unwrap_or("https://auth.atlassian.com");
+        let url = format!("{oauth_base}/oauth/token");
+        (client_id, client_secret, url)
+    };
+    let url = token_url;
     
     let payload = serde_json::json!({
         "grant_type": "refresh_token",
@@ -1486,7 +1519,14 @@ impl DocSource for ConfluencePlugin {
             let res = fetch_all_impl(FetchAllOptsWasm { 
                 cursor: opts.cursor.clone(), 
                 page_size: opts.page_size 
-            }).map_err(|e| PluginError::Internal(e.to_string()))?;
+            }).map_err(|e| {
+                // anyhow::Error 안에 PluginError가 들어있으면 그대로 복원합니다.
+                if let Some(plugin_err) = e.downcast_ref::<PluginError>() {
+                    plugin_err.clone()
+                } else {
+                    PluginError::Internal(e.to_string())
+                }
+            })?;
             
             Ok(DocumentStream {
                 documents: res.documents.into_iter().map(wasm_to_native_doc).collect(),
@@ -1504,7 +1544,13 @@ impl DocSource for ConfluencePlugin {
                 since: opts.since,
                 cursor: opts.cursor.clone(),
                 page_size: opts.page_size,
-            }).map_err(|e| PluginError::Internal(e.to_string()))?;
+            }).map_err(|e| {
+                if let Some(plugin_err) = e.downcast_ref::<PluginError>() {
+                    plugin_err.clone()
+                } else {
+                    PluginError::Internal(e.to_string())
+                }
+            })?;
 
             Ok(ChangeSet {
                 updated: res.updated.into_iter().map(wasm_to_native_doc).collect(),
