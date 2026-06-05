@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::AtomicBool;
-use rusqlite::Connection;
 use doxus_core::embedding::EmbeddingProvider;
 use doxus_core::plugin::PluginManager;
 use doxus_core::secrets::UnifiedKeychainStore;

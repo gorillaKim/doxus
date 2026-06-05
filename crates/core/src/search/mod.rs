@@ -948,6 +948,7 @@ impl<'a> SyncSearchEngine<'a> {
     }
 }
 
+#[allow(clippy::while_let_on_iterator)]
 fn clean_markdown(content: &str) -> String {
     let mut result = String::with_capacity(content.len());
     let mut chars = content.chars().peekable();

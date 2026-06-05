@@ -610,7 +610,7 @@ fn render_compact_search_hits(hits: &[doxus_core::db::schema::SearchHit]) -> Str
         } else {
             "".to_string()
         };
-        let cleaned = h.snippet.replace('\n', " ").replace('\r', " ");
+        let cleaned = h.snippet.replace(['\n', '\r'], " ");
         let truncated: String = cleaned.chars().take(120).collect();
         let suffix = if cleaned.chars().count() > 120 { "..." } else { "" };
         let snippet_part = format!("\n  → {}{}", truncated, suffix);
@@ -635,7 +635,7 @@ fn render_compact_hits(hits: &[doxus_core::db::schema::Hit]) -> String {
             "".to_string()
         };
         let snippet_part = if let Some(ref snippet) = h.snippet {
-            let cleaned = snippet.replace('\n', " ").replace('\r', " ");
+            let cleaned = snippet.replace(['\n', '\r'], " ");
             let truncated: String = cleaned.chars().take(120).collect();
             let suffix = if cleaned.chars().count() > 120 { "..." } else { "" };
             format!("\n  → {}{}", truncated, suffix)
