@@ -237,3 +237,95 @@ fn search_query_api_finds_indexed_document() {
     // Verify metadata presence
     assert!(hits[0].metadata_json.is_some(), "Metadata should be retrieved");
 }
+
+// ── 테스트 8: 피드백 반영 후 검색 순위 변동 ────────────────────────────────
+
+#[tokio::test]
+async fn test_search_async_feedback_ranking_booster() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("integration_feedback_test.db");
+
+    let pool = doxus_core::db::create_pool(&db_path).unwrap();
+    let engine = SearchEngine::new_fts_only(pool.clone());
+
+    // 프로젝트 생성
+    let pid = {
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO projects (name, display_name, path, status, created_at, updated_at)
+             VALUES ('feedback-test', 'Feedback Test', '/feedback', 'active', unixepoch(), unixepoch())",
+            [],
+        ).unwrap();
+        conn.query_row(
+            "SELECT id FROM projects WHERE name = 'feedback-test'",
+            [],
+            |r| r.get::<_, i64>(0)
+        ).unwrap()
+    };
+
+    // 두 개의 유사한 문서 등록
+    engine
+        .index_document_async(pid, "d1", "Rust 소유권 공부하기", "Rust 소유권은 안전성을 보장합니다.", "full")
+        .await
+        .unwrap();
+    engine
+        .index_document_async(pid, "d2", "Rust 빌림과 소유권", "Rust 소유권과 빌림 개념입니다.", "full")
+        .await
+        .unwrap();
+
+    // 두 문서의 db_id 조회
+    let (d1_id, d2_id) = {
+        let conn = pool.get().unwrap();
+        let d1: i64 = conn.query_row(
+            "SELECT id FROM documents WHERE source_doc_id = 'd1'",
+            [],
+            |r| r.get(0)
+        ).unwrap();
+        let d2: i64 = conn.query_row(
+            "SELECT id FROM documents WHERE source_doc_id = 'd2'",
+            [],
+            |r| r.get(0)
+        ).unwrap();
+        (d1, d2)
+    };
+
+    // 초기 상태에서 검색 실행
+    let query = SearchQuery::new("소유권").with_limit(10);
+    let hits_before = engine.search_async(&query).await.unwrap();
+    assert_eq!(hits_before.len(), 2);
+
+    let first_before = hits_before[0].source_doc_id.clone();
+
+    // d2에 대해 긍정적인 피드백 점수(1.0)를 대량으로 준다.
+    {
+        let conn = pool.get().unwrap();
+        for i in 0..5 {
+            conn.execute(
+                "INSERT INTO document_feedbacks (document_id, agent_id, score, session_id)
+                 VALUES (?1, ?2, 1.0, ?3)",
+                rusqlite::params![d2_id, format!("agent-{}", i), format!("sess-{}", i)]
+            ).unwrap();
+        }
+
+        // d1에는 부정적인 피드백 점수(-1.0)를 대량으로 준다.
+        for i in 0..5 {
+            conn.execute(
+                "INSERT INTO document_feedbacks (document_id, agent_id, score, session_id)
+                 VALUES (?1, ?2, -1.0, ?3)",
+                rusqlite::params![d1_id, format!("agent-{}", i), format!("sess-{}", i)]
+            ).unwrap();
+        }
+    }
+
+    // 피드백 반영 후 다시 검색 실행
+    let hits_after = engine.search_async(&query).await.unwrap();
+    assert_eq!(hits_after.len(), 2);
+
+    // 순위가 역전되었는지 확인
+    if first_before == "d1" {
+        assert_eq!(hits_after[0].source_doc_id, "d2", "피드백 적용 후 d2가 d1을 제치고 1위가 되어야 합니다");
+    } else {
+        assert_eq!(hits_after[0].source_doc_id, "d1", "피드백 적용 후 d1이 d2를 제치고 1위가 되어야 합니다");
+    }
+}
+

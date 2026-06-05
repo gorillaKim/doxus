@@ -1,8 +1,6 @@
 /// Domain types mapped from DB rows.
 /// rusqlite Row is never exposed outside this module.
 
-use serde::{Deserialize, Serialize};
-
 #[derive(Debug, Clone)]
 pub struct Project {
     pub id: i64,
@@ -136,7 +134,7 @@ pub struct BatchIndexingRequest {
     pub meta: DocMeta,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DocumentFeedback {
     pub document_id: i64,
     pub agent_id: String,

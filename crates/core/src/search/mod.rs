@@ -484,6 +484,25 @@ impl SearchEngine {
             
             if paged_hits.is_empty() { return Ok(paged_hits); }
 
+            for hit in paged_hits.iter_mut() {
+                let doc_id = hit.document_id;
+                let (sum_score, count): (f64, i64) = conn.query_row(
+                    "SELECT COALESCE(SUM(score), 0.0), COUNT(score) FROM document_feedbacks WHERE document_id = ?1",
+                    params![doc_id],
+                    |r| Ok((r.get(0)?, r.get(1)?))
+                ).unwrap_or((0.0, 0));
+
+                if count > 0 {
+                    let n = count as f64;
+                    let k = 5.0;
+                    let damping = 0.5;
+                    let multiplier = 1.0 + (sum_score / (n + k) * damping);
+                    hit.score = hit.score * multiplier;
+                }
+            }
+
+            paged_hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+
             let scores: Vec<f64> = paged_hits.iter().map(|h| h.score).collect();
             let n = scores.len() as f64;
             let mean = scores.iter().sum::<f64>() / n;
