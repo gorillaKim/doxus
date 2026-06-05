@@ -52,6 +52,7 @@ impl DocSource for MockWriteSource {
 }
 
 fn setup_server() -> McpServer {
+    std::env::set_var("DOXUS_SKIP_KEYCHAIN", "1");
     let db_path = std::path::PathBuf::from("/tmp/doxus-test-writeback.sqlite");
     if db_path.exists() {
         let _ = std::fs::remove_file(&db_path);
@@ -108,23 +109,29 @@ async fn test_create_document_with_immediate_sync() {
         })
     ).await;
     
+    println!("[TEST-DEBUG] doxus_create_document response error: {:?}", resp.error);
+    println!("[TEST-DEBUG] doxus_create_document response result: {:?}", resp.result);
     assert!(resp.error.is_none(), "Tool call failed: {:?}", resp.error);
     
     // Check if document exists in DB (Immediate Sync verification with retry loop to allow async background indexing)
     let conn = server.conn();
     let mut doc_count = 0;
-    for _ in 0..40 {
-        let c = conn.read_conn().unwrap();
-        doc_count = c.query_row(
-            "SELECT COUNT(*) FROM documents WHERE source_doc_id = 'mock-id.md'",
-            [],
-            |r: &rusqlite::Row<'_>| r.get::<_, Option<i64>>(0),
-        ).unwrap().unwrap_or(0);
+    for i in 0..40 {
+        {
+            let c = conn.read_conn().unwrap();
+            doc_count = c.query_row(
+                "SELECT COUNT(*) FROM documents WHERE source_doc_id = 'mock-id.md'",
+                [],
+                |r: &rusqlite::Row<'_>| r.get::<_, Option<i64>>(0),
+            ).unwrap().unwrap_or(0);
+        }
+        println!("[TEST-DEBUG] Iteration {}, doc_count = {}", i, doc_count);
         if doc_count == 1 {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     
+    println!("[TEST-DEBUG] Final doc_count = {}", doc_count);
     assert_eq!(doc_count, 1, "Document should be synced to DB immediately after creation");
 }

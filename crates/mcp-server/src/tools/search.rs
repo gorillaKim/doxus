@@ -199,7 +199,7 @@ pub async fn get_document(server: &McpServer, id: Value, args: &Value) -> McpRes
     let project = project_name_resolved.as_str();
 
     let pm = server.plugin_manager();
-    let service = doxus_core::document::DocumentService::new_with_path(server.db_path(), Some(pm.clone()));
+    let service = doxus_core::document::DocumentService::new(server.conn().clone(), Some(pm.clone()));
 
     match service.fetch_full_content(project, &source_doc_id).await {
         Err(e) => {
@@ -306,7 +306,7 @@ pub async fn get_toc(server: &McpServer, id: Value, args: &Value) -> McpResponse
     let project = project_name_resolved.as_str();
 
     let pm = server.plugin_manager();
-    let service = doxus_core::document::DocumentService::new_with_path(server.db_path(), Some(pm.clone()));
+    let service = doxus_core::document::DocumentService::new(server.conn().clone(), Some(pm.clone()));
 
     match service.fetch_full_content(project, &source_doc_id).await {
         Err(e) => McpResponse::err(id, -32602, e.to_string()),
@@ -337,7 +337,7 @@ pub async fn get_section(server: &McpServer, id: Value, args: &Value) -> McpResp
     let project = project_name_resolved.as_str();
 
     let pm = server.plugin_manager();
-    let service = doxus_core::document::DocumentService::new_with_path(server.db_path(), Some(pm.clone()));
+    let service = doxus_core::document::DocumentService::new(server.conn().clone(), Some(pm.clone()));
 
     match service.fetch_full_content(project, &source_doc_id).await {
         Err(e) => McpResponse::err(id, -32602, e.to_string()),
@@ -574,7 +574,7 @@ pub async fn create_document(server: &McpServer, id: Value, args: &Value) -> Mcp
     });
 
     let pm = server.plugin_manager();
-    let service = doxus_core::document::DocumentService::new_with_path(server.db_path(), Some(pm.clone()));
+    let service = doxus_core::document::DocumentService::new(server.conn().clone(), Some(pm.clone()));
 
     match service.create_document(project, title, content, folder, metadata).await {
         Ok(new_id) => {
