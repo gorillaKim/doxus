@@ -454,4 +454,28 @@ secrets = []
         assert!(mgr.get_source("foo/bar").is_none());
         assert!(mgr.get_source("foo\\bar").is_none());
     }
+
+    #[tokio::test]
+    async fn get_source_returns_stateless_adapter_without_runtime_caching() {
+        let tmp = TempDir::new().unwrap();
+        let pm = PluginManager::new(tmp.path().to_path_buf());
+        let plugin_id = "com.test.statelesspm";
+
+        write_manifest(tmp.path(), plugin_id, SUPPORTED_ABI_VERSION);
+        
+        let minimal_wasm = vec![
+            0x00, 0x61, 0x73, 0x6d,
+            0x01, 0x00, 0x00, 0x00,
+        ];
+        std::fs::write(tmp.path().join(format!("{plugin_id}.wasm")), minimal_wasm).unwrap();
+
+        let source1 = pm.get_source(plugin_id).expect("should load adapter");
+        let source2 = pm.get_source(plugin_id).expect("should load adapter");
+
+        let status1 = source1.health_check().await;
+        let status2 = source2.health_check().await;
+
+        assert!(!status1.healthy);
+        assert!(!status2.healthy);
+    }
 }
