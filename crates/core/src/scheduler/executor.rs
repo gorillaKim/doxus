@@ -31,6 +31,18 @@ pub async fn execute_system(
                 Err(e) => JobResult { success: false, message: e.to_string() },
             }
         }
+        "co_refs_prune" => {
+            let conn = match indexer.conn().get() {
+                Ok(c) => c,
+                Err(e) => return JobResult { success: false, message: e.to_string() },
+            };
+            let limit_time = chrono::Utc::now().timestamp() - 30 * 86400;
+            let sql = "DELETE FROM document_co_refs WHERE co_occurrence_count < 3 AND last_accessed < ?1";
+            match conn.execute(sql, rusqlite::params![limit_time]) {
+                Ok(n) => JobResult { success: true, message: format!("Pruned {n} document co-occurrence links") },
+                Err(e) => JobResult { success: false, message: e.to_string() },
+            }
+        }
         _ => JobResult { success: false, message: format!("unknown system action: {action}") }
     }
 }

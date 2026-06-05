@@ -23,6 +23,7 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
     let project_filter = args["project"].as_str();
     let format_opt = args["format"].as_str().unwrap_or("full");
     let include_summary = args["include_summary"].as_bool().unwrap_or(true);
+    let session_id = args["session_id"].as_str();
 
     let mut q = SearchQuery::new(query_text)
         .with_limit(limit)
@@ -68,6 +69,13 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
             Err(e) => McpResponse::err(id, -32603, e.to_string()),
             Ok(hits) if hits.is_empty() => McpResponse::text(id, "No results found."),
             Ok(hits) => {
+                if let Some(sid) = session_id {
+                    for h in &hits {
+                        if h.document_id > 0 {
+                            server.record_session_access(sid, h.document_id);
+                        }
+                    }
+                }
                 let text_resp = if format_opt == "compact" {
                     render_compact_hits(&hits, include_summary)
                 } else {
@@ -125,6 +133,13 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
             Err(e) => McpResponse::err(id, -32603, e.to_string()),
             Ok(hits) if hits.is_empty() => McpResponse::text(id, "No results found."),
             Ok(hits) => {
+                if let Some(sid) = session_id {
+                    for h in &hits {
+                        if h.document_id > 0 {
+                            server.record_session_access(sid, h.document_id);
+                        }
+                    }
+                }
                 let text_resp = if format_opt == "compact" {
                     render_compact_search_hits(&hits, include_summary)
                 } else {
@@ -169,14 +184,15 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
 pub async fn get_document(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     let project_opt = args["project"].as_str();
     let view_opt = args["view"].as_str().unwrap_or("full");
-    let (project_name_resolved, source_doc_id) = {
+    let session_id = args["session_id"].as_str();
+    let (db_id, project_name_resolved, source_doc_id) = {
         let conn = server.conn();
         let conn_lock = match conn.get() {
             Ok(l) => l,
             Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
         };
         match resolve_doc_id_optional_project(&conn_lock, project_opt, &args["id"]) {
-            Ok((_db_id, sid, pname)) => (pname, sid),
+            Ok((db_id, sid, pname)) => (db_id, pname, sid),
             Err(e) => return McpResponse::err(id, -32602, e),
         }
     };
@@ -202,6 +218,11 @@ pub async fn get_document(server: &McpServer, id: Value, args: &Value) -> McpRes
             )
         },
         Ok(doc) => {
+            if let Some(sid) = session_id {
+                if db_id > 0 {
+                    server.record_session_access(sid, db_id);
+                }
+            }
             let project_name = project.to_string();
             let doc_clone = doc.clone();
             let indexer = server.indexer();

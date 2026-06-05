@@ -134,6 +134,27 @@ impl SchedulerManager {
             };
             let _ = sdb.insert_job(&default_job);
         }
+
+        let has_co_refs_prune = existing.iter().any(|j| j.action == "co_refs_prune");
+        if !has_co_refs_prune {
+            let default_job = ScheduledJob {
+                id: 0,
+                project_id: None,
+                job_name: "Co-occurrence References Prune".to_string(),
+                description: Some("오래되고 빈도가 낮은 공동 참조 관계 데이터를 정해진 주기로 삭제합니다.".to_string()),
+                executor: Executor::System,
+                action: "co_refs_prune".to_string(),
+                action_config: serde_json::json!({}),
+                schedule: Schedule::Daily { hour: 4, minute: 0 },
+                enabled: true,
+                run_on_idle: false,
+                is_immutable: true,
+                last_run_at: None,
+                next_run_at: chrono::Utc::now().timestamp() + 7200,
+                created_by: "system".to_string(),
+            };
+            let _ = sdb.insert_job(&default_job);
+        }
     }
 }
 

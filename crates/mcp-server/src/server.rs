@@ -2,6 +2,7 @@ use doxus_core::embedding::EmbeddingProvider;
 use doxus_core::db::DbPool;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::collections::{HashMap, HashSet};
 
 pub struct McpServer {
     pub(crate) conn: DbPool,
@@ -10,6 +11,7 @@ pub struct McpServer {
     pub(crate) plugin_manager: Arc<doxus_core::plugin::PluginManager>,
     pub(crate) plugins_dir: PathBuf,
     pub(crate) allow_file_scheme: bool,
+    pub(crate) session_docs: Arc<Mutex<HashMap<String, (HashSet<i64>, std::time::Instant)>>>,
 }
 
 impl McpServer {
@@ -27,6 +29,7 @@ impl McpServer {
             plugin_manager,
             plugins_dir,
             allow_file_scheme: false,
+            session_docs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -44,6 +47,7 @@ impl McpServer {
             plugin_manager,
             plugins_dir,
             allow_file_scheme: true,
+            session_docs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -90,6 +94,96 @@ impl McpServer {
     pub fn indexer(&self) -> doxus_core::indexing::IndexingService {
         use doxus_core::indexing::IndexingService;
         IndexingService::new(self.conn(), Arc::clone(&self.plugin_manager), self.engine())
+    }
+
+    /// Records a document access event in a given session, and flushes any sessions
+    /// that have been idle for 5 minutes or more.
+    pub fn record_session_access(&self, session_id: &str, doc_id: i64) {
+        let now = std::time::Instant::now();
+        let mut session_map = match self.session_docs.lock() {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+
+        // 1. Record the document ID and update last activity timestamp for the current session
+        let entry = session_map
+            .entry(session_id.to_string())
+            .or_insert_with(|| (HashSet::new(), now));
+        entry.0.insert(doc_id);
+        entry.1 = now;
+        println!("[DEBUG] Recorded session: {}, docs: {:?}", session_id, entry.0);
+
+        // 2. Identify expired sessions (idle for 5 minutes/300 seconds)
+        let mut expired = Vec::new();
+        for (sid, (_docs, last_time)) in session_map.iter() {
+            let duration = now.checked_duration_since(*last_time).map(|d| d.as_secs()).unwrap_or(0);
+            if duration >= 300 && sid != session_id {
+                expired.push(sid.clone());
+            }
+        }
+
+        // 3. Flush expired sessions to the database
+        for sid in expired {
+            if let Some((docs, _)) = session_map.remove(&sid) {
+                self.flush_session_data(docs);
+            }
+        }
+    }
+
+    /// Flushes accumulated document IDs in a session to the co-occurrence reference table.
+    fn flush_session_data(&self, docs: HashSet<i64>) {
+        println!("[DEBUG] flush_session_data called with docs: {:?}", docs);
+        if docs.len() < 2 {
+            println!("[DEBUG] docs len < 2, early returning");
+            return;
+        }
+
+        let mut doc_list: Vec<i64> = docs.into_iter().collect();
+        doc_list.sort_unstable();
+
+        let conn_pool = self.conn();
+        let conn = conn_pool.get().expect("Failed to acquire write connection from pool");
+
+        let last_accessed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        // Write co-occurrence links for all A < B pairs
+        for i in 0..doc_list.len() {
+            for j in (i + 1)..doc_list.len() {
+                let doc_a = doc_list[i];
+                let doc_b = doc_list[j];
+
+                let sql = "INSERT INTO document_co_refs (doc_a_id, doc_b_id, co_occurrence_count, last_accessed)
+                           VALUES (?1, ?2, 1, ?3)
+                           ON CONFLICT(doc_a_id, doc_b_id) DO UPDATE SET
+                               co_occurrence_count = co_occurrence_count + 1,
+                               last_accessed = ?3";
+                let rows = conn.execute(sql, rusqlite::params![doc_a, doc_b, last_accessed]).unwrap();
+                println!("[DEBUG] execute sql: (A={}, B={}) rows affected: {}", doc_a, doc_b, rows);
+            }
+        }
+    }
+
+    /// Force flushes all active sessions to the database.
+    pub fn flush_all_sessions(&self) {
+        let mut session_map = match self.session_docs.lock() {
+            Ok(m) => m,
+            Err(_) => return,
+        };
+        let keys: Vec<String> = session_map.keys().cloned().collect();
+        for key in keys {
+            if let Some((docs, _)) = session_map.remove(&key) {
+                self.flush_session_data(docs);
+            }
+        }
+    }
+}
+
+impl Drop for McpServer {
+    fn drop(&mut self) {
+        self.flush_all_sessions();
     }
 }
 
@@ -142,5 +236,61 @@ mod tests {
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.server.engine()));
         assert!(result.is_ok(), "engine() must not panic on poisoned embedder mutex");
+    }
+
+    #[test]
+    fn test_co_refs_session_tracking() {
+        let ctx = make_test_server();
+
+        // 1. Insert dummy project and documents to satisfy foreign key constraints
+        {
+            let conn = ctx.server.conn().get().unwrap();
+            conn.execute("INSERT INTO projects (id, name, storage_strategy, display_name, path, created_at, updated_at) VALUES (1, 'test-project', 'local', 'Test Project', '/tmp/test', 1234567, 1234567)", rusqlite::params![]).unwrap();
+            conn.execute("INSERT INTO documents (id, project_id, source_doc_id, title, content_hash) VALUES (10, 1, 'doc_a', 'Doc A', 'hash1')", rusqlite::params![]).unwrap();
+            conn.execute("INSERT INTO documents (id, project_id, source_doc_id, title, content_hash) VALUES (20, 1, 'doc_b', 'Doc B', 'hash2')", rusqlite::params![]).unwrap();
+            conn.execute("INSERT INTO documents (id, project_id, source_doc_id, title, content_hash) VALUES (30, 1, 'doc_c', 'Doc C', 'hash3')", rusqlite::params![]).unwrap();
+        }
+
+        // 2. Record accesses (doc_a_id: 10, 20)
+        ctx.server.record_session_access("session-1", 10);
+        ctx.server.record_session_access("session-1", 20);
+
+        // 3. Before flush, nothing is in the database
+        {
+            let conn = ctx.server.conn().get().unwrap();
+            let count: i64 = conn.query_row("SELECT COUNT(*) FROM document_co_refs", rusqlite::params![], |r| r.get(0)).unwrap();
+            assert_eq!(count, 0);
+        }
+
+        // 4. Force flush
+        ctx.server.flush_all_sessions();
+
+        // 5. Verify the (10, 20) pair exists and has correct values
+        {
+            let conn = ctx.server.conn().get().unwrap();
+            let (doc_a, doc_b, co_count): (i64, i64, i64) = conn.query_row(
+                "SELECT doc_a_id, doc_b_id, co_occurrence_count FROM document_co_refs WHERE doc_a_id = 10 AND doc_b_id = 20",
+                rusqlite::params![],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            ).unwrap();
+            assert_eq!(doc_a, 10);
+            assert_eq!(doc_b, 20);
+            assert_eq!(co_count, 1);
+        }
+
+        // 6. Record another session and verify accumulation
+        ctx.server.record_session_access("session-2", 20);
+        ctx.server.record_session_access("session-2", 10); // reverse order
+        ctx.server.flush_all_sessions();
+
+        {
+            let conn = ctx.server.conn().get().unwrap();
+            let updated_co_count: i64 = conn.query_row(
+                "SELECT co_occurrence_count FROM document_co_refs WHERE doc_a_id = 10 AND doc_b_id = 20",
+                rusqlite::params![],
+                |r| r.get(0)
+            ).unwrap();
+            assert_eq!(updated_co_count, 2);
+        }
     }
 }

@@ -142,3 +142,11 @@ pub struct DocumentFeedback {
     pub session_id: Option<String>,
     pub created_at: i64,
 }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DocumentCoRef {
+    pub doc_a_id: i64,
+    pub doc_b_id: i64,
+    pub co_occurrence_count: i64,
+    pub last_accessed: i64,
+}

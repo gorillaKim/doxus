@@ -269,6 +269,7 @@ static MIGRATIONS: &[(&str, &str)] = &[
     ("V40__add_system_config",      include_str!("migrations/V40__add_system_config.sql")),
     ("V41__add_summary_column",     include_str!("migrations/V41__add_summary_column.sql")),
     ("V42__feedback_schema",        include_str!("migrations/V42__feedback_schema.sql")),
+    ("V43__co_refs_schema",        include_str!("migrations/V43__co_refs_schema.sql")),
 ];
 
 // ── Test helper ──────────────────────────────────────────────────────────────

@@ -959,7 +959,7 @@ fn ensure_valid_token(state: &mut PluginState) -> FnResult<()> {
             refresh_oauth_token(state, &refresh_token)?;
         } else if state.access_token.is_some() {
             // access_token이 있지만 만료됐고 refresh_token도 없음 → 재인증 필요
-            return Err(anyhow::Error::new(doxus_plugin_sdk::PluginError::AuthRequired));
+            return Err(anyhow::Error::new(doxus_plugin_sdk::PluginError::AuthRequired).into());
         }
         // refresh_token도 없고 access_token도 없으면 api_token 방식으로 간주하여 통과
     }
