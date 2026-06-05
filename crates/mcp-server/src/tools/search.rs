@@ -21,6 +21,7 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
     let limit = args["limit"].as_u64().unwrap_or(20) as usize;
     let offset = args["offset"].as_u64().unwrap_or(0) as usize;
     let project_filter = args["project"].as_str();
+    let format_opt = args["format"].as_str().unwrap_or("full");
 
     let mut q = SearchQuery::new(query_text)
         .with_limit(limit)
@@ -66,29 +67,34 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
             Err(e) => McpResponse::err(id, -32603, e.to_string()),
             Ok(hits) if hits.is_empty() => McpResponse::text(id, "No results found."),
             Ok(hits) => {
-                let items: Vec<Value> = hits
-                    .iter()
-                    .map(|h| {
-                        json!({
-                            "id": h.document_id,
-                            "project": h.project_name,
-                            "source_id": h.source_doc_id,
-                            "title": h.title,
-                            "heading": h.heading_path,
-                            "tags": h.tags,
-                            "snippet": h.snippet,
-                            "context": h.context_content,
-                            "score": h.score,
-                            "created_at": h.created_at,
-                            "updated_at": h.updated_at,
+                let text_resp = if format_opt == "compact" {
+                    render_compact_hits(&hits)
+                } else {
+                    let items: Vec<Value> = hits
+                        .iter()
+                        .map(|h| {
+                            json!({
+                                "id": h.document_id,
+                                "project": h.project_name,
+                                "source_id": h.source_doc_id,
+                                "title": h.title,
+                                "heading": h.heading_path,
+                                "tags": h.tags,
+                                "snippet": h.snippet,
+                                "context": h.context_content,
+                                "score": h.score,
+                                "created_at": h.created_at,
+                                "updated_at": h.updated_at,
+                            })
                         })
-                    })
-                    .collect();
-                
-                let mut text_resp = serde_json::to_string_pretty(&items).unwrap_or_default();
-                if hits.iter().any(|h| h.context_content.as_ref().map(|s| s.contains("truncated")).unwrap_or(false)) {
-                    text_resp.push_str("\n\nNOTE: Some contexts were truncated for token efficiency. Use 'doxus_get_section' with the 'heading' provided above for full content.");
-                }
+                        .collect();
+                    
+                    let mut resp = serde_json::to_string_pretty(&items).unwrap_or_default();
+                    if hits.iter().any(|h| h.context_content.as_ref().map(|s| s.contains("truncated")).unwrap_or(false)) {
+                        resp.push_str("\n\nNOTE: Some contexts were truncated for token efficiency. Use 'doxus_get_section' with the 'heading' provided above for full content.");
+                    }
+                    resp
+                };
 
                 McpResponse::ok(
                     id,
@@ -112,28 +118,33 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
             Err(e) => McpResponse::err(id, -32603, e.to_string()),
             Ok(hits) if hits.is_empty() => McpResponse::text(id, "No results found."),
             Ok(hits) => {
-                let items: Vec<Value> = hits
-                    .iter()
-                    .map(|h| {
-                        json!({
-                            "id": h.document_id,
-                            "project": h.project_name,
-                            "source_id": h.source_doc_id,
-                            "title": h.title,
-                            "tags": h.tags,
-                            "snippet": h.snippet,
-                            "score": h.score,
-                            "created_at": h.created_at,
-                            "updated_at": h.updated_at,
+                let text_resp = if format_opt == "compact" {
+                    render_compact_search_hits(&hits)
+                } else {
+                    let items: Vec<Value> = hits
+                        .iter()
+                        .map(|h| {
+                            json!({
+                                "id": h.document_id,
+                                "project": h.project_name,
+                                "source_id": h.source_doc_id,
+                                "title": h.title,
+                                "tags": h.tags,
+                                "snippet": h.snippet,
+                                "score": h.score,
+                                "created_at": h.created_at,
+                                "updated_at": h.updated_at,
+                            })
                         })
-                    })
-                    .collect();
+                        .collect();
+                    serde_json::to_string_pretty(&items).unwrap_or_default()
+                };
                 McpResponse::ok(
                     id,
                     json!({
                         "content": [{
                             "type": "text",
-                            "text": serde_json::to_string_pretty(&items).unwrap_or_default()
+                            "text": text_resp
                         }]
                     }),
                 )
@@ -588,6 +599,58 @@ pub fn extract_toc(content: &str) -> String {
     toc.join("\n")
 }
 
+fn render_compact_search_hits(hits: &[doxus_core::db::schema::SearchHit]) -> String {
+    let mut text_resp = String::new();
+    for h in hits {
+        let project = h.project_name.as_deref().unwrap_or("unknown");
+        let title = h.title.as_deref().unwrap_or(&h.source_doc_id);
+        let score_str = format!("{:.4}", h.score);
+        let heading_part = if let Some(ref heading) = h.heading_path {
+            format!(" > {}", heading)
+        } else {
+            "".to_string()
+        };
+        let cleaned = h.snippet.replace('\n', " ").replace('\r', " ");
+        let truncated: String = cleaned.chars().take(120).collect();
+        let suffix = if cleaned.chars().count() > 120 { "..." } else { "" };
+        let snippet_part = format!("\n  → {}{}", truncated, suffix);
+        
+        text_resp.push_str(&format!(
+            "[{}] \"{}\"{} (score: {})\n  ID: {}{}\n",
+            project, title, heading_part, score_str, h.source_doc_id, snippet_part
+        ));
+    }
+    text_resp
+}
+
+fn render_compact_hits(hits: &[doxus_core::db::schema::Hit]) -> String {
+    let mut text_resp = String::new();
+    for h in hits {
+        let project = h.project_name.as_deref().unwrap_or("unknown");
+        let title = h.title.as_deref().unwrap_or(&h.source_doc_id);
+        let score_str = format!("{:.4}", h.score);
+        let heading_part = if let Some(ref heading) = h.heading_path {
+            format!(" > {}", heading)
+        } else {
+            "".to_string()
+        };
+        let snippet_part = if let Some(ref snippet) = h.snippet {
+            let cleaned = snippet.replace('\n', " ").replace('\r', " ");
+            let truncated: String = cleaned.chars().take(120).collect();
+            let suffix = if cleaned.chars().count() > 120 { "..." } else { "" };
+            format!("\n  → {}{}", truncated, suffix)
+        } else {
+            "".to_string()
+        };
+        
+        text_resp.push_str(&format!(
+            "[{}] \"{}\"{} (score: {})\n  ID: {}{}\n",
+            project, title, heading_part, score_str, h.source_doc_id, snippet_part
+        ));
+    }
+    text_resp
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -784,6 +847,21 @@ mod tests {
         let hits = engine.search(&q).unwrap();
         assert_eq!(hits.len(), 1, "created_after=2000 이면 created_at=5000 문서만 반환");
         assert_eq!(hits[0].title.as_deref(), Some("Knowledge Base New"));
+    }
+
+    #[tokio::test]
+    async fn test_search_compact_format() {
+        let ts = setup_server();
+        insert_doc(&ts.server, ts.pid, "d1", "Compact Format Test", "This is some content for testing", 1111, 2222);
+
+        let resp = search(&ts.server, json!(1), &json!({ "query": "Compact Format", "format": "compact" })).await;
+        let text = get_text(&resp);
+        
+        assert!(text.contains("[tp]"), "Compact format must contain project tag: {}", text);
+        assert!(text.contains("\"Compact Format Test\""), "Compact format must contain title: {}", text);
+        assert!(text.contains("score:"), "Compact format must contain score label: {}", text);
+        assert!(text.contains("ID: d1"), "Compact format must contain doc id: {}", text);
+        assert!(text.contains("This is some content"), "Compact format must contain snippet: {}", text);
     }
 
     // Regression: tokio::spawn JIT indexer must not panic on poisoned conn.

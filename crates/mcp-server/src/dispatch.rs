@@ -107,6 +107,7 @@ pub fn tool_list() -> Value {
                 param_opt("mode", "string", "Search mode: hybrid|fts|vector"),
                 param_opt("limit", "number", "Max results (default 20)"),
                 param_opt("offset", "number", "Pagination offset (default 0)"),
+                param_opt("format", "string", "Output format: full|compact (default: full)"),
             ]),
             tool("doxus_get_document", "Get full document content", &[
                 param("project", "string", "Project name"),

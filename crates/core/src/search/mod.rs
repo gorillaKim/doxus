@@ -307,7 +307,10 @@ impl SearchEngine {
         const SUB_BATCH: usize = 5;
         while !requests.is_empty() {
             let take = SUB_BATCH.min(requests.len());
-            let sub_batch: Vec<BatchIndexingRequest> = requests.drain(..take).collect();
+            let mut sub_batch: Vec<BatchIndexingRequest> = requests.drain(..take).collect();
+            for req in &mut sub_batch {
+                req.content = clean_markdown(&req.content);
+            }
 
             // Chunk each document and build the flat embedding-text list used only for embed().
             let mut sub_chunks: Vec<crate::chunker::Chunk> = Vec::new();
@@ -410,7 +413,8 @@ impl SearchEngine {
         params: IndexParams<'_>,
     ) -> Result<(), SearchError> {
         let strategy = params.strategy.to_string();
-        let chunks = crate::chunker::split_chunks(params.content, crate::chunker::ChunkConfig { title: Some(params.title.to_string()), ..Default::default() });
+        let sanitized = clean_markdown(params.content);
+        let chunks = crate::chunker::split_chunks(&sanitized, crate::chunker::ChunkConfig { title: Some(params.title.to_string()), ..Default::default() });
         if chunks.is_empty() { return Ok(()); }
 
         let texts: Vec<&str> = chunks.iter().map(|c| c.embedding_text.as_str()).collect();
@@ -425,7 +429,7 @@ impl SearchEngine {
         let pool = self.conn.clone();
         let source_doc_id = params.source_doc_id.to_string();
         let title = params.title.to_string();
-        let content = params.content.to_string();
+        let content = sanitized;
         let project_id = params.project_id;
         let last_indexed = params.last_indexed;
         let meta = params.meta;
@@ -916,7 +920,8 @@ impl<'a> SyncSearchEngine<'a> {
         self.index_document_with_meta(project_id, sid, title, content, &DocMeta::default(), strategy)
     }
     pub fn index_document_with_meta(&self, project_id: i64, sid: &str, title: &str, content: &str, meta: &DocMeta, strategy: &str) -> Result<(), SearchError> {
-        let chunks = crate::chunker::split_chunks(content, crate::chunker::ChunkConfig { title: Some(title.to_string()), ..Default::default() });
+        let sanitized = clean_markdown(content);
+        let chunks = crate::chunker::split_chunks(&sanitized, crate::chunker::ChunkConfig { title: Some(title.to_string()), ..Default::default() });
         let now = chrono::Utc::now().timestamp();
         let meta = DocMeta {
             created_at: meta.created_at.or(Some(now)),
@@ -929,7 +934,7 @@ impl<'a> SyncSearchEngine<'a> {
                 project_id,
                 source_doc_id: sid,
                 title,
-                content,
+                content: &sanitized,
                 chunks: &chunks,
                 chunk_embeddings: &[],
                 meta: &meta,
@@ -941,4 +946,49 @@ impl<'a> SyncSearchEngine<'a> {
     pub fn search(&self, query: &SearchQuery) -> Result<Vec<SearchHit>, SearchError> {
         fts_search_sync(self.conn, query)
     }
+}
+
+fn clean_markdown(content: &str) -> String {
+    let mut result = String::with_capacity(content.len());
+    let mut chars = content.chars().peekable();
+    
+    while let Some(c) = chars.next() {
+        if c == '<' && chars.peek() == Some(&'!') {
+            let mut temp = chars.clone();
+            temp.next(); // '!'
+            if temp.next() == Some('-') && temp.next() == Some('-') {
+                chars.next(); // '!'
+                chars.next(); // '-'
+                chars.next(); // '-'
+                
+                let mut hyphen_count = 0;
+                while let Some(nc) = chars.next() {
+                    if nc == '-' {
+                        hyphen_count += 1;
+                    } else if nc == '>' && hyphen_count >= 2 {
+                        break;
+                    } else {
+                        hyphen_count = 0;
+                    }
+                }
+                continue;
+            }
+        }
+        result.push(c);
+    }
+    
+    let mut cleaned = String::with_capacity(result.len());
+    let mut last_was_space = false;
+    for c in result.chars() {
+        if c == ' ' || c == '\t' {
+            if !last_was_space {
+                cleaned.push(' ');
+                last_was_space = true;
+            }
+        } else {
+            cleaned.push(c);
+            last_was_space = false;
+        }
+    }
+    cleaned
 }
