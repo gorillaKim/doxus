@@ -905,7 +905,7 @@ body context";
 
         let stream = plugin.fetch_all(FetchAllOpts { cursor: None, page_size: 100 }).await.unwrap();
         assert_eq!(stream.documents.len(), 1);
-        let doc = &stream.documents[0];
+        let doc = plugin.fetch_document(&stream.documents[0].id).await.unwrap();
         
         assert_eq!(doc.metadata.get("status").unwrap().as_str().unwrap(), "in-progress");
         assert_eq!(doc.metadata.get("category").unwrap().as_str().unwrap(), "research");
@@ -956,7 +956,12 @@ body context";
             .await
             .unwrap();
         assert_eq!(stream.documents.len(), 2);
-        assert!(stream.documents.iter().any(|d| d.title.as_deref() == Some("My Note")));
+        
+        let mut docs = Vec::new();
+        for d in &stream.documents {
+            docs.push(plugin.fetch_document(&d.id).await.unwrap());
+        }
+        assert!(docs.iter().any(|d| d.title.as_deref() == Some("My Note")));
     }
 
     // ── Goal 2b: frontmatter tag parsing ──────────────────────────────────────
@@ -976,7 +981,8 @@ body context";
         plugin.initialize(config, PluginSecrets::default()).await.unwrap();
 
         let stream = plugin.fetch_all(FetchAllOpts { cursor: None, page_size: 100 }).await.unwrap();
-        assert_eq!(stream.documents[0].tags, vec!["rust", "doxus"]);
+        let doc = plugin.fetch_document(&stream.documents[0].id).await.unwrap();
+        assert_eq!(doc.tags, vec!["rust", "doxus"]);
     }
 
     #[tokio::test]
@@ -994,7 +1000,8 @@ body context";
         plugin.initialize(config, PluginSecrets::default()).await.unwrap();
 
         let stream = plugin.fetch_all(FetchAllOpts { cursor: None, page_size: 100 }).await.unwrap();
-        assert_eq!(stream.documents[0].tags, vec!["alpha", "beta"]);
+        let doc = plugin.fetch_document(&stream.documents[0].id).await.unwrap();
+        assert_eq!(doc.tags, vec!["alpha", "beta"]);
     }
 
     #[tokio::test]
@@ -1012,7 +1019,8 @@ body context";
         plugin.initialize(config, PluginSecrets::default()).await.unwrap();
 
         let stream = plugin.fetch_all(FetchAllOpts { cursor: None, page_size: 100 }).await.unwrap();
-        let tags = &stream.documents[0].tags;
+        let doc = plugin.fetch_document(&stream.documents[0].id).await.unwrap();
+        let tags = &doc.tags;
         assert!(tags.contains(&"rust".to_string()));
         assert!(tags.contains(&"doxus".to_string()));
     }
@@ -1231,12 +1239,10 @@ body context";
         plugin.initialize(config, PluginSecrets::default()).await.unwrap();
 
         let stream = plugin.fetch_all(FetchAllOpts { cursor: None, page_size: 100 }).await.unwrap();
-        let doc = &stream.documents[0];
-        let links = doc.metadata.get("links").expect("links key missing");
-        let arr = links.as_array().expect("links must be array");
-        let targets: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
-        assert!(targets.contains(&"OtherPage"), "got: {targets:?}");
-        assert!(targets.contains(&"guide.md"), "got: {targets:?}");
+        let doc = plugin.fetch_document(&stream.documents[0].id).await.unwrap();
+        let links = &doc.links;
+        assert!(links.contains(&"OtherPage".to_string()), "got: {links:?}");
+        assert!(links.contains(&"guide.md".to_string()), "got: {links:?}");
     }
 
     #[tokio::test]
