@@ -1,0 +1,11 @@
+[mcp_servers.doxus]
+url = "http://127.0.0.1:1421/mcp"
+
+[mcp_servers.doxus.http_headers]
+Authorization = "Bearer X79IFn3ZSDtqx42E94g1JZELt9r6HFeJ"
+
+[shell_environment_policy]
+inherit = "core"
+
+[shell_environment_policy.set]
+CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "1"
