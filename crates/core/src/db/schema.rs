@@ -133,3 +133,12 @@ pub struct BatchIndexingRequest {
     pub content: String,
     pub meta: DocMeta,
 }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DocumentFeedback {
+    pub document_id: i64,
+    pub agent_id: String,
+    pub score: f64,
+    pub session_id: Option<String>,
+    pub created_at: i64,
+}

@@ -107,7 +107,7 @@ pub fn create_pool(path: &std::path::Path) -> Result<DbPool, DbError> {
     })
 }
 
-/// Run all migrations V1–V41 in order. Idempotent.
+/// Run all migrations V1–V42 in order. Idempotent.
 pub fn migrate(conn: &Connection) -> Result<(), DbError> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS _migrations (
@@ -268,6 +268,7 @@ static MIGRATIONS: &[(&str, &str)] = &[
     ("V39__add_last_fetched_at",    include_str!("migrations/V39__add_last_fetched_at.sql")),
     ("V40__add_system_config",      include_str!("migrations/V40__add_system_config.sql")),
     ("V41__add_summary_column",     include_str!("migrations/V41__add_summary_column.sql")),
+    ("V42__feedback_schema",        include_str!("migrations/V42__feedback_schema.sql")),
 ];
 
 // ── Test helper ──────────────────────────────────────────────────────────────
@@ -535,6 +536,16 @@ mod tests {
             [], |r| r.get(0),
         ).unwrap();
         assert_eq!(count, 1, "system_config 테이블이 존재해야 함");
+    }
+
+    #[test]
+    fn v42_document_feedbacks_table_exists() {
+        let db = TestDb::new();
+        let count: i64 = db.conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='document_feedbacks'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 1, "document_feedbacks 테이블이 존재해야 함");
     }
 
     #[test]
