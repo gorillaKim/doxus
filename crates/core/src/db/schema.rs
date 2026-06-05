@@ -52,6 +52,7 @@ pub struct Document {
     pub content_hash: String,
     pub plugin_id: Option<String>,
     pub last_indexed: Option<i64>,
+    pub summary: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +88,7 @@ pub struct SearchHit {
     pub created_at: Option<i64>,
     pub updated_at: Option<i64>,
     pub tags: Vec<String>,
+    pub summary: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
@@ -108,6 +110,7 @@ pub struct Hit {
     pub created_at: Option<i64>,
     pub updated_at: Option<i64>,
     pub tags: Vec<String>,
+    pub summary: Option<String>,
 }
 
 #[derive(Debug, Default, Clone)]

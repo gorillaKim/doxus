@@ -107,7 +107,7 @@ pub fn create_pool(path: &std::path::Path) -> Result<DbPool, DbError> {
     })
 }
 
-/// Run all migrations V1–V40 in order. Idempotent.
+/// Run all migrations V1–V41 in order. Idempotent.
 pub fn migrate(conn: &Connection) -> Result<(), DbError> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS _migrations (
@@ -267,6 +267,7 @@ static MIGRATIONS: &[(&str, &str)] = &[
     ("V38__scheduler_details",      include_str!("migrations/V38__scheduler_details.sql")),
     ("V39__add_last_fetched_at",    include_str!("migrations/V39__add_last_fetched_at.sql")),
     ("V40__add_system_config",      include_str!("migrations/V40__add_system_config.sql")),
+    ("V41__add_summary_column",     include_str!("migrations/V41__add_summary_column.sql")),
 ];
 
 // ── Test helper ──────────────────────────────────────────────────────────────

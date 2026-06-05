@@ -19,3 +19,4 @@ pub mod watcher;
 pub mod reindex;
 pub mod scheduler;
 pub mod freshness;
+pub mod summarizer;

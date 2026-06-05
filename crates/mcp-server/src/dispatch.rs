@@ -108,10 +108,12 @@ pub fn tool_list() -> Value {
                 param_opt("limit", "number", "Max results (default 20)"),
                 param_opt("offset", "number", "Pagination offset (default 0)"),
                 param_opt("format", "string", "Output format: full|compact (default: full)"),
+                param_opt("include_summary", "boolean", "Include document summary in search results (default: true)"),
             ]),
             tool("doxus_get_document", "Get full document content", &[
                 param("project", "string", "Project name"),
                 param("id", "string", "Document ID (Source ID or Database ID)"),
+                param_opt("view", "string", "Render view: full|summary|outline (default: full)"),
             ]),
             tool("doxus_get_section", "Get specific section by heading (token-efficient)", &[
                 param("project", "string", "Project name"),

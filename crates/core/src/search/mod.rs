@@ -230,6 +230,7 @@ impl From<SearchHit> for Hit {
             created_at: sh.created_at,
             updated_at: sh.updated_at,
             tags: sh.tags,
+            summary: sh.summary,
         }
     }
 }
@@ -700,7 +701,8 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
                 c.start_byte, c.end_byte, c.content,
                 d.created_at, d.updated_at,
                 (SELECT GROUP_CONCAT(tag) FROM document_tags WHERE document_id = d.id) as tags,
-                p.name AS project_name
+                p.name AS project_name,
+                d.summary
          {}
          JOIN documents d ON d.id = c.document_id
          JOIN projects p ON p.id = d.project_id
@@ -744,6 +746,7 @@ fn fts_search_sync(conn: &Connection, query: &SearchQuery) -> Result<Vec<SearchH
             updated_at: row.get(16)?,
             tags,
             project_name: row.get(18).ok(),
+            summary: row.get(19)?,
         };
 
         if let Some(ref path_str) = hit.file_path {
@@ -800,7 +803,8 @@ fn vector_search_sync(
     let sql = format!(
         "SELECT c.id, c.document_id, d.project_id, d.source_doc_id, d.title, COALESCE(d.file_path, d.source_doc_id), c.heading_path, c.content, knn.distance, d.url, d.metadata_json, d.last_indexed, c.start_byte, c.end_byte, d.created_at, d.updated_at,
                 (SELECT GROUP_CONCAT(tag) FROM document_tags WHERE document_id = d.id) as tags,
-                p.name AS project_name
+                p.name AS project_name,
+                d.summary
          FROM (
              SELECT chunk_id, distance FROM chunk_embeddings
              WHERE vector MATCH vec_int8(?1) AND k = ?2
@@ -844,6 +848,7 @@ fn vector_search_sync(
             updated_at: row.get(15)?,
             tags,
             project_name: row.get(17).ok(),
+            summary: row.get(18)?,
         };
 
         if let Some(ref path_str) = hit.file_path {

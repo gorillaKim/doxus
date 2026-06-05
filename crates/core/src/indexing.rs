@@ -365,7 +365,18 @@ impl IndexingService {
             meta,
             strategy,
             last_indexed: now,
-        }).await.map_err(|e| format!("Indexing error: {e}"))
+        }).await.map_err(|e| format!("Indexing error: {e}"))?;
+
+        // LTM 요약 생성 및 documents 테이블 UPDATE 연동
+        let summary = crate::summarizer::lead3_extract(&doc.content);
+        if let Ok(conn) = self.conn.write_conn() {
+            let _ = conn.execute(
+                "UPDATE documents SET summary = ?1 WHERE project_id = ?2 AND source_doc_id = ?3",
+                params![summary, project_id, doc.id.0],
+            );
+        }
+
+        Ok(())
     }
 
     /// 특정 문서가 재인덱싱이 필요한지 확인합니다.

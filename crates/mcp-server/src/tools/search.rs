@@ -22,6 +22,7 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
     let offset = args["offset"].as_u64().unwrap_or(0) as usize;
     let project_filter = args["project"].as_str();
     let format_opt = args["format"].as_str().unwrap_or("full");
+    let include_summary = args["include_summary"].as_bool().unwrap_or(true);
 
     let mut q = SearchQuery::new(query_text)
         .with_limit(limit)
@@ -68,11 +69,16 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
             Ok(hits) if hits.is_empty() => McpResponse::text(id, "No results found."),
             Ok(hits) => {
                 let text_resp = if format_opt == "compact" {
-                    render_compact_hits(&hits)
+                    render_compact_hits(&hits, include_summary)
                 } else {
                     let items: Vec<Value> = hits
                         .iter()
                         .map(|h| {
+                            let snippet_to_use = if include_summary {
+                                h.summary.as_ref().or(h.snippet.as_ref())
+                            } else {
+                                h.snippet.as_ref()
+                            };
                             json!({
                                 "id": h.document_id,
                                 "project": h.project_name,
@@ -80,7 +86,8 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
                                 "title": h.title,
                                 "heading": h.heading_path,
                                 "tags": h.tags,
-                                "snippet": h.snippet,
+                                "snippet": snippet_to_use,
+                                "summary": h.summary,
                                 "context": h.context_content,
                                 "score": h.score,
                                 "created_at": h.created_at,
@@ -119,18 +126,24 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
             Ok(hits) if hits.is_empty() => McpResponse::text(id, "No results found."),
             Ok(hits) => {
                 let text_resp = if format_opt == "compact" {
-                    render_compact_search_hits(&hits)
+                    render_compact_search_hits(&hits, include_summary)
                 } else {
                     let items: Vec<Value> = hits
                         .iter()
                         .map(|h| {
+                            let snippet_to_use = if include_summary {
+                                h.summary.as_ref().unwrap_or(&h.snippet)
+                            } else {
+                                &h.snippet
+                            };
                             json!({
                                 "id": h.document_id,
                                 "project": h.project_name,
                                 "source_id": h.source_doc_id,
                                 "title": h.title,
                                 "tags": h.tags,
-                                "snippet": h.snippet,
+                                "snippet": snippet_to_use,
+                                "summary": h.summary,
                                 "score": h.score,
                                 "created_at": h.created_at,
                                 "updated_at": h.updated_at,
@@ -155,6 +168,7 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
 
 pub async fn get_document(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     let project_opt = args["project"].as_str();
+    let view_opt = args["view"].as_str().unwrap_or("full");
     let (project_name_resolved, source_doc_id) = {
         let conn = server.conn();
         let conn_lock = match conn.get() {
@@ -188,10 +202,6 @@ pub async fn get_document(server: &McpServer, id: Value, args: &Value) -> McpRes
             )
         },
         Ok(doc) => {
-            let mut title = doc.title.clone().unwrap_or(source_doc_id.clone());
-            let tags = doc.tags.clone();
-            let metadata_json = serde_json::to_string(&doc.metadata).ok();
-
             let project_name = project.to_string();
             let doc_clone = doc.clone();
             let indexer = server.indexer();
@@ -222,6 +232,10 @@ pub async fn get_document(server: &McpServer, id: Value, args: &Value) -> McpRes
                 }
             });
 
+            let mut title = doc.title.clone().unwrap_or(source_doc_id.clone());
+            let tags = doc.tags.clone();
+            let metadata_json = serde_json::to_string(&doc.metadata).ok();
+
             if title.is_empty() { title = format!("Source ID: {}", source_doc_id); }
             let mut header = format!("# {title}\n");
             if !tags.is_empty() {
@@ -230,13 +244,27 @@ pub async fn get_document(server: &McpServer, id: Value, args: &Value) -> McpRes
             if let Some(json) = metadata_json {
                 if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&json) {
                     for (k, v) in map {
-                        if k == "links" || k == "relative_path" { continue; }
-                        header.push_str(&format!("{k}: {v}\n"));
+                          if k == "links" || k == "relative_path" { continue; }
+                          header.push_str(&format!("{k}: {v}\n"));
                     }
                 }
             }
             header.push_str("\n---\n\n");
-            McpResponse::text(id, format!("{header}{}", doc.content))
+
+            match view_opt {
+                "summary" => {
+                    let summary_text = doxus_core::summarizer::lead3_extract(&doc.content);
+                    McpResponse::text(id, format!("{header}{summary_text}"))
+                }
+                "outline" => {
+                    let toc = extract_toc(&doc.content);
+                    let body = if toc.is_empty() { "No headings found.".to_string() } else { toc };
+                    McpResponse::text(id, format!("{header}{body}"))
+                }
+                _ => {
+                    McpResponse::text(id, format!("{header}{}", doc.content))
+                }
+            }
         }
     }
 }
@@ -599,7 +627,7 @@ pub fn extract_toc(content: &str) -> String {
     toc.join("\n")
 }
 
-fn render_compact_search_hits(hits: &[doxus_core::db::schema::SearchHit]) -> String {
+fn render_compact_search_hits(hits: &[doxus_core::db::schema::SearchHit], include_summary: bool) -> String {
     let mut text_resp = String::new();
     for h in hits {
         let project = h.project_name.as_deref().unwrap_or("unknown");
@@ -610,7 +638,12 @@ fn render_compact_search_hits(hits: &[doxus_core::db::schema::SearchHit]) -> Str
         } else {
             "".to_string()
         };
-        let cleaned = h.snippet.replace(['\n', '\r'], " ");
+        let snippet_val = if include_summary {
+            h.summary.as_ref().unwrap_or(&h.snippet)
+        } else {
+            &h.snippet
+        };
+        let cleaned = snippet_val.replace(['\n', '\r'], " ");
         let truncated: String = cleaned.chars().take(120).collect();
         let suffix = if cleaned.chars().count() > 120 { "..." } else { "" };
         let snippet_part = format!("\n  → {}{}", truncated, suffix);
@@ -623,7 +656,7 @@ fn render_compact_search_hits(hits: &[doxus_core::db::schema::SearchHit]) -> Str
     text_resp
 }
 
-fn render_compact_hits(hits: &[doxus_core::db::schema::Hit]) -> String {
+fn render_compact_hits(hits: &[doxus_core::db::schema::Hit], include_summary: bool) -> String {
     let mut text_resp = String::new();
     for h in hits {
         let project = h.project_name.as_deref().unwrap_or("unknown");
@@ -634,7 +667,12 @@ fn render_compact_hits(hits: &[doxus_core::db::schema::Hit]) -> String {
         } else {
             "".to_string()
         };
-        let snippet_part = if let Some(ref snippet) = h.snippet {
+        let snippet_part = if include_summary {
+            h.summary.as_ref().or(h.snippet.as_ref())
+        } else {
+            h.snippet.as_ref()
+        };
+        let snippet_part = if let Some(ref snippet) = snippet_part {
             let cleaned = snippet.replace(['\n', '\r'], " ");
             let truncated: String = cleaned.chars().take(120).collect();
             let suffix = if cleaned.chars().count() > 120 { "..." } else { "" };
@@ -809,7 +847,7 @@ mod tests {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         conn.execute_batch("
             CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, name TEXT NOT NULL, display_name TEXT NOT NULL, path TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0);
-            CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id), source_doc_id TEXT NOT NULL, title TEXT, content TEXT NOT NULL DEFAULT '', content_hash TEXT NOT NULL DEFAULT '', chunk_index INTEGER NOT NULL DEFAULT 0, last_indexed INTEGER NOT NULL DEFAULT 0);
+            CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id), source_doc_id TEXT NOT NULL, title TEXT, content TEXT NOT NULL DEFAULT '', content_hash TEXT NOT NULL DEFAULT '', chunk_index INTEGER NOT NULL DEFAULT 0, last_indexed INTEGER NOT NULL DEFAULT 0, summary TEXT);
             INSERT INTO projects (id, name, display_name, path, status, created_at, updated_at) VALUES (1, 'test-proj', 'Test', '/tmp', 'active', 0, 0);
             INSERT INTO documents (id, project_id, source_doc_id, title, content, content_hash, chunk_index, last_indexed) VALUES (42, 1, 'test/doc.md', 'Test Doc', 'hello', 'hash1', 0, 0);
         ").unwrap();
@@ -854,7 +892,7 @@ mod tests {
         let ts = setup_server();
         insert_doc(&ts.server, ts.pid, "d1", "Compact Format Test", "This is some content for testing", 1111, 2222);
 
-        let resp = search(&ts.server, json!(1), &json!({ "query": "Compact Format", "format": "compact" })).await;
+        let resp = search(&ts.server, json!(1), &json!({ "query": "Compact Format", "format": "compact", "include_summary": false })).await;
         let text = get_text(&resp);
         
         assert!(text.contains("[tp]"), "Compact format must contain project tag: {}", text);
