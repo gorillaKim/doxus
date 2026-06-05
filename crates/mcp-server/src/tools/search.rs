@@ -689,6 +689,51 @@ fn render_compact_hits(hits: &[doxus_core::db::schema::Hit], include_summary: bo
     text_resp
 }
 
+pub async fn record_feedback(server: &McpServer, id: Value, args: &Value) -> McpResponse {
+    let project = match args["project"].as_str() {
+        Some(p) => p,
+        None => return McpResponse::err(id, -32602, "missing required arg: project"),
+    };
+    let score = match args["score"].as_f64() {
+        Some(s) => s,
+        None => return McpResponse::err(id, -32602, "missing required arg: score"),
+    };
+
+    if !(score >= -1.0 && score <= 1.0) {
+        return McpResponse::err(id, -32602, "score must be between -1.0 and 1.0");
+    }
+
+    let agent_id = args["agent_id"].as_str().unwrap_or("agent");
+    let session_id = args["session_id"].as_str();
+
+    let conn = server.conn();
+    let conn_lock = match conn.get() {
+        Ok(l) => l,
+        Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
+    };
+
+    let (db_id, source_doc_id) = match resolve_doc_id(&conn_lock, project, &args["id"]) {
+        Ok(res) => res,
+        Err(e) => return McpResponse::err(id, -32602, e),
+    };
+
+    if db_id == 0 {
+        return McpResponse::err(id, -32602, format!("document '{}' not found in project '{}'", args["id"], project));
+    }
+
+    let sql = "INSERT INTO document_feedbacks (document_id, agent_id, score, session_id) VALUES (?1, ?2, ?3, ?4)";
+    match conn_lock.execute(sql, params![db_id, agent_id, score, session_id]) {
+        Ok(_) => McpResponse::text(
+            id,
+            format!(
+                "Successfully recorded feedback for document '{}' in project '{}' (score: {})",
+                source_doc_id, project, score
+            ),
+        ),
+        Err(e) => McpResponse::err(id, -32603, format!("Failed to record feedback: {e}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -963,5 +1008,52 @@ mod tests {
         }));
 
         assert!(result.is_ok(), "create_document conn access must not panic on pool error");
+    }
+
+    #[tokio::test]
+    async fn test_record_feedback_success() {
+        let ts = setup_server();
+        insert_doc(&ts.server, ts.pid, "doc_feedback_test", "Feedback Test", "content", 1000, 1000);
+
+        let args = json!({
+            "project": "tp",
+            "id": "doc_feedback_test",
+            "score": 0.8,
+            "session_id": "test-session",
+            "agent_id": "test-agent"
+        });
+
+        let resp = record_feedback(&ts.server, json!(1), &args).await;
+        let text = get_text(&resp);
+        assert!(text.contains("Successfully recorded feedback"));
+
+        // DB에 실제로 기록되었는지 확인
+        let conn = ts.server.conn();
+        let c = conn.get().unwrap();
+        let score: f64 = c.query_row(
+            "SELECT score FROM document_feedbacks WHERE agent_id = 'test-agent'",
+            [],
+            |r| r.get(0)
+        ).unwrap();
+        assert_eq!(score, 0.8);
+    }
+
+    #[tokio::test]
+    async fn test_record_feedback_invalid_score() {
+        let ts = setup_server();
+        insert_doc(&ts.server, ts.pid, "doc_feedback_test", "Feedback Test", "content", 1000, 1000);
+
+        let args = json!({
+            "project": "tp",
+            "id": "doc_feedback_test",
+            "score": 1.5,
+            "session_id": "test-session",
+            "agent_id": "test-agent"
+        });
+
+        let resp = record_feedback(&ts.server, json!(1), &args).await;
+        let val = serde_json::to_value(resp).unwrap();
+        assert_eq!(val["error"]["code"].as_i64(), Some(-32602));
+        assert!(val["error"]["message"].as_str().unwrap().contains("score must be between"));
     }
 }

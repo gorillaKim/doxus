@@ -52,6 +52,7 @@ pub async fn dispatch_tool(server: &McpServer, name: &str, id: Value, args: &Val
 
         // ── Search & documents ────────────────────────────────────────────
         "doxus_search" => tools::search::search(server, id, args).await,
+        "doxus_record_feedback" => tools::search::record_feedback(server, id, args).await,
         "doxus_get_document" => tools::search::get_document(server, id, args).await,
         "doxus_get_section" => tools::search::get_section(server, id, args).await,
         "doxus_get_metadata" => tools::search::get_metadata(server, id, args),
@@ -109,6 +110,13 @@ pub fn tool_list() -> Value {
                 param_opt("offset", "number", "Pagination offset (default 0)"),
                 param_opt("format", "string", "Output format: full|compact (default: full)"),
                 param_opt("include_summary", "boolean", "Include document summary in search results (default: true)"),
+            ]),
+            tool("doxus_record_feedback", "Record agent feedback for a document to improve search ranking", &[
+                param("project", "string", "Project name"),
+                param("id", "string", "Document ID (Source ID or Database ID)"),
+                param("score", "number", "Feedback score (-1.0 to 1.0)"),
+                param_opt("session_id", "string", "Session ID"),
+                param_opt("agent_id", "string", "Agent ID (default: 'agent')"),
             ]),
             tool("doxus_get_document", "Get full document content", &[
                 param("project", "string", "Project name"),
