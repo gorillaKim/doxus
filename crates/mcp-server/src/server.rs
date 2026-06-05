@@ -111,7 +111,7 @@ impl McpServer {
             .or_insert_with(|| (HashSet::new(), now));
         entry.0.insert(doc_id);
         entry.1 = now;
-        println!("[DEBUG] Recorded session: {}, docs: {:?}", session_id, entry.0);
+        tracing::debug!("[co_refs] Recorded session: {}, docs: {:?}", session_id, entry.0);
 
         // 2. Identify expired sessions (idle for 5 minutes/300 seconds)
         let mut expired = Vec::new();
@@ -132,9 +132,8 @@ impl McpServer {
 
     /// Flushes accumulated document IDs in a session to the co-occurrence reference table.
     fn flush_session_data(&self, docs: HashSet<i64>) {
-        println!("[DEBUG] flush_session_data called with docs: {:?}", docs);
+        tracing::debug!("[co_refs] flush_session_data called with {} docs", docs.len());
         if docs.len() < 2 {
-            println!("[DEBUG] docs len < 2, early returning");
             return;
         }
 
@@ -142,7 +141,13 @@ impl McpServer {
         doc_list.sort_unstable();
 
         let conn_pool = self.conn();
-        let conn = conn_pool.get().expect("Failed to acquire write connection from pool");
+        let conn = match conn_pool.get() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("[co_refs] Failed to acquire write connection: {e}");
+                return;
+            }
+        };
 
         let last_accessed = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -160,8 +165,9 @@ impl McpServer {
                            ON CONFLICT(doc_a_id, doc_b_id) DO UPDATE SET
                                co_occurrence_count = co_occurrence_count + 1,
                                last_accessed = ?3";
-                let rows = conn.execute(sql, rusqlite::params![doc_a, doc_b, last_accessed]).unwrap();
-                println!("[DEBUG] execute sql: (A={}, B={}) rows affected: {}", doc_a, doc_b, rows);
+                if let Err(e) = conn.execute(sql, rusqlite::params![doc_a, doc_b, last_accessed]) {
+                    tracing::warn!("[co_refs] Failed to upsert co-ref ({}, {}): {e}", doc_a, doc_b);
+                }
             }
         }
     }

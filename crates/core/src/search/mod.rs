@@ -484,20 +484,34 @@ impl SearchEngine {
             
             if paged_hits.is_empty() { return Ok(paged_hits); }
 
-            for hit in paged_hits.iter_mut() {
-                let doc_id = hit.document_id;
-                let (sum_score, count): (f64, i64) = conn.query_row(
-                    "SELECT COALESCE(SUM(score), 0.0), COUNT(score) FROM document_feedbacks WHERE document_id = ?1",
-                    params![doc_id],
-                    |r| Ok((r.get(0)?, r.get(1)?))
-                ).unwrap_or((0.0, 0));
+            // 피드백 보정: 배치 쿼리로 모든 문서의 피드백 점수를 한 번에 조회
+            let doc_ids: Vec<i64> = paged_hits.iter().map(|h| h.document_id).collect();
+            let placeholders: Vec<String> = (1..=doc_ids.len()).map(|i| format!("?{i}")).collect();
+            let feedback_sql = format!(
+                "SELECT document_id, COALESCE(SUM(score), 0.0), COUNT(score) FROM document_feedbacks WHERE document_id IN ({}) GROUP BY document_id",
+                placeholders.join(",")
+            );
+            let mut feedback_map: std::collections::HashMap<i64, (f64, i64)> = std::collections::HashMap::new();
+            if let Ok(mut stmt) = conn.prepare(&feedback_sql) {
+                let id_params: Vec<&dyn rusqlite::ToSql> = doc_ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+                if let Ok(rows) = stmt.query_map(id_params.as_slice(), |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?, row.get::<_, i64>(2)?))
+                }) {
+                    for row in rows.flatten() {
+                        feedback_map.insert(row.0, (row.1, row.2));
+                    }
+                }
+            }
 
-                if count > 0 {
-                    let n = count as f64;
-                    let k = 5.0;
-                    let damping = 0.5;
-                    let multiplier = 1.0 + (sum_score / (n + k) * damping);
-                    hit.score = hit.score * multiplier;
+            for hit in paged_hits.iter_mut() {
+                if let Some(&(sum_score, count)) = feedback_map.get(&hit.document_id) {
+                    if count > 0 {
+                        let n = count as f64;
+                        let k = 5.0;
+                        let damping = 0.5;
+                        let multiplier = 1.0 + (sum_score / (n + k) * damping);
+                        hit.score *= multiplier;
+                    }
                 }
             }
 

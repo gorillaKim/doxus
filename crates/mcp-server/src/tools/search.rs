@@ -720,7 +720,7 @@ pub async fn record_feedback(server: &McpServer, id: Value, args: &Value) -> Mcp
         None => return McpResponse::err(id, -32602, "missing required arg: score"),
     };
 
-    if !(score >= -1.0 && score <= 1.0) {
+    if score.is_nan() || !(-1.0..=1.0).contains(&score) {
         return McpResponse::err(id, -32602, "score must be between -1.0 and 1.0");
     }
 
