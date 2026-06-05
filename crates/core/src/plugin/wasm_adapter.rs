@@ -35,13 +35,14 @@ pub enum WasmError {
 
 pub struct WasmDocSourceAdapter {
     meta: PluginMetadata,
-    plugin: Arc<Mutex<Plugin>>,
+    wasm_bytes: Vec<u8>,
     manifest: PluginManifest,
     kv_store: KvStore,
     progress_tx: Option<broadcast::Sender<ProgressEvent>>,
     secret_store: Arc<dyn crate::secrets::SecretStore>,
     /// WASM export 존재 여부는 정적이므로 생성 시 한 번만 확인해 캐싱
     incremental_sync_cached: bool,
+    supports_write_cached: bool,
 }
 
 impl WasmDocSourceAdapter {
@@ -59,7 +60,7 @@ impl WasmDocSourceAdapter {
         }
 
         let bytes = wasm_bytes.into();
-        let wasm = Wasm::data(bytes);
+        let wasm = Wasm::data(bytes.clone());
         
         // Extism PDK의 http::request()가 사용하는 built-in HTTP는
         // Manifest의 allowed_hosts를 통해 도메인을 검증함.
@@ -78,87 +79,15 @@ impl WasmDocSourceAdapter {
             let _ = store.load_from_keychain();
             Arc::new(crate::secrets::CachedSecretStore::new(store))
         });
-        let plugin_id_inner = manifest.plugin_id.clone();
-        let secrets_manifest = manifest.secrets.clone();
 
-        use extism::{Function, ValType, CurrentPlugin, Val, UserData};
-
-        let secret_backend_inner_set = secret_store_inner.clone();
-        let plugin_id_inner_set = plugin_id_inner.clone();
-        let secrets_manifest_set = secrets_manifest.clone();
-
-        let set_secret_fn = Function::new(
-            "__doxus_set_secret",
-            [ValType::I64, ValType::I64],
-            [],
-            UserData::new(()),
-            move |plugin: &mut CurrentPlugin, inputs: &[Val], _outputs: &mut [Val], _user_data: UserData<()>| {
-                let key_h = plugin.memory_from_val(&inputs[0]).ok_or_else(|| extism::Error::msg("invalid key handle"))?;
-                let val_h = plugin.memory_from_val(&inputs[1]).ok_or_else(|| extism::Error::msg("invalid val handle"))?;
-                let key = plugin.memory_str(key_h).unwrap_or_default().to_string();
-                let value = plugin.memory_str(val_h).unwrap_or_default().to_string();
-                
-                if secrets_manifest_set.contains(&key) {
-                    let service = plugin_id_inner_set.clone();
-                    secret_backend_inner_set.set(&service, &key, &value)
-                        .map_err(|e| extism::Error::msg(e.to_string()))?;
-                }
-                Ok(())
-            }
-        );
-
-        let secret_backend_inner_get = secret_store_inner.clone();
-        let plugin_id_inner_get = plugin_id_inner.clone();
-        let secrets_manifest_get = secrets_manifest.clone();
-
-        let get_secret_fn = Function::new(
-            "__doxus_get_secret",
-            [ValType::I64],
-            [ValType::I64],
-            UserData::new(()),
-            move |plugin: &mut CurrentPlugin, inputs: &[Val], outputs: &mut [Val], _user_data: UserData<()>| {
-                let key_h = plugin.memory_from_val(&inputs[0]).ok_or_else(|| extism::Error::msg("invalid key handle"))?;
-                let key = plugin.memory_str(key_h).unwrap_or_default().to_string();
-                
-                if !secrets_manifest_get.contains(&key) {
-                    outputs[0] = Val::I64(0);
-                    return Ok(());
-                }
-
-                let service = plugin_id_inner_get.clone();
-                match secret_backend_inner_get.get(&service, &key) {
-                    Ok(secret) => {
-                        let handle = plugin.memory_new(&secret)?;
-                        outputs[0] = Val::I64(handle.offset() as i64);
-                    }
-                    Err(_) => {
-                        outputs[0] = Val::I64(0);
-                    }
-                }
-                Ok(())
-            }
-        );
-
-        let get_time_fn = Function::new(
-            "__doxus_get_time",
-            [],
-            [ValType::I64],
-            UserData::new(()),
-            move |_plugin: &mut CurrentPlugin, _inputs: &[Val], outputs: &mut [Val], _user_data: UserData<()>| {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs() as i64;
-                outputs[0] = Val::I64(now);
-                Ok(())
-            }
-        );
-
-        let plugin = Plugin::new(&extism_manifest, [set_secret_fn, get_secret_fn, get_time_fn], true)
+        // host functions are defined dynamically during call_wasm.
+        // Here we load a temporary plugin without host functions to inspect exports, then drop it immediately.
+        let temp_plugin = Plugin::new(&extism_manifest, [], true)
             .map_err(|e| PluginError::Internal(format!("wasm load failed: {e}")))?;
-
-        // WASM export는 정적 — 생성 시 한 번만 확인
-        let incremental_sync_cached = plugin.function_exists("fetch_changes");
+        
+        let incremental_sync_cached = temp_plugin.function_exists("fetch_changes");
+        let supports_write_cached = temp_plugin.function_exists("create_document");
+        drop(temp_plugin);
 
         let kv_conn = rusqlite::Connection::open_in_memory()
             .map_err(|e| PluginError::Internal(format!("kv db init: {e}")))?;
@@ -179,12 +108,13 @@ impl WasmDocSourceAdapter {
                 version: manifest.version.clone(),
                 kind: PluginKind::External,
             },
-            plugin: Arc::new(Mutex::new(plugin)),
+            wasm_bytes: bytes,
             manifest,
             kv_store,
             progress_tx,
             secret_store,
             incremental_sync_cached,
+            supports_write_cached,
         })
     }
 
@@ -292,27 +222,114 @@ impl WasmDocSourceAdapter {
         I: Serialize + Send + Sync,
         O: for<'de> Deserialize<'de> + Send + 'static,
     {
-        let plugin = Arc::clone(&self.plugin);
+        let wasm_bytes = self.wasm_bytes.clone();
+        let http_domains = self.manifest.http_domains.clone();
+        let secrets_manifest = self.manifest.secrets.clone();
+        let plugin_id = self.manifest.plugin_id.clone();
+        let secret_store = self.secret_store.clone();
+
         let input_bytes = serde_json::to_vec(input)
             .map_err(|e| PluginError::Internal(format!("serialize: {e}")))?;
         let func = func.to_string();
 
         let result: Result<O, PluginError> = tokio::task::spawn_blocking(move || {
-            let mut guard = plugin.lock().map_err(|_| {
-                tracing::error!("wasm plugin mutex poisoned — aborting call '{}'", func);
-                PluginError::Internal("mutex poisoned".into())
-            })?;
-            let output = guard
+            let wasm = Wasm::data(wasm_bytes);
+            let mut extism_manifest = Manifest::new([wasm]);
+            for domain in &http_domains {
+                extism_manifest = extism_manifest.with_allowed_host(domain.as_str());
+            }
+
+            use extism::{Function, ValType, CurrentPlugin, Val, UserData};
+
+            let secret_backend_inner_set = secret_store.clone();
+            let plugin_id_inner_set = plugin_id.clone();
+            let secrets_manifest_set = secrets_manifest.clone();
+
+            let set_secret_fn = Function::new(
+                "__doxus_set_secret",
+                [ValType::I64, ValType::I64],
+                [],
+                UserData::new(()),
+                move |plugin: &mut CurrentPlugin, inputs: &[Val], _outputs: &mut [Val], _user_data: UserData<()>| {
+                    let key_h = plugin.memory_from_val(&inputs[0]).ok_or_else(|| extism::Error::msg("invalid key handle"))?;
+                    let val_h = plugin.memory_from_val(&inputs[1]).ok_or_else(|| extism::Error::msg("invalid val handle"))?;
+                    let key = plugin.memory_str(key_h).unwrap_or_default().to_string();
+                    let value = plugin.memory_str(val_h).unwrap_or_default().to_string();
+                    
+                    if secrets_manifest_set.contains(&key) {
+                        let service = plugin_id_inner_set.clone();
+                        secret_backend_inner_set.set(&service, &key, &value)
+                            .map_err(|e| extism::Error::msg(e.to_string()))?;
+                    }
+                    Ok(())
+                }
+            );
+
+            let secret_backend_inner_get = secret_store.clone();
+            let plugin_id_inner_get = plugin_id.clone();
+            let secrets_manifest_get = secrets_manifest.clone();
+
+            let get_secret_fn = Function::new(
+                "__doxus_get_secret",
+                [ValType::I64],
+                [ValType::I64],
+                UserData::new(()),
+                move |plugin: &mut CurrentPlugin, inputs: &[Val], outputs: &mut [Val], _user_data: UserData<()>| {
+                    let key_h = plugin.memory_from_val(&inputs[0]).ok_or_else(|| extism::Error::msg("invalid key handle"))?;
+                    let key = plugin.memory_str(key_h).unwrap_or_default().to_string();
+                    
+                    if !secrets_manifest_get.contains(&key) {
+                        outputs[0] = Val::I64(0);
+                        return Ok(());
+                    }
+
+                    let service = plugin_id_inner_get.clone();
+                    match secret_backend_inner_get.get(&service, &key) {
+                        Ok(secret) => {
+                            let handle = plugin.memory_new(&secret)?;
+                            outputs[0] = Val::I64(handle.offset() as i64);
+                        }
+                        Err(_) => {
+                            outputs[0] = Val::I64(0);
+                        }
+                    }
+                    Ok(())
+                }
+            );
+
+            let get_time_fn = Function::new(
+                "__doxus_get_time",
+                [],
+                [ValType::I64],
+                UserData::new(()),
+                move |_plugin: &mut CurrentPlugin, _inputs: &[Val], outputs: &mut [Val], _user_data: UserData<()>| {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64;
+                    outputs[0] = Val::I64(now);
+                    Ok(())
+                }
+            );
+
+            let mut plugin = Plugin::new(&extism_manifest, [set_secret_fn, get_secret_fn, get_time_fn], true)
+                .map_err(|e| PluginError::Internal(format!("wasm load failed: {e}")))?;
+
+            let output = plugin
                 .call::<&[u8], &[u8]>(&func, &input_bytes)
                 .map_err(|e| PluginError::Internal(format!("wasm call '{func}' failed: {e}")))?;
-            
-            if output.is_empty() {
+
+            let res: O = if output.is_empty() {
                 serde_json::from_str("null")
             } else {
                 let raw_json = String::from_utf8_lossy(output);
                 tracing::debug!("Host function trace: {}: {}", func, raw_json);
                 serde_json::from_slice::<O>(output)
-            }.map_err(|e| PluginError::Internal(format!("deserialize: {e}")))
+            }.map_err(|e| PluginError::Internal(format!("deserialize: {e}")))?;
+
+            drop(plugin); // Explicitly drop to ensure cleanup
+
+            Ok(res)
         })
         .await
         .map_err(|e| PluginError::Internal(format!("spawn_blocking: {e}")))?;
@@ -472,9 +489,7 @@ impl DocSource for WasmDocSourceAdapter {
     }
 
     fn supports_write(&self) -> bool {
-        // WASM 플러그인이 create_document 함수를 내보내는지 확인
-        let guard = self.plugin.lock().ok();
-        guard.is_some_and(|g| g.function_exists("create_document"))
+        self.supports_write_cached
     }
 
     async fn create_document(
@@ -570,14 +585,11 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_is_consistent_and_does_not_need_plugin_lock() {
+    fn capabilities_is_consistent() {
         let adapter =
             WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None).unwrap();
-        // 캐싱 구현이라면 mutex lock 없이 동일한 값을 반환해야 함
         let c1 = adapter.capabilities();
-        // plugin mutex를 외부에서 잠근 상태에서도 capabilities()는 블로킹 없이 반환
-        let _guard = adapter.plugin.lock().unwrap();
-        let c2 = adapter.capabilities();  // 이전 구현이라면 데드락, 캐싱이면 즉시 반환
+        let c2 = adapter.capabilities();
         assert_eq!(c1.incremental_sync, c2.incremental_sync);
     }
 
@@ -923,5 +935,25 @@ mod tests {
         assert!(res.is_err());
         let err = res.unwrap_err().to_string();
         assert!(err.contains("wasm call 'delete_document' failed"));
+    }
+
+    #[tokio::test]
+    async fn wasm_adapter_is_stateless_and_supports_concurrent_calls() {
+        let adapter = Arc::new(
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None).unwrap()
+        );
+
+        let mut handles = vec![];
+        for _ in 0..5 {
+            let adapter_clone = adapter.clone();
+            handles.push(tokio::spawn(async move {
+                let status = adapter_clone.health_check().await;
+                assert!(!status.healthy);
+            }));
+        }
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
     }
 }
