@@ -655,16 +655,10 @@ impl DocSource for ObsidianPlugin {
         // 3. Resolve 'Option B' (Auto-suffixing) for Obsidian
         let mut attempts = 0;
         let final_path;
-        let mut current_title = base_title.clone();
 
         loop {
+            let current_title = doxus_plugin_sdk::path_utils::resolve_unique_title(base_title, attempts)?;
             attempts += 1;
-            if attempts > 10 {
-                return Err(PluginError::Internal(format!(
-                    "Failed to find unique filename for '{}' after 10 attempts",
-                    title
-                )));
-            }
 
             // Sanitize title for filesystem
             let safe_title = current_title.replace(
@@ -678,7 +672,6 @@ impl DocSource for ObsidianPlugin {
 
             if path.exists() {
                 // Conflict -> suffix and retry (Option B)
-                current_title = format!("{} ({})", base_title, attempts);
                 continue;
             } else {
                 final_path = path;

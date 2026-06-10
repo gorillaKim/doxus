@@ -1,7 +1,6 @@
 #![allow(clippy::useless_conversion, clippy::needless_borrow)]
 
 pub mod html_convert;
-pub mod path_utils;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod oauth_server;
@@ -1284,7 +1283,7 @@ fn page_to_doc_v2(params: PageToDocParams<'_>) -> RawDocumentWasm {
         .values()
         .any(|(_, parent_id)| parent_id.as_deref() == Some(&p.id));
     let relative_path =
-        path_utils::build_relative_path(&final_root_name, &ancestor_titles, &p.title, is_parent);
+        doxus_plugin_sdk::path_utils::build_relative_path(&final_root_name, &ancestor_titles, &p.title, is_parent);
     log_d!(
         "confluence:doc",
         "[Confluence-Doc-Debug] Final Result - Title: {}, Path: {}",

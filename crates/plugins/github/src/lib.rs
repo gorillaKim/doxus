@@ -141,10 +141,10 @@ impl GitHubPlugin {
         if let Some(cfg) = self.config.as_ref() {
             let rel_path = format!(
                 "{}/{}/Issues/{}_{}.md",
-                sanitize_filename(&cfg.owner),
-                sanitize_filename(&cfg.repo),
+                doxus_plugin_sdk::path_utils::sanitize_name(&cfg.owner),
+                doxus_plugin_sdk::path_utils::sanitize_name(&cfg.repo),
                 issue.number,
-                sanitize_filename(&issue.title)
+                doxus_plugin_sdk::path_utils::sanitize_name(&issue.title)
             );
             metadata.insert("relative_path".to_string(), serde_json::json!(rel_path));
         }
@@ -180,9 +180,9 @@ impl GitHubPlugin {
         if let Some(cfg) = self.config.as_ref() {
             let rel_path = format!(
                 "{}/{}/Wiki/{}.md",
-                sanitize_filename(&cfg.owner),
-                sanitize_filename(&cfg.repo),
-                sanitize_filename(&page.title)
+                doxus_plugin_sdk::path_utils::sanitize_name(&cfg.owner),
+                doxus_plugin_sdk::path_utils::sanitize_name(&cfg.repo),
+                doxus_plugin_sdk::path_utils::sanitize_name(&page.title)
             );
             metadata.insert("relative_path".to_string(), serde_json::json!(rel_path));
         }
@@ -213,10 +213,10 @@ impl GitHubPlugin {
         if let Some(cfg) = self.config.as_ref() {
             let rel_path = format!(
                 "{}/{}/Discussions/{}_{}.md",
-                sanitize_filename(&cfg.owner),
-                sanitize_filename(&cfg.repo),
+                doxus_plugin_sdk::path_utils::sanitize_name(&cfg.owner),
+                doxus_plugin_sdk::path_utils::sanitize_name(&cfg.repo),
                 d.number,
-                sanitize_filename(&d.title)
+                doxus_plugin_sdk::path_utils::sanitize_name(&d.title)
             );
             metadata.insert("relative_path".to_string(), serde_json::json!(rel_path));
         }
@@ -485,17 +485,11 @@ impl DocSource for GitHubPlugin {
 
         let mut attempts = 0;
         let final_path;
-        let mut current_title = base_title.clone();
 
         // 2. Resolve 'Option B' (Auto-suffixing) for GitHub
         loop {
+            let current_title = doxus_plugin_sdk::path_utils::resolve_unique_title(base_title, attempts)?;
             attempts += 1;
-            if attempts > 10 {
-                return Err(PluginError::Internal(format!(
-                    "Failed to find unique path for '{}' after 10 attempts",
-                    title
-                )));
-            }
 
             let path = if folder_part.is_empty() {
                 format!("{}.md", current_title)
@@ -517,7 +511,6 @@ impl DocSource for GitHubPlugin {
 
             if resp.status().is_success() {
                 // Already exists -> suffix and retry (Option B)
-                current_title = format!("{} ({})", base_title, attempts);
                 continue;
             } else if resp.status() == reqwest::StatusCode::NOT_FOUND {
                 // Good to go
@@ -936,17 +929,6 @@ fn parse_changes_cursor(cursor: &str) -> (u64, Option<String>) {
     } else {
         (rest.parse().unwrap_or(1), None)
     }
-}
-
-// ── Path helpers ──────────────────────────────────────────────────────────────
-
-fn sanitize_filename(name: &str) -> String {
-    name.chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
-            _ => c,
-        })
-        .collect()
 }
 
 // ── Time helpers ──────────────────────────────────────────────────────────────
