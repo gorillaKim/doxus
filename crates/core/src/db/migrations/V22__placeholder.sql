@@ -1,0 +1,1 @@
+-- V22 placeholder to align database version numbers with migration filenames

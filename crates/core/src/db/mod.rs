@@ -113,7 +113,7 @@ pub fn create_pool(path: &std::path::Path) -> Result<DbPool, DbError> {
     })
 }
 
-/// Run all migrations V1–V42 in order. Idempotent.
+/// Run all migrations in order. Idempotent.
 pub fn migrate(conn: &Connection) -> Result<(), DbError> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS _migrations (
@@ -318,6 +318,10 @@ static MIGRATIONS: &[(&str, &str)] = &[
     (
         "V21__add_cascade_triggers",
         include_str!("migrations/V21__add_cascade_triggers.sql"),
+    ),
+    (
+        "V22__placeholder",
+        include_str!("migrations/V22__placeholder.sql"),
     ),
     (
         "V23__remove_document_content_column",
