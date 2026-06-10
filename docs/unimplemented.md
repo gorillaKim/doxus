@@ -1,116 +1,85 @@
 ---
-title: doxus 미구현 항목 목록
-updated: 2026-04-11
+title: doxus 통합 미구현 및 TODO 관리대장 (SSOT)
+updated: 2026-06-11
 ---
 
-# doxus 미구현 항목
+# doxus 통합 미구현 및 TODO 관리대장 (SSOT)
 
-> **Note:** 이 문서는 실제 코드 상태를 재검증하여 작성됨 (2026-04-11 재검증).
-> 이전 문서에서 "미구현"으로 분류된 다수 항목이 이미 구현 완료 상태임.
-
-## 이전 문서 대비 변경 사항 (완료된 항목)
-
-| 항목 | 이전 상태 | 실제 상태 |
-|------|----------|----------|
-| McpServer embedder 연결 | "Phase 1 블로커" | **완료** — `main.rs:52-77` OnnxEmbedder 로드 + `McpServer::new(conn, embedder, plugins_dir)` |
-| `doxus_index_project` | "Stub" | **완료** — `lib.rs:273-401` ObsidianPlugin fetch_all + 트랜잭션 인덱싱 |
-| `doxus_sync_project` | "Stub" | **완료** — `lib.rs:1236+` fetch_changes + SyncSearchEngine 업데이트 |
-| SyncScheduler 백그라운드 루프 | "spawn 없음" | **완료** — `sync_loop.rs` + `main.rs:50` spawn_sync_loop |
-| `http_request` Host Function | "Stub" | **완료** — `wasm_adapter.rs:195-247` reqwest 기반 |
-| `kv_get` / `kv_set` Host Function | "Unimplemented" | **완료** — `wasm_adapter.rs:152-158` |
-| `progress` Host Function | "Unimplemented" | **완료** — `wasm_adapter.rs:162-165` broadcast channel |
-| `doxus_resolve_alias` | "Unimplemented" | **완료** — `lib.rs:691+` |
-| `doxus_inspect_document` | "Stub" | **완료** — `lib.rs:795+` |
-| `doxus_plugin_info` | "Unimplemented" | **완료** — `lib.rs:1595+` |
-| Obsidian `fetch_changes()` | "항상 empty" | **완료** — `obsidian/src/lib.rs:362+` mtime 기반 변경 감지 |
-| Confluence `fetch_changes()` | "항상 empty" | **완료** — `confluence/src/lib.rs:401+` REST API + 삭제 감지 |
-| GitHub `fetch_changes()` | "항상 empty" | **완료** — `github/src/lib.rs:572+` |
-| OnnxEmbedder `embed()` | "미구현" | **완료** — `embedding.rs:98-211` 배치 추론 + mean pooling |
-| Agent JSONL I/O | "미구현" | **완료** — `sidecar.rs` send/recv |
-| RegistryClient | "Stub" | **완료** — `registry.rs:13-70` fetch + parse |
-| OAuthFlow | "미구현" | **완료** — `auth.rs:148+` authorization_url + token exchange |
-| 플러그인 ABI 버전 검증 | "런타임 검증 없음" | **완료** — `manager.rs` SUPPORTED_ABI_VERSION 상수 + get_source() 가드 (2026-04-11) |
-| `secrets_get` Keychain 연동 | "env var fallback만" | **완료** — `secrets.rs:20-37` SystemKeychain + `wasm_adapter.rs` KeyringBackend (2026-04-11) |
-| Confluence OAuth 콜백 HTTP 서버 | "oauth_start만 있음" | **완료** — `confluence/src/oauth_server.rs` OAuthCallbackServer, random port, CSRF guard (2026-04-11) |
-| レジストリ checksum 연동 | "`None` 하드코딩" | **완료** — `install_from_url`에 checksum 자동 전달 (2026-04-10) |
-| GitHub PAT 인증 | "PAT 처리 없음" | **완료** — `github/lib.rs:100-130` Bearer token 헤더 |
-| Agent 도구 실행 브릿지 | "미연결" | **완료** — `crates/agent/src/tool_bridge.rs` ToolBridge + JSONL 라우팅 |
-| Agent 세션 상태 머신 | "트래킹 없음" | **완료** — `crates/agent/src/session.rs` SessionRunner |
-| ChatDrawer 에이전트 IPC | "미구현" | **완료** — `commands/agent.rs:100-130` chat_start_session + `ChatDrawer.tsx` |
+> **최종 업데이트:** 2026-06-11  
+> **기준 상태:** v0.1.3 (Core Engine 및 Desktop Beta)  
+> **목적:** doxus 프로젝트의 실제 미구현 항목과 할 일(TODO) 목록을 일원화하여 관리하는 Single Source of Truth(SSOT) 문서입니다.
 
 ---
 
-## Phase별 우선순위
+## 1. 최근 구현 완료 항목 (이전 대비 완료)
 
-### P0: 즉시 처리
+이전 분석서 및 TODO 문서에서 미구현으로 식별되었으나, 실제 구현 완료 및 검증된 핵심 기능들입니다.
 
-**현재 P0 블로커 없음.**
-
----
-
-### P1: Phase 2 (플러그인 시스템)
-
-**현재 P1 미구현 없음.** 모든 항목 완료.
-
----
-
-### P2: Phase 3 (Confluence)
-
-| 항목 | 파일 | 현재 상태 | 예상 LOC |
-|------|------|----------|----------|
-| Confluence 토큰 자동 갱신 | `crates/core/src/auth.rs` | `is_expired()` + `refresh_token()` 존재, **호출하는 곳 없음** — Confluence 플러그인 각 HTTP 요청 전 만료 체크 미수행 | 80 |
+| 기능 영역 | 구체적 구현 사항 | 관련 파일/모듈 |
+|:---|:---|:---|
+| **LTM 요약** | 문서 인덱싱 단계에서 `lead3_extract()`를 통해 마크다운 파싱 및 500자 요약을 추출하여 `documents.summary` 컬럼에 자동 영속화 | `crates/core/src/summarizer.rs`, `V41__add_summary_column.sql` |
+| **피드백 랭킹** | 에이전트로부터 `doxus_record_feedback` MCP 도구 요청을 받아 SQLite에 기록하고, 하이브리드 검색(FTS5 + Vec) 시 피드백 스코어 가중치를 랭킹 보정에 자동 반영 | `V42__feedback_schema.sql`, `crates/core/src/search/mod.rs` |
+| **공동 참조 (Co-Refs)** | 에이전트가 동일 세션에서 공동 참조한 문서 쌍의 관계(`document_co_refs`)를 트래킹하고, 스케줄러를 통해 90일 이상 미사용된 관계를 정리하는 가지치기(`co_refs_prune`) 태스크 가동 | `V43__co_refs_schema.sql`, `crates/core/src/scheduler/executor.rs` |
+| **자동 업데이트** | `tauri-plugin-updater` 연동, ED25519 서명 검증을 거친 업데이트 다운로드 및 재시작 시 자동 실행. `detect_and_migrate`를 이용한 post-update 마이그레이션 훅 완료 | `apps/desktop/src-tauri/src/main.rs`, `doxus_desktop_lib::update_manager` |
+| **설정 영속화** | 테마(light / dark / system) 선택, 로컬 디버그 태그 설정 및 API 저장 상태를 `config.toml`과 동기화하는 Tauri 커맨드 및 UI 연동 완료 | `doxus_desktop_lib::commands::settings`, `SettingsPage.tsx` |
+| **인증 상태 IPC** | SecretStore 기반으로 Confluence 및 GitHub의 인증 필수 필드가 구성되어 있는지 확인하여 UI에 bool 값을 넘겨주는 `plugin_get_auth_status` IPC 구현 | `apps/desktop/src-tauri/src/commands/market.rs` |
 
 ---
 
-### P3: Phase 4-5 (마켓플레이스)
+## 2. 폐지 및 스펙 아웃(Spec-Out) 항목
 
-| 항목 | 파일 | 현재 상태 | 예상 LOC |
-|------|------|----------|----------|
-| 플러그인 마켓 UI | `apps/desktop/src/pages/MarketPage.tsx` | `MOCK_PLUGINS` 하드코딩 배열 — RegistryClient는 구현됨, UI 연결만 필요 | 200 |
-| 코드 서명 자동화 | `crates/core/src/marketplace/signing.rs` | 서명 **검증**은 존재 (`verify_plugin()`), 서명 **생성** 및 CI 파이프라인 없음 | 150 |
-| 플러그인 버전 해상도 | `crates/core/src/marketplace/` | `RegistryEntry.version: String` 단순 비교만 — semver range 미지원 | 100 |
+* **Phase 7 워크스페이스(Workspace) 기능 전면 폐지**:  
+  아키텍처 단순화와 Obsidian 등 마크다운 기반 기본 저장소 플러그인 강화에 따라, 독자적인 워크스페이스 DB 테이블 및 관련 템플릿 로직(`workspace_apply_template` 등)은 스펙에서 완전히 제외되었습니다. 이에 따라 관련된 모든 UI 및 IPC API TODO 항목이 정리되었습니다.
 
 ---
 
-### P4: Phase 6 (동기화 안정화)
+## 3. 잔존 미구현 및 TODO 목록
 
-**현재 P4 미구현 없음.** 모든 항목 완료 (2026-04-13 재검증).
+### 3.1 Phase 3: Confluence 플러그인 안정화
+* **Confluence OAuth 토큰 자동 갱신 흐름 완비**
+  * **현재 상태:** `is_expired()` 판정 및 `refresh_token()` API는 구현되어 작동하나, 실제 Confluence 플러그인이 API HTTP 요청을 보낼 때 만료 여부를 매번 사전에 검증하고 갱신을 실행하는 연동 흐름이 일부 누락되어 보완이 필요함.
 
-| 항목 | 파일 | 실제 상태 |
-|------|------|----------|
-| Retry 로직 (exponential backoff) | `crates/mcp-server/src/sync_loop.rs` | **완료** — 100ms → 500ms → 2.5s 배수 증가, 30s 상한, ±10% jitter |
-| Rate limit 핸들링 | `crates/mcp-server/src/sync_loop.rs` | **완료** — `RateLimited { retry_after_secs }` 수신 시 해당 초만큼 대기, MAX 300s 캡 |
-| 동기화 충돌 해결 | `crates/core/src/sync/runner.rs` | **완료** — content_hash 비교 후 변경 시만 적용 (last-indexed-wins), `record_conflict()` audit_log 기록 |
+### 3.2 Phase 4-5: 에코시스템 및 마켓플레이스
+* **플러그인 마켓플레이스 UI와 RegistryClient 연동**
+  * **현재 상태:** `RegistryClient`는 정적 주소의 레지스트리를 읽을 수 있게 완성되었으나, `MarketPage.tsx`가 여전히 `MOCK_PLUGINS` 하드코딩 배열을 렌더링하고 있음. 실제 API 호출 결과와 연동 필요.
+* **WASM 플러그인 릴리즈 서명 자동화**
+  * **현재 상태:** 데스크톱 앱 내에서 `verify_plugin()`을 통한 ED25519 서명 검증은 완비되었으나, 플러그인 개발자가 손쉽게 서명을 생성하고 배포할 수 있는 CI 파이프라인 및 서명 생성 CLI 도구가 부족함.
+* **플러그인 SemVer 버전 해석기 개선**
+  * **현재 상태:** 버전 단순 문자열 매칭만 지원하여, 유연한 semver range(`^`, `~`) 파싱 및 최적 버전 확인 매커니즘 고도화 필요.
+* **공식 레지스트리 서버(Registry Server) 구축**
+  * **현재 상태:** `docs/specs/registry-server-spec.md` 명세서 기반으로 GitHub Pages 또는 S3 상에 정적 JSON 레지스트리 파일 업로드 및 WASM 바이너리 호스팅 필요.
+
+### 3.3 Phase 8: Desktop UI 고도화 (잔여 과제)
+* **DashboardPage 실시간 동기화 업데이트**
+  * **현재 상태:** 리소스 사용량에 대해서는 5초 주기 폴링이 돌고 있으나, 전체 문서 수량 및 동기화 상태 등은 Tauri 이벤트 리스너(`sync:progress/complete`)와 온전히 동기화되지 않고 있음. 최초 로드 이후 실시간 이벤트 수신 렌더링 처리 필요.
+* **키보드 단축키 (Shortcut)**
+  * `Cmd+K` (검색창 포커스), `Cmd+J` (에이전트 ChatDrawer 토글), `Cmd+N` (새 파일 작성) 등의 글로벌 단축키 작동을 위한 전역 keydown 이벤트 핸들러(`AppShell.tsx`) 연동 필요.
+* **시스템 트레이 (System Tray)**
+  * `tauri-plugin-tray` 의존성을 추가하여 최소화 시 트레이로 가기, 트레이 빠른 동기화 메뉴, 완전 종료 등의 윈도우 라이프사이클 래핑 필요.
+* **오프라인 감지 및 처리**
+  * `navigator.onLine` 상태를 감지하여 네트워크가 차단되었을 때 오프라인 경고 배너를 노출하고, 외부 플러그인 동기화 기능을 자동으로 비활성화하는 가드 구현.
+* **성능 최적화 (가상 스크롤 및 디바운스)**
+  * 검색 결과가 매우 많을 경우의 렌더링 부하를 줄이기 위한 가상 스크롤(Virtual Scroll) 적용 및 검색 입력창의 디바운스(Debounce) 튜닝.
+* **웹 접근성 (Accessibility)**
+  * 스크린 리더 지원을 위한 주요 버튼/인풋에 `aria-label` 부여 및 Tab 키 네비게이션 포커스 링 개선.
+
+### 3.4 기타 및 배포 고도화
+* **CLI commands 검증 및 누락 CLI 보완**
+  * CLI 메인 모듈 내 `doxus sync` 및 `doxus agent start` 등 정의되지 않거나 partial stub인 도구 점검 및 완성.
+* **릴리즈 빌드 최적화**
+  * production 빌드 시 Vite의 코드 분할(chunking, lazy import) 설정을 개선하여 첫 로드 속도 최적화.
 
 ---
 
-### P5: Phase 8 (Desktop UI)
+## 4. 작업 규모 요약
 
-| 항목 | 파일 | 현재 상태 | 예상 LOC |
-|------|------|----------|----------|
-| SettingsPage 설정 영속화 | `apps/desktop/src/pages/SettingsPage.tsx` | UI만 존재, Tauri command `save_settings` 미구현 | 100 |
-| WorkspacePage 백엔드 연결 | `apps/desktop/src/pages/WorkspacePage.tsx` | UI 구조 있음, 실제 Tauri command 연결 불완전 | 100 |
-| DashboardPage 실시간 업데이트 | `apps/desktop/src/pages/DashboardPage.tsx` | `useEffect` 최초 1회만 실행 — Tauri 이벤트 리스너 없음 | 80 |
-| `plugin_get_auth_status` IPC | `apps/desktop/src-tauri/src/commands/` | `agent_status()` 존재, 플러그인 인증 상태 전용 커맨드 없음 | 50 |
+| 카테고리 | 잔여 항목 수 | 예상 총 LOC | 작업 우선순위 |
+|:---|:---:|:---:|:---:|
+| **Confluence 토큰 자동 갱신** | 1 | ~80 LOC | 높음 |
+| **마켓플레이스 UI 실데이터 연동** | 1 | ~200 LOC | 보통 |
+| **SemVer 버전 해석 & 서명 도구** | 2 | ~250 LOC | 보통 |
+| **Desktop UI 고도화 (트레이/단축키/실시간 등)** | 6 | ~400 LOC | 보통~낮음 |
+| **레지스트리 및 배포 최적화** | 2 | ~200 LOC | 낮음 |
+| **합계** | **12** | **~1,130 LOC** | |
 
----
-
-## MCP 도구 stub 목록
-
-**현재 stub인 도구 없음.** 39개 도구 모두 실제 구현이 존재함.
-
----
-
-## 요약
-
-| Phase | 미구현 항목 수 | 예상 총 LOC |
-|-------|--------------|------------|
-| P0 (즉시) | 0 | 0 |
-| P1 (플러그인) | 0 | 0 |
-| P2 (Confluence) | 1 | 80 |
-| P3 (마켓) | 3 | 450 |
-| P4 (동기화) | 0 | 0 |
-| P5 (Desktop UI) | 4 | 330 |
-| **합계** | **8** | **~860** |
-
-**총 예상 작업량:** ~1-2주 집중 개발 (풀타임 1인 기준)
+**총 작업 예상 규모:** 집중 개발 시 1인 기준 약 1~2주 소요.
