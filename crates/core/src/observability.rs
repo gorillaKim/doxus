@@ -19,13 +19,17 @@ pub fn is_debug_enabled(tag: &str) -> bool {
         .unwrap_or(false)
 }
 
+pub fn debug_log(tag: &str, msg: &str) {
+    tracing::debug!(tag = tag, "{}", msg);
+}
+
 /// Log a message if the given tag is enabled.
 /// This macro is exported so it can be used across crates.
 #[macro_export]
 macro_rules! log_d {
     ($tag:expr, $($arg:tt)*) => {
         if $crate::observability::is_debug_enabled($tag) {
-            eprintln!($($arg)*);
+            $crate::observability::debug_log($tag, &format!($($arg)*));
         }
     };
 }

@@ -126,7 +126,7 @@ mod tests {
         // Simulate a running process using `sleep` so it stays alive briefly.
         #[cfg(unix)]
         {
-            let child = Command::new("sleep")
+            let child = Command::new("/bin/sleep")
                 .arg("10")
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
