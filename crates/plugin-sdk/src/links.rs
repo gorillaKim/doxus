@@ -1,5 +1,5 @@
-use regex::Regex;
 use lazy_static::lazy_static;
+use regex::Regex;
 
 lazy_static! {
     static ref WIKI_LINK_RE: Regex = Regex::new(r"\[\[(.*?)\]\]").unwrap();
@@ -17,7 +17,7 @@ impl LinkExtractor {
     pub fn extract_links(content: &str) -> Vec<String> {
         let mut links = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        
+
         // 1. WikiLinks [[Target]] or [[Target|Alias]]
         for cap in WIKI_LINK_RE.captures_iter(content) {
             let full_link = &cap[1];
@@ -35,7 +35,7 @@ impl LinkExtractor {
         // 2. Markdown Links [Text](Target)
         for cap in MD_LINK_RE.captures_iter(content) {
             let link = cap[1].to_string();
-            
+
             // Filter out external web links (http, https, obsidian, etc.)
             // We only care about root-relative paths or doxus:// URIs for graph extraction.
             if link.contains("://") && !link.starts_with("doxus://") {
@@ -54,7 +54,7 @@ impl LinkExtractor {
                 links.push(link);
             }
         }
-        
+
         links
     }
 }

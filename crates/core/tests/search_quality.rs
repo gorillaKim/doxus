@@ -145,16 +145,35 @@ struct QualityResult {
 }
 
 impl QualityResult {
-    fn pass_top1(&self) -> &'static str { if self.top1_match { "PASS" } else { "FAIL" } }
-    fn pass_top3(&self) -> &'static str { if self.top3_match { "PASS" } else { "FAIL" } }
+    fn pass_top1(&self) -> &'static str {
+        if self.top1_match {
+            "PASS"
+        } else {
+            "FAIL"
+        }
+    }
+    fn pass_top3(&self) -> &'static str {
+        if self.top3_match {
+            "PASS"
+        } else {
+            "FAIL"
+        }
+    }
 }
 
 fn rank_of(hits: &[doxus_core::db::schema::SearchHit], id: &str) -> usize {
-    hits.iter().position(|h| h.source_doc_id == id).map(|i| i + 1).unwrap_or(usize::MAX)
+    hits.iter()
+        .position(|h| h.source_doc_id == id)
+        .map(|i| i + 1)
+        .unwrap_or(usize::MAX)
 }
 
 fn score_gap(hits: &[doxus_core::db::schema::SearchHit]) -> f64 {
-    if hits.len() < 2 { 0.0 } else { hits[0].score - hits[1].score }
+    if hits.len() < 2 {
+        0.0
+    } else {
+        hits[0].score - hits[1].score
+    }
 }
 
 fn setup() -> (TestDb, i64) {
@@ -214,20 +233,33 @@ fn print_report(results: &[QualityResult]) {
     println!("║ 시나리오               ║ 쿼리                          ║rank ║top1║top3║gap ║");
     println!("╠════════════════════════╬═══════════════════════════════╬═════╬════╬════╬════╣");
     for r in results {
-        let rank_str = if r.rank == usize::MAX { "∞".to_string() } else { r.rank.to_string() };
+        let rank_str = if r.rank == usize::MAX {
+            "∞".to_string()
+        } else {
+            r.rank.to_string()
+        };
         println!(
             "║ {:<22} ║ {:<29} ║{:>4} ║{:>4}║{:>4}║{:.2}║",
-            r.scenario, r.query, rank_str,
-            r.pass_top1(), r.pass_top3(), r.score_gap,
+            r.scenario,
+            r.query,
+            rank_str,
+            r.pass_top1(),
+            r.pass_top3(),
+            r.score_gap,
         );
     }
     println!("╚════════════════════════╩═══════════════════════════════╩═════╩════╩════╩════╝");
     let p1 = results.iter().filter(|r| r.top1_match).count();
     let p3 = results.iter().filter(|r| r.top3_match).count();
     let n = results.len();
-    println!("  top-1: {}/{} ({:.0}%)   top-3: {}/{} ({:.0}%)\n",
-        p1, n, p1 as f64 / n as f64 * 100.0,
-        p3, n, p3 as f64 / n as f64 * 100.0,
+    println!(
+        "  top-1: {}/{} ({:.0}%)   top-3: {}/{} ({:.0}%)\n",
+        p1,
+        n,
+        p1 as f64 / n as f64 * 100.0,
+        p3,
+        n,
+        p3 as f64 / n as f64 * 100.0,
     );
 }
 
@@ -243,18 +275,20 @@ fn quality_s1_keyword_search() {
     //   "sqlite-vec" → sqlite AND NOT vec (의도와 반대!)
     //   대신 공백 분리 또는 큰따옴표 phrase 사용
     let cases: &[(&str, &str)] = &[
-        ("ownership borrow lifetime",    "rust-ownership"),
-        ("FTS5 BM25 snippet",            "sqlite-fts5"),
-        ("RRF Reciprocal Rank Fusion",   "rrf-ranking"),
-        ("Tauri IPC invoke AppState",    "tauri-ipc"),
-        ("ONNX 임베딩 384",              "embedding-onnx"),
-        ("MCP Protocol docnx",           "mcp-protocol"),
-        ("Confluence SSRF localhost",    "confluence-plugin"),
-        ("keyring Keychain 자격증명",    "keychain-secrets"),
+        ("ownership borrow lifetime", "rust-ownership"),
+        ("FTS5 BM25 snippet", "sqlite-fts5"),
+        ("RRF Reciprocal Rank Fusion", "rrf-ranking"),
+        ("Tauri IPC invoke AppState", "tauri-ipc"),
+        ("ONNX 임베딩 384", "embedding-onnx"),
+        ("MCP Protocol docnx", "mcp-protocol"),
+        ("Confluence SSRF localhost", "confluence-plugin"),
+        ("keyring Keychain 자격증명", "keychain-secrets"),
     ];
 
-    let results: Vec<QualityResult> = cases.iter().enumerate()
-        .map(|(i, (q, id))| measure(&engine, pid, &format!("키워드-{}", i+1), q, id))
+    let results: Vec<QualityResult> = cases
+        .iter()
+        .enumerate()
+        .map(|(i, (q, id))| measure(&engine, pid, &format!("키워드-{}", i + 1), q, id))
         .collect();
     print_report(&results);
 
@@ -276,17 +310,19 @@ fn quality_s2_concept_search() {
     let engine = SearchEngine::sync(&db.conn);
 
     let cases: &[(&str, &str)] = &[
-        ("벡터 유사도 KNN vec0",           "sqlite-vec"),
-        ("마이그레이션 SQL CREATE TABLE",   "db-migration"),
-        ("사이드카 JSONL 스트리밍",         "agent-sidecar"),
-        ("Handlebars 템플릿 회고 회의록",   "workspace-template"),
-        ("WASM 샌드박스 격리 Host Function","wasm-plugin"),
-        ("하이브리드 검색 FTS 벡터 RRF",   "hybrid-search"),
-        ("wasm-pack WASM 컴파일 extism",   "rust-wasm"),
+        ("벡터 유사도 KNN vec0", "sqlite-vec"),
+        ("마이그레이션 SQL CREATE TABLE", "db-migration"),
+        ("사이드카 JSONL 스트리밍", "agent-sidecar"),
+        ("Handlebars 템플릿 회고 회의록", "workspace-template"),
+        ("WASM 샌드박스 격리 Host Function", "wasm-plugin"),
+        ("하이브리드 검색 FTS 벡터 RRF", "hybrid-search"),
+        ("wasm-pack WASM 컴파일 extism", "rust-wasm"),
     ];
 
-    let results: Vec<QualityResult> = cases.iter().enumerate()
-        .map(|(i, (q, id))| measure(&engine, pid, &format!("개념-{}", i+1), q, id))
+    let results: Vec<QualityResult> = cases
+        .iter()
+        .enumerate()
+        .map(|(i, (q, id))| measure(&engine, pid, &format!("개념-{}", i + 1), q, id))
         .collect();
     print_report(&results);
 
@@ -294,10 +330,14 @@ fn quality_s2_concept_search() {
     assert!(
         pass3 >= 5,
         "개념 검색 top-3 정확도 {}/{} — 최소 5/7 PASS 필요\n실패 케이스: {}",
-        pass3, results.len(),
-        results.iter().filter(|r| !r.top3_match)
+        pass3,
+        results.len(),
+        results
+            .iter()
+            .filter(|r| !r.top3_match)
             .map(|r| format!("query='{}' rank={}", r.query, r.rank))
-            .collect::<Vec<_>>().join(", ")
+            .collect::<Vec<_>>()
+            .join(", ")
     );
 }
 
@@ -325,8 +365,17 @@ fn quality_s3_ranking_clarity() {
         let rank = rank_of(&hits, expected_id);
         let gap = score_gap(&hits);
 
-        assert!(rank <= 3, "query='{}' expected='{}' rank={} — top-3 밖", query, expected_id, rank);
-        println!("  [OK] query='{}' rank={} score_gap={:.4}", query, rank, gap);
+        assert!(
+            rank <= 3,
+            "query='{}' expected='{}' rank={} — top-3 밖",
+            query,
+            expected_id,
+            rank
+        );
+        println!(
+            "  [OK] query='{}' rank={} score_gap={:.4}",
+            query, rank, gap
+        );
     }
 }
 
@@ -345,8 +394,15 @@ fn quality_s4_document_discrimination() {
         let hits = engine.search(&query_obj).unwrap();
         let r_vec = rank_of(&hits, "sqlite-vec");
         let r_hyb = rank_of(&hits, "hybrid-search");
-        println!("  [구분] sqlite-vec rank={}, hybrid-search rank={}", r_vec, r_hyb);
-        assert!(r_vec <= 3, "sqlite-vec 이 top-3 안에 있어야 함 (실제 rank={})", r_vec);
+        println!(
+            "  [구분] sqlite-vec rank={}, hybrid-search rank={}",
+            r_vec, r_hyb
+        );
+        assert!(
+            r_vec <= 3,
+            "sqlite-vec 이 top-3 안에 있어야 함 (실제 rank={})",
+            r_vec
+        );
         assert!(r_vec < r_hyb, "sqlite-vec 이 hybrid-search 보다 높아야 함");
     }
 
@@ -358,8 +414,15 @@ fn quality_s4_document_discrimination() {
         let hits = engine.search(&query_obj).unwrap();
         let r_rrf = rank_of(&hits, "rrf-ranking");
         let r_hyb = rank_of(&hits, "hybrid-search");
-        println!("  [구분] rrf-ranking rank={}, hybrid-search rank={}", r_rrf, r_hyb);
-        assert!(r_rrf == 1, "rrf-ranking 이 1위여야 함 (실제 rank={})", r_rrf);
+        println!(
+            "  [구분] rrf-ranking rank={}, hybrid-search rank={}",
+            r_rrf, r_hyb
+        );
+        assert!(
+            r_rrf == 1,
+            "rrf-ranking 이 1위여야 함 (실제 rank={})",
+            r_rrf
+        );
         assert!(r_rrf < r_hyb, "rrf-ranking 이 hybrid-search 보다 높아야 함");
     }
 
@@ -371,8 +434,15 @@ fn quality_s4_document_discrimination() {
         let hits = engine.search(&query_obj).unwrap();
         let r_tauri = rank_of(&hits, "tauri-ipc");
         let r_react = rank_of(&hits, "react-zustand");
-        println!("  [구분] tauri-ipc rank={}, react-zustand rank={}", r_tauri, r_react);
-        assert!(r_tauri == 1, "tauri-ipc 가 1위여야 함 (실제 rank={})", r_tauri);
+        println!(
+            "  [구분] tauri-ipc rank={}, react-zustand rank={}",
+            r_tauri, r_react
+        );
+        assert!(
+            r_tauri == 1,
+            "tauri-ipc 가 1위여야 함 (실제 rank={})",
+            r_tauri
+        );
     }
 }
 
@@ -395,7 +465,12 @@ fn quality_s5_no_result_for_unrelated() {
             .with_projects(vec![pid])
             .with_limit(5);
         let hits = engine.search(&query_obj).unwrap();
-        assert!(hits.is_empty(), "query='{}' — 관련 없는 쿼리는 빈 결과여야 함 (got {}건)", query, hits.len());
+        assert!(
+            hits.is_empty(),
+            "query='{}' — 관련 없는 쿼리는 빈 결과여야 함 (got {}건)",
+            query,
+            hits.len()
+        );
         println!("  [OK] query='{}' → 0건", query);
     }
 }

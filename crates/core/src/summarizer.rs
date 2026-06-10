@@ -1,5 +1,5 @@
-use regex::Regex;
 use once_cell::sync::Lazy;
+use regex::Regex;
 
 static HTML_TAG_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"<[^>]*>").unwrap());
 
@@ -107,7 +107,7 @@ fn extract_frontmatter_description(content: &str) -> Option<String> {
 fn extract_outline(content: &str) -> String {
     let mut headers = Vec::new();
     let mut current_len = 0;
-    
+
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("#") {
@@ -125,7 +125,7 @@ fn extract_outline(content: &str) -> String {
             }
         }
     }
-    
+
     if headers.is_empty() {
         String::new()
     } else {
@@ -184,10 +184,7 @@ tags: [a, b]
 # First Header
 This is the first sentence. This is the second. This is the third.";
         let summary = lead3_extract(content);
-        assert_eq!(
-            summary,
-            "[목차: # First Header]"
-        );
+        assert_eq!(summary, "[목차: # First Header]");
     }
 
     #[test]
@@ -201,10 +198,7 @@ tags: [a, b]
 # First Header
 This is the first sentence. This is the second. This is the third.";
         let summary = lead3_extract(content);
-        assert_eq!(
-            summary,
-            "이 문서는 요약의 우선순위를 테스트합니다."
-        );
+        assert_eq!(summary, "이 문서는 요약의 우선순위를 테스트합니다.");
     }
 
     #[test]
@@ -229,10 +223,7 @@ fn test() {
 ```
 This is the second. This is the third.";
         let summary = lead3_extract(content);
-        assert_eq!(
-            summary,
-            "[목차: # Header]"
-        );
+        assert_eq!(summary, "[목차: # Header]");
     }
 
     #[test]
@@ -241,10 +232,7 @@ This is the second. This is the third.";
 # Header
 This is <span class=\"bold\">first</span> sentence. This is <b>second</b>. This is third.";
         let summary = lead3_extract(content);
-        assert_eq!(
-            summary,
-            "[목차: # Header]"
-        );
+        assert_eq!(summary, "[목차: # Header]");
     }
 
     #[test]
@@ -253,10 +241,7 @@ This is <span class=\"bold\">first</span> sentence. This is <b>second</b>. This 
 # 문서 요약 테스트
 이것은 첫 번째 문장입니다. This is 3.5 version of the documentation, which is second sentence! 그리고 이것이 세 번째 문장입니다.";
         let summary = lead3_extract(content);
-        assert_eq!(
-            summary,
-            "[목차: # 문서 요약 테스트]"
-        );
+        assert_eq!(summary, "[목차: # 문서 요약 테스트]");
     }
 
     #[test]
@@ -279,7 +264,10 @@ This is the second. This is the third.";
         let long_sentence_1 = "가".repeat(200);
         let long_sentence_2 = "나".repeat(200);
         let long_sentence_3 = "다".repeat(200);
-        let content = format!("{}. {}. {}.", long_sentence_1, long_sentence_2, long_sentence_3);
+        let content = format!(
+            "{}. {}. {}.",
+            long_sentence_1, long_sentence_2, long_sentence_3
+        );
         let summary = lead3_extract(&content);
         assert_eq!(summary.chars().count(), 503); // 500자 + "..." (3자)
         assert!(summary.ends_with("..."));

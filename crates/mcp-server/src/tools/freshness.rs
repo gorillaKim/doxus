@@ -16,7 +16,7 @@ pub fn get_freshness_report(server: &McpServer, id: Value, args: &Value) -> McpR
         let res: Result<i64, _> = conn_lock.query_row(
             "SELECT id FROM projects WHERE name = ?1",
             rusqlite::params![name],
-            |r: &rusqlite::Row<'_>| r.get(0)
+            |r: &rusqlite::Row<'_>| r.get(0),
         );
         match res {
             Ok(pid) => Some(pid),
@@ -38,7 +38,7 @@ pub fn get_freshness_report(server: &McpServer, id: Value, args: &Value) -> McpR
                     "type": "text",
                     "text": serde_json::to_string_pretty(&report).unwrap_or_default()
                 }]
-            })
+            }),
         ),
         Err(e) => McpResponse::err(id, -32603, format!("failed to get report: {e}")),
     }
@@ -67,7 +67,7 @@ pub fn update_freshness_config(server: &McpServer, id: Value, args: &Value) -> M
         match conn_lock.query_row(
             "SELECT id FROM projects WHERE name = ?1",
             rusqlite::params![project_name],
-            |r: &rusqlite::Row<'_>| r.get(0)
+            |r: &rusqlite::Row<'_>| r.get(0),
         ) {
             Ok(pid) => pid,
             Err(e) => return McpResponse::err(id, -32602, format!("project not found: {e}")),
@@ -76,7 +76,10 @@ pub fn update_freshness_config(server: &McpServer, id: Value, args: &Value) -> M
 
     let service = FreshnessService::new(conn.clone());
     match service.update_document_freshness_config(pid, source_doc_id, Some(tier)) {
-        Ok(true) => McpResponse::text(id, format!("Successfully updated {source_doc_id} to tier {tier}")),
+        Ok(true) => McpResponse::text(
+            id,
+            format!("Successfully updated {source_doc_id} to tier {tier}"),
+        ),
         Ok(false) => McpResponse::err(id, -32602, "Document not found"),
         Err(e) => McpResponse::err(id, -32603, format!("Failed to update config: {e}")),
     }
@@ -97,15 +100,19 @@ mod tests {
             pool,
             db_path,
             None,
-            Arc::new(doxus_core::plugin::PluginManager::new(std::path::PathBuf::from("/tmp"))),
+            Arc::new(doxus_core::plugin::PluginManager::new(
+                std::path::PathBuf::from("/tmp"),
+            )),
             std::path::PathBuf::from("/tmp"),
         );
 
         let resp = get_freshness_report(&server, json!(1), &json!({}));
         let val = serde_json::to_value(resp).unwrap();
-        
+
         // Assert we get a valid text response containing JSON payload
-        let text_content = val["result"]["content"][0]["text"].as_str().expect("Expected string text field");
+        let text_content = val["result"]["content"][0]["text"]
+            .as_str()
+            .expect("Expected string text field");
         assert!(text_content.contains("\"total_docs\""));
         assert!(text_content.contains("\"average_score\""));
     }

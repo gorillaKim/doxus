@@ -30,19 +30,21 @@ struct SendSyncVerdict {
 
 impl fmt::Display for SendSyncVerdict {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "┌─ Extism Plugin Send+Sync Verdict ───────────────────────┐")?;
+        writeln!(
+            f,
+            "┌─ Extism Plugin Send+Sync Verdict ───────────────────────┐"
+        )?;
         writeln!(
             f,
             "│ Send: {:>3}  Sync: {:>3}                                  │",
             if self.is_send { "YES" } else { "NO " },
             if self.is_sync { "YES" } else { "NO " }
         )?;
+        writeln!(f, "│ Adapter pattern: {}", self.adapter_pattern)?;
         writeln!(
             f,
-            "│ Adapter pattern: {}",
-            self.adapter_pattern
-        )?;
-        writeln!(f, "└─────────────────────────────────────────────────────────┘")
+            "└─────────────────────────────────────────────────────────┘"
+        )
     }
 }
 
@@ -63,7 +65,11 @@ fn check_send_sync() -> SendSyncVerdict {
         _ => "dedicated thread + channel pattern",
     };
 
-    SendSyncVerdict { is_send, is_sync, adapter_pattern }
+    SendSyncVerdict {
+        is_send,
+        is_sync,
+        adapter_pattern,
+    }
 }
 
 /// Minimal valid WASM module (no imports, exports `memory`).

@@ -1,7 +1,9 @@
+use super::score::{
+    calculate_freshness, score_to_status, RetentionTier, SensitivityMode, Thresholds,
+};
 use crate::db::{DbError, DbPool};
-use super::score::{RetentionTier, SensitivityMode, Thresholds, calculate_freshness, score_to_status};
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 pub struct FreshnessService {
     conn: DbPool,
@@ -36,7 +38,7 @@ impl FreshnessService {
     pub fn recalculate_document(&self, doc_id: i64) -> Result<(), DbError> {
         let conn = self.conn.get()?;
         let now = chrono::Utc::now().timestamp();
-        
+
         let mut stmt = conn.prepare("
             SELECT df.document_id, df.last_content_change, df.retention_tier, p.freshness_policy_json 
             FROM document_freshness df
@@ -44,15 +46,15 @@ impl FreshnessService {
             JOIN projects p ON d.project_id = p.id
             WHERE df.document_id = ?1
         ")?;
-        
+
         if let Ok(row) = stmt.query_row([doc_id], |row| {
             let doc_id: i64 = row.get(0)?;
             let last_change: Option<i64> = row.get(1)?;
-            let last_change_ts = last_change.unwrap_or(now); 
+            let last_change_ts = last_change.unwrap_or(now);
             let tier_str: String = row.get(2)?;
             let tier: RetentionTier = tier_str.parse().unwrap();
             let policy_json: Option<String> = row.get(3)?;
-            
+
             let mut mode = SensitivityMode::Normal;
             if let Some(json_str) = policy_json {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
@@ -65,11 +67,11 @@ impl FreshnessService {
                     }
                 }
             }
-            
+
             let days_since = ((now - last_change_ts) as f64) / 86400.0;
             let score = calculate_freshness(days_since, tier, mode);
             let status = score_to_status(score, &Thresholds::default());
-            
+
             Ok((doc_id, score, status.as_str().to_string()))
         }) {
             let (id, score, status) = row;
@@ -78,57 +80,60 @@ impl FreshnessService {
                 rusqlite::params![score, status, now, id],
             )?;
         }
-        
+
         Ok(())
     }
 
     fn recalculate_internal(&self, project_id: Option<i64>) -> Result<usize, DbError> {
         let conn = self.conn.get()?;
         let now = chrono::Utc::now().timestamp();
-        
+
         let mut sql = "
             SELECT df.document_id, df.last_content_change, df.retention_tier, p.freshness_policy_json 
             FROM document_freshness df
             JOIN documents d ON df.document_id = d.id
             JOIN projects p ON d.project_id = p.id
         ".to_string();
-        
+
         let mut params = Vec::new();
         if let Some(pid) = project_id {
             sql.push_str(" WHERE d.project_id = ?1");
             params.push(pid);
         }
-        
+
         let mut stmt = conn.prepare(&sql)?;
-        
-        let doc_updates: Vec<(i64, f64, String)> = stmt.query_map(rusqlite::params_from_iter(params), |row| {
-            let doc_id: i64 = row.get(0)?;
-            let last_change: Option<i64> = row.get(1)?;
-            let last_change_ts = last_change.unwrap_or(now); 
-            let tier_str: String = row.get(2)?;
-            let tier: RetentionTier = tier_str.parse().unwrap();
-            let policy_json: Option<String> = row.get(3)?;
-            
-            let mut mode = SensitivityMode::Normal;
-            if let Some(json_str) = policy_json {
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
-                    if let Some(m) = val.get("sensitivity_mode").and_then(|v| v.as_str()) {
-                        mode = match m.to_lowercase().as_str() {
-                            "strict" => SensitivityMode::Strict,
-                            "relaxed" => SensitivityMode::Relaxed,
-                            _ => SensitivityMode::Normal,
-                        };
+
+        let doc_updates: Vec<(i64, f64, String)> = stmt
+            .query_map(rusqlite::params_from_iter(params), |row| {
+                let doc_id: i64 = row.get(0)?;
+                let last_change: Option<i64> = row.get(1)?;
+                let last_change_ts = last_change.unwrap_or(now);
+                let tier_str: String = row.get(2)?;
+                let tier: RetentionTier = tier_str.parse().unwrap();
+                let policy_json: Option<String> = row.get(3)?;
+
+                let mut mode = SensitivityMode::Normal;
+                if let Some(json_str) = policy_json {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                        if let Some(m) = val.get("sensitivity_mode").and_then(|v| v.as_str()) {
+                            mode = match m.to_lowercase().as_str() {
+                                "strict" => SensitivityMode::Strict,
+                                "relaxed" => SensitivityMode::Relaxed,
+                                _ => SensitivityMode::Normal,
+                            };
+                        }
                     }
                 }
-            }
-            
-            let days_since = ((now - last_change_ts) as f64) / 86400.0;
-            let score = calculate_freshness(days_since, tier, mode);
-            let status = score_to_status(score, &Thresholds::default());
-            
-            Ok((doc_id, score, status.as_str().to_string()))
-        })?.filter_map(Result::ok).collect();
-        
+
+                let days_since = ((now - last_change_ts) as f64) / 86400.0;
+                let score = calculate_freshness(days_since, tier, mode);
+                let status = score_to_status(score, &Thresholds::default());
+
+                Ok((doc_id, score, status.as_str().to_string()))
+            })?
+            .filter_map(Result::ok)
+            .collect();
+
         let mut count = 0;
         for (doc_id, score, status) in doc_updates {
             conn.execute(
@@ -137,7 +142,7 @@ impl FreshnessService {
             )?;
             count += 1;
         }
-        
+
         Ok(count)
     }
 
@@ -145,29 +150,34 @@ impl FreshnessService {
         let conn = self.conn.get()?;
         let mut sql = "SELECT df.document_id FROM document_freshness df 
                        JOIN documents d ON df.document_id = d.id 
-                       WHERE df.status IN ('stale', 'aging')".to_string();
+                       WHERE df.status IN ('stale', 'aging')"
+            .to_string();
         let mut params: Vec<rusqlite::types::Value> = Vec::new();
-        
+
         if let Some(pid) = project_id {
             sql.push_str(" AND d.project_id = ?1");
             params.push(rusqlite::types::Value::Integer(pid));
         }
-        
+
         sql.push_str(" ORDER BY df.freshness_score ASC LIMIT ?");
         params.push(rusqlite::types::Value::Integer(limit as i64));
-        
+
         let mut stmt = conn.prepare(&sql)?;
-        let ids: Vec<i64> = stmt.query_map(rusqlite::params_from_iter(params), |row| {
-            row.get(0)
-        })?.filter_map(Result::ok).collect();
-        
+        let ids: Vec<i64> = stmt
+            .query_map(rusqlite::params_from_iter(params), |row| row.get(0))?
+            .filter_map(Result::ok)
+            .collect();
+
         Ok(ids)
     }
 
     /// Generates an aggregated freshness report for a project (or all if None)
-    pub fn get_project_freshness_report(&self, project_id: Option<i64>) -> Result<FreshnessReport, DbError> {
+    pub fn get_project_freshness_report(
+        &self,
+        project_id: Option<i64>,
+    ) -> Result<FreshnessReport, DbError> {
         let conn = self.conn.get()?;
-        
+
         let mut sql = "SELECT 
             COUNT(d.id) as total,
             SUM(CASE WHEN df.status = 'fresh' THEN 1 ELSE 0 END) as fresh_count,
@@ -178,13 +188,13 @@ impl FreshnessService {
             FROM document_freshness df
             JOIN documents d ON df.document_id = d.id"
             .to_string();
-            
+
         let mut params: Vec<rusqlite::types::Value> = Vec::new();
         if let Some(pid) = project_id {
             sql.push_str(" WHERE d.project_id = ?1");
             params.push(rusqlite::types::Value::Integer(pid));
         }
-        
+
         let mut stmt = conn.prepare(&sql)?;
         let report = stmt.query_row(rusqlite::params_from_iter(params), |r| {
             Ok(FreshnessReport {
@@ -196,40 +206,40 @@ impl FreshnessService {
                 average_score: r.get::<_, Option<f64>>(5)?.unwrap_or(0.0),
             })
         })?;
-        
+
         Ok(report)
     }
 
     /// Updates tier for a document
     pub fn update_document_freshness_config(
-        &self, 
-        project_id: i64, 
-        source_doc_id: &str, 
-        tier: Option<&str>
+        &self,
+        project_id: i64,
+        source_doc_id: &str,
+        tier: Option<&str>,
     ) -> Result<bool, DbError> {
         let conn = self.conn.get()?;
-        
+
         // Find document_id
         let doc_id: i64 = match conn.query_row(
             "SELECT id FROM documents WHERE project_id = ?1 AND source_doc_id = ?2",
             rusqlite::params![project_id, source_doc_id],
-            |r| r.get(0)
+            |r| r.get(0),
         ) {
             Ok(id) => id,
             Err(_) => return Ok(false), // Document not found
         };
-        
+
         if let Some(t) = tier {
             conn.execute(
                 "UPDATE document_freshness SET retention_tier = ?1, tier_source = 'user' WHERE document_id = ?2",
                 rusqlite::params![t, doc_id]
             )?;
-            
+
             // 즉시 재계산 트리거 (Lock 주의: recalculate_document가 다시 락을 잡으므로 여기서는 드롭 필요)
-            drop(conn); 
+            drop(conn);
             let _ = self.recalculate_document(doc_id);
         }
-        
+
         Ok(true)
     }
 }

@@ -5,19 +5,31 @@ use crate::PluginError;
 pub fn validate_path(path: &str) -> Result<(), PluginError> {
     // 1. ".." check (Path Traversal)
     if path.contains("..") {
-        return Err(PluginError::PermissionDenied(format!("Path traversal attempt detected: {}", path)));
+        return Err(PluginError::PermissionDenied(format!(
+            "Path traversal attempt detected: {}",
+            path
+        )));
     }
 
     // 2. Absolute path check (should be relative to storage root)
-    if path.starts_with('/') || path.starts_with('\\') 
-        || (path.len() >= 2 && path.chars().next().unwrap().is_ascii_alphabetic() && path.chars().nth(1).unwrap() == ':')
+    if path.starts_with('/')
+        || path.starts_with('\\')
+        || (path.len() >= 2
+            && path.chars().next().unwrap().is_ascii_alphabetic()
+            && path.chars().nth(1).unwrap() == ':')
     {
-        return Err(PluginError::PermissionDenied(format!("Absolute paths are not allowed: {}", path)));
+        return Err(PluginError::PermissionDenied(format!(
+            "Absolute paths are not allowed: {}",
+            path
+        )));
     }
 
     // 3. UNC/Windows specific suspicious paths
     if path.contains("\\\\") {
-        return Err(PluginError::PermissionDenied(format!("Invalid path format (UNC/suspicious): {}", path)));
+        return Err(PluginError::PermissionDenied(format!(
+            "Invalid path format (UNC/suspicious): {}",
+            path
+        )));
     }
 
     Ok(())
@@ -25,7 +37,10 @@ pub fn validate_path(path: &str) -> Result<(), PluginError> {
 
 /// Parses a folder-title combination into a list of safe segments.
 /// Handles leading/trailing slashes and ensures no traversal.
-pub fn parse_hierarchical_path(folder: Option<&str>, title: &str) -> Result<Vec<String>, PluginError> {
+pub fn parse_hierarchical_path(
+    folder: Option<&str>,
+    title: &str,
+) -> Result<Vec<String>, PluginError> {
     let mut segments = Vec::new();
 
     if let Some(f) = folder {
@@ -56,7 +71,7 @@ mod tests {
     fn test_validate_path() {
         assert!(validate_path("notes/daily").is_ok());
         assert!(validate_path("meeting.md").is_ok());
-        
+
         assert!(validate_path("../etc/passwd").is_err());
         assert!(validate_path("notes/../../secret").is_err());
         assert!(validate_path("/absolute/path").is_err());

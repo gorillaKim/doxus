@@ -1,8 +1,8 @@
-use doxus_core::embedding::EmbeddingProvider;
 use doxus_core::db::DbPool;
+use doxus_core::embedding::EmbeddingProvider;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::collections::{HashMap, HashSet};
 
 pub struct McpServer {
     pub(crate) conn: DbPool,
@@ -111,12 +111,19 @@ impl McpServer {
             .or_insert_with(|| (HashSet::new(), now));
         entry.0.insert(doc_id);
         entry.1 = now;
-        tracing::debug!("[co_refs] Recorded session: {}, docs: {:?}", session_id, entry.0);
+        tracing::debug!(
+            "[co_refs] Recorded session: {}, docs: {:?}",
+            session_id,
+            entry.0
+        );
 
         // 2. Identify expired sessions (idle for 5 minutes/300 seconds)
         let mut expired = Vec::new();
         for (sid, (_docs, last_time)) in session_map.iter() {
-            let duration = now.checked_duration_since(*last_time).map(|d| d.as_secs()).unwrap_or(0);
+            let duration = now
+                .checked_duration_since(*last_time)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
             if duration >= 300 && sid != session_id {
                 expired.push(sid.clone());
             }
@@ -132,7 +139,10 @@ impl McpServer {
 
     /// Flushes accumulated document IDs in a session to the co-occurrence reference table.
     fn flush_session_data(&self, docs: HashSet<i64>) {
-        tracing::debug!("[co_refs] flush_session_data called with {} docs", docs.len());
+        tracing::debug!(
+            "[co_refs] flush_session_data called with {} docs",
+            docs.len()
+        );
         if docs.len() < 2 {
             return;
         }
@@ -166,7 +176,11 @@ impl McpServer {
                                co_occurrence_count = co_occurrence_count + 1,
                                last_accessed = ?3";
                 if let Err(e) = conn.execute(sql, rusqlite::params![doc_a, doc_b, last_accessed]) {
-                    tracing::warn!("[co_refs] Failed to upsert co-ref ({}, {}): {e}", doc_a, doc_b);
+                    tracing::warn!(
+                        "[co_refs] Failed to upsert co-ref ({}, {}): {e}",
+                        doc_a,
+                        doc_b
+                    );
                 }
             }
         }
@@ -208,9 +222,14 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
         let pool = doxus_core::db::create_pool(&db_path).unwrap();
-        let pm = Arc::new(doxus_core::plugin::PluginManager::new(PathBuf::from("/tmp")));
+        let pm = Arc::new(doxus_core::plugin::PluginManager::new(PathBuf::from(
+            "/tmp",
+        )));
         let server = McpServer::new(pool, db_path, None, pm, PathBuf::from("/tmp"));
-        TestContext { _temp_dir: temp_dir, server }
+        TestContext {
+            _temp_dir: temp_dir,
+            server,
+        }
     }
 
     fn poison_mutex<T: Send + 'static>(mutex: &Arc<Mutex<T>>) {
@@ -229,9 +248,16 @@ mod tests {
         let ctx = make_test_server();
         poison_mutex(&ctx.server.embedder);
 
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.server.embedder()));
-        assert!(result.is_ok(), "embedder() must not panic on poisoned mutex");
-        assert!(result.unwrap().is_none(), "embedder() must return None when poisoned");
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.server.embedder()));
+        assert!(
+            result.is_ok(),
+            "embedder() must not panic on poisoned mutex"
+        );
+        assert!(
+            result.unwrap().is_none(),
+            "embedder() must return None when poisoned"
+        );
     }
 
     // TDD: engine() must not panic when embedder Mutex is poisoned.
@@ -241,7 +267,10 @@ mod tests {
         poison_mutex(&ctx.server.embedder);
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.server.engine()));
-        assert!(result.is_ok(), "engine() must not panic on poisoned embedder mutex");
+        assert!(
+            result.is_ok(),
+            "engine() must not panic on poisoned embedder mutex"
+        );
     }
 
     #[test]
@@ -264,7 +293,13 @@ mod tests {
         // 3. Before flush, nothing is in the database
         {
             let conn = ctx.server.conn().get().unwrap();
-            let count: i64 = conn.query_row("SELECT COUNT(*) FROM document_co_refs", rusqlite::params![], |r| r.get(0)).unwrap();
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM document_co_refs",
+                    rusqlite::params![],
+                    |r| r.get(0),
+                )
+                .unwrap();
             assert_eq!(count, 0);
         }
 

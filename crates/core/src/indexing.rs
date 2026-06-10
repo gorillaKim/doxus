@@ -1,15 +1,15 @@
-use std::sync::Arc;
 use rusqlite::params;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use crate::plugin::PluginManager;
-use crate::search::{SearchEngine, DocMeta};
 use crate::auth::inject_keychain_auth;
-use crate::links::{LinkExtractor, LinkResolver};
-use doxus_plugin_sdk::{FetchAllOpts, FetchChangesOpts, PluginConfig, PluginSecrets, SyncPolicy};
-use crate::observability::{persist_audit, AuditEvent};
 use crate::db::DbPool;
+use crate::links::{LinkExtractor, LinkResolver};
+use crate::observability::{persist_audit, AuditEvent};
+use crate::plugin::PluginManager;
+use crate::search::{DocMeta, SearchEngine};
+use doxus_plugin_sdk::{FetchAllOpts, FetchChangesOpts, PluginConfig, PluginSecrets, SyncPolicy};
 
 pub struct IndexingService {
     conn: DbPool,
@@ -23,7 +23,11 @@ impl IndexingService {
         plugin_manager: Arc<PluginManager>,
         engine: Arc<SearchEngine>,
     ) -> Self {
-        Self { conn, plugin_manager, engine }
+        Self {
+            conn,
+            plugin_manager,
+            engine,
+        }
     }
 
     pub fn conn(&self) -> DbPool {
@@ -32,7 +36,8 @@ impl IndexingService {
 
     /// 프로젝트의 소스 타입 및 설정을 조회하여 인덱싱을 수행합니다.
     pub async fn index_project(&self, name: &str, full: bool) -> Result<usize, String> {
-        self.index_project_with_progress(name, full, |_, _| {}).await
+        self.index_project_with_progress(name, full, |_, _| {})
+            .await
     }
 
     /// Like `index_project` but calls `on_progress(docs_done, total_docs)` after each batch.
@@ -42,39 +47,52 @@ impl IndexingService {
         full: bool,
         on_progress: impl Fn(usize, usize) + Send,
     ) -> Result<usize, String> {
-        let (project_id, plugin_id, config_json, project_path, _strategy, _policy) = self.get_project_config(name).await?;
-        
+        let (project_id, plugin_id, config_json, project_path, _strategy, _policy) =
+            self.get_project_config(name).await?;
+
         // 1. 플러그인 초기화
-        let mut plugin = self.plugin_manager.get_source(&plugin_id)
-            .ok_or_else(|| {
-                let msg = format!("플러그인을 찾을 수 없습니다: {plugin_id}");
-                if let Ok(conn) = self.conn.write_conn() {
-                    persist_audit(&conn, &AuditEvent::PluginError {
+        let mut plugin = self.plugin_manager.get_source(&plugin_id).ok_or_else(|| {
+            let msg = format!("플러그인을 찾을 수 없습니다: {plugin_id}");
+            if let Ok(conn) = self.conn.write_conn() {
+                persist_audit(
+                    &conn,
+                    &AuditEvent::PluginError {
                         plugin_id: plugin_id.clone(),
                         message: msg.clone(),
-                    });
-                }
-                msg
-            })?;
+                    },
+                );
+            }
+            msg
+        })?;
 
         let mut config_fields = self.parse_config(&config_json);
         let mut secrets = PluginSecrets::default();
 
         if !project_path.is_empty() {
-            config_fields.insert("path".to_string(), serde_json::Value::String(project_path.clone()));
+            config_fields.insert(
+                "path".to_string(),
+                serde_json::Value::String(project_path.clone()),
+            );
         }
 
-        let mut final_config = PluginConfig { fields: config_fields };
+        let mut final_config = PluginConfig {
+            fields: config_fields,
+        };
         inject_keychain_auth(&plugin_id, &mut final_config, &mut secrets).await;
 
-        plugin.initialize(final_config, secrets).await
+        plugin
+            .initialize(final_config, secrets)
+            .await
             .map_err(|e| {
                 let msg = format!("플러그인 초기화 실패: {e}");
                 if let Ok(conn) = self.conn.write_conn() {
-                    persist_audit(&conn, &AuditEvent::PluginError {
-                        plugin_id: plugin_id.clone(),
-                        message: msg.clone(),
-                    });
+                    persist_audit(
+                        &conn,
+                        &AuditEvent::PluginError {
+                            plugin_id: plugin_id.clone(),
+                            message: msg.clone(),
+                        },
+                    );
                 }
                 msg
             })?;
@@ -87,7 +105,10 @@ impl IndexingService {
         }
 
         // 2. 인덱싱 루프 및 오류 처리
-        let sync_start_time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+        let sync_start_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
         let mut total = 0;
         let mut estimated_total: usize = 0;
         let mut cursor = None;
@@ -197,7 +218,9 @@ impl IndexingService {
 
         // 3. 뒷정리: fetch가 완전히 성공한 경우에만 삭제 및 링크 해결
         if result.is_ok() {
-            let _ = self.remove_deleted_documents(project_id, sync_start_time).await;
+            let _ = self
+                .remove_deleted_documents(project_id, sync_start_time)
+                .await;
             if let Ok(conn) = self.conn.write_conn() {
                 let _ = LinkResolver::resolve_project_links(&conn, project_id);
             }
@@ -205,7 +228,13 @@ impl IndexingService {
         // 인덱싱 종료 로그 및 DB 메모리 회수 (성공/실패와 무관하게 항상 실행)
         {
             if let Ok(conn) = self.conn.write_conn() {
-                persist_audit(&conn, &AuditEvent::IndexComplete { project_id, docs_indexed: total });
+                persist_audit(
+                    &conn,
+                    &AuditEvent::IndexComplete {
+                        project_id,
+                        docs_indexed: total,
+                    },
+                );
                 let _ = conn.execute("PRAGMA shrink_memory", []);
                 let _ = conn.execute("PRAGMA wal_checkpoint(PASSIVE)", []);
             }
@@ -230,12 +259,17 @@ impl IndexingService {
                 "SELECT last_fetched_at FROM projects WHERE name = ?1",
                 params![name],
                 |r| r.get(0),
-            ).ok().flatten()
+            )
+            .ok()
+            .flatten()
         };
 
-        let (project_id, plugin_id, config_json, project_path, _strategy, _policy) = self.get_project_config(name).await?;
+        let (project_id, plugin_id, config_json, project_path, _strategy, _policy) =
+            self.get_project_config(name).await?;
 
-        let mut plugin = self.plugin_manager.get_source(&plugin_id)
+        let mut plugin = self
+            .plugin_manager
+            .get_source(&plugin_id)
             .ok_or_else(|| format!("플러그인을 찾을 수 없습니다: {plugin_id}"))?;
 
         let mut config_fields = self.parse_config(&config_json);
@@ -243,36 +277,60 @@ impl IndexingService {
         if !project_path.is_empty() {
             config_fields.insert("path".to_string(), serde_json::Value::String(project_path));
         }
-        let mut final_config = PluginConfig { fields: config_fields };
+        let mut final_config = PluginConfig {
+            fields: config_fields,
+        };
         inject_keychain_auth(&plugin_id, &mut final_config, &mut secrets).await;
 
-        plugin.initialize(final_config, secrets).await
+        plugin
+            .initialize(final_config, secrets)
+            .await
             .map_err(|e| format!("플러그인 초기화 실패: {e}"))?;
 
         if !plugin.capabilities().incremental_sync || last_fetched_at.is_none() {
-            return self.index_project_with_progress(name, false, on_progress).await;
+            return self
+                .index_project_with_progress(name, false, on_progress)
+                .await;
         }
 
         let since = last_fetched_at.unwrap();
-        crate::log_d!("indexer", "[Core-Indexer] 증분 인덱싱 시작: {} (since={})", name, since);
+        crate::log_d!(
+            "indexer",
+            "[Core-Indexer] 증분 인덱싱 시작: {} (since={})",
+            name,
+            since
+        );
 
         let mut total = 0usize;
         let mut cursor: Option<String> = None;
 
         loop {
-            let opts = FetchChangesOpts { since, cursor: cursor.clone(), page_size: 100, known_ids: vec![] };
+            let opts = FetchChangesOpts {
+                since,
+                cursor: cursor.clone(),
+                page_size: 100,
+                known_ids: vec![],
+            };
             let changeset = match plugin.fetch_changes(opts).await {
                 Ok(cs) => cs,
                 Err(e) => {
-                    crate::log_d!("indexer", "[Core-Indexer] fetch_changes 오류, fetch_all로 폴백: {}", e);
-                    return self.index_project_with_progress(name, false, on_progress).await;
+                    crate::log_d!(
+                        "indexer",
+                        "[Core-Indexer] fetch_changes 오류, fetch_all로 폴백: {}",
+                        e
+                    );
+                    return self
+                        .index_project_with_progress(name, false, on_progress)
+                        .await;
                 }
             };
 
             if !changeset.updated.is_empty() {
                 let mut batch_requests = Vec::new();
                 for doc in changeset.updated {
-                    let title = doc.title.as_deref()
+                    let title = doc
+                        .title
+                        .as_deref()
                         .map(|s| s.to_string())
                         .filter(|s| !s.trim().is_empty())
                         .unwrap_or_else(|| "Untitled".to_string());
@@ -300,21 +358,34 @@ impl IndexingService {
                 }
                 if !batch_requests.is_empty() {
                     let count = batch_requests.len();
-                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
-                    match self.engine.index_documents_batch_async(batch_requests, now).await {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs() as i64;
+                    match self
+                        .engine
+                        .index_documents_batch_async(batch_requests, now)
+                        .await
+                    {
                         Ok(_) => {
                             total += count;
                             on_progress(total, 0);
                         }
                         Err(e) => {
-                            crate::log_d!("indexer", "[Core-Indexer] Incremental batch indexing error: {}", e);
+                            crate::log_d!(
+                                "indexer",
+                                "[Core-Indexer] Incremental batch indexing error: {}",
+                                e
+                            );
                         }
                     }
                 }
             }
 
             cursor = changeset.next_cursor;
-            if cursor.is_none() { break; }
+            if cursor.is_none() {
+                break;
+            }
         }
 
         // last_fetched_at 갱신 및 DB 메모리 회수
@@ -335,9 +406,19 @@ impl IndexingService {
     }
 
     /// 단일 문서를 인덱싱합니다. (청킹, 임베딩, DB 저장 포함)
-    pub async fn index_single_document(&self, project_id: i64, doc: doxus_plugin_sdk::RawDocument, strategy: &str) -> Result<(), String> {
+    pub async fn index_single_document(
+        &self,
+        project_id: i64,
+        doc: doxus_plugin_sdk::RawDocument,
+        strategy: &str,
+    ) -> Result<(), String> {
         let title = doc.title.as_deref().unwrap_or("Untitled");
-        crate::log_d!("indexer", "[Core-Indexer] Processing document: {} (ID: {})", title, doc.id.0);
+        crate::log_d!(
+            "indexer",
+            "[Core-Indexer] Processing document: {} (ID: {})",
+            title,
+            doc.id.0
+        );
 
         // 내용에서 링크 추출 및 플러그인 제공 링크와 병합
         let mut all_links = LinkExtractor::extract_links(&doc.content);
@@ -356,16 +437,22 @@ impl IndexingService {
             ..Default::default()
         };
 
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
-        self.engine.index_document_async_with_meta(crate::search::IndexParams {
-            project_id,
-            source_doc_id: &doc.id.0,
-            title,
-            content: &doc.content,
-            meta,
-            strategy,
-            last_indexed: now,
-        }).await.map_err(|e| format!("Indexing error: {e}"))?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        self.engine
+            .index_document_async_with_meta(crate::search::IndexParams {
+                project_id,
+                source_doc_id: &doc.id.0,
+                title,
+                content: &doc.content,
+                meta,
+                strategy,
+                last_indexed: now,
+            })
+            .await
+            .map_err(|e| format!("Indexing error: {e}"))?;
 
         // LTM 요약 생성 및 documents 테이블 UPDATE 연동
         let summary = crate::summarizer::lead3_extract(&doc.content);
@@ -380,8 +467,14 @@ impl IndexingService {
     }
 
     /// 특정 문서가 재인덱싱이 필요한지 확인합니다.
-    pub async fn needs_reindexing(&self, project_id: i64, source_doc_id: &str, new_updated_at: Option<i64>) -> bool {
-        self.needs_reindexing_with_hash(project_id, source_doc_id, new_updated_at, None).await
+    pub async fn needs_reindexing(
+        &self,
+        project_id: i64,
+        source_doc_id: &str,
+        new_updated_at: Option<i64>,
+    ) -> bool {
+        self.needs_reindexing_with_hash(project_id, source_doc_id, new_updated_at, None)
+            .await
     }
 
     pub async fn needs_reindexing_with_hash(
@@ -396,24 +489,37 @@ impl IndexingService {
             Err(_) => return true,
         };
 
-        let (old_updated_at, last_indexed, _chunk_count, old_content_hash): (Option<i64>, Option<i64>, i64, Option<String>) = conn.query_row(
-            "SELECT d.updated_at, d.last_indexed, COUNT(c.id), d.content_hash
+        let (old_updated_at, last_indexed, _chunk_count, old_content_hash): (
+            Option<i64>,
+            Option<i64>,
+            i64,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT d.updated_at, d.last_indexed, COUNT(c.id), d.content_hash
              FROM documents d
              LEFT JOIN chunks c ON d.id = c.document_id
              WHERE d.project_id = ?1 AND d.source_doc_id = ?2
              GROUP BY d.id",
-            params![project_id, source_doc_id],
-            |r| Ok((
-                r.get(0).ok().flatten(),
-                r.get(1).ok().flatten(),
-                r.get::<_, i64>(2)?,
-                r.get(3).ok().flatten(),
-            ))
-        ).unwrap_or((None, None, 0, None));
+                params![project_id, source_doc_id],
+                |r| {
+                    Ok((
+                        r.get(0).ok().flatten(),
+                        r.get(1).ok().flatten(),
+                        r.get::<_, i64>(2)?,
+                        r.get(3).ok().flatten(),
+                    ))
+                },
+            )
+            .unwrap_or((None, None, 0, None));
 
         // 1. 인덱싱된 기록이 아예 없는 경우
         if last_indexed.is_none() {
-            crate::log_d!("indexer", "[Core-Indexer][decision] {} -> 재인덱싱 (기록 없음)", source_doc_id);
+            crate::log_d!(
+                "indexer",
+                "[Core-Indexer][decision] {} -> 재인덱싱 (기록 없음)",
+                source_doc_id
+            );
             return true;
         }
 
@@ -421,7 +527,11 @@ impl IndexingService {
         match (new_updated_at, old_updated_at) {
             (Some(new), Some(old)) => {
                 if new != old {
-                    crate::log_d!("indexer", "[Core-Indexer][decision] {} -> 재인덱싱 (시간 다름)", source_doc_id);
+                    crate::log_d!(
+                        "indexer",
+                        "[Core-Indexer][decision] {} -> 재인덱싱 (시간 다름)",
+                        source_doc_id
+                    );
                     true
                 } else {
                     false
@@ -432,7 +542,11 @@ impl IndexingService {
                 match (new_content_hash, old_content_hash.as_deref()) {
                     (Some(new_h), Some(old_h)) => {
                         if new_h != old_h {
-                            crate::log_d!("indexer", "[Core-Indexer][decision] {} -> 재인덱싱 (해시 다름)", source_doc_id);
+                            crate::log_d!(
+                                "indexer",
+                                "[Core-Indexer][decision] {} -> 재인덱싱 (해시 다름)",
+                                source_doc_id
+                            );
                             true
                         } else {
                             false
@@ -450,19 +564,25 @@ impl IndexingService {
 
     pub async fn get_project_policy(&self, name: &str) -> Result<SyncPolicy, String> {
         let conn = self.conn.read_conn().map_err(|e| e.to_string())?;
-        let policy_json: Option<String> = conn.query_row(
-            "SELECT sync_policy_json FROM projects WHERE name = ?1",
-            params![name],
-            |r| r.get(0)
-        ).map_err(|e| format!("정책 조회 실패: {e}"))?;
+        let policy_json: Option<String> = conn
+            .query_row(
+                "SELECT sync_policy_json FROM projects WHERE name = ?1",
+                params![name],
+                |r| r.get(0),
+            )
+            .map_err(|e| format!("정책 조회 실패: {e}"))?;
 
         match policy_json {
-            Some(json) => serde_json::from_str::<SyncPolicy>(&json).map_err(|e| format!("정책 파싱 실패: {e}")),
+            Some(json) => serde_json::from_str::<SyncPolicy>(&json)
+                .map_err(|e| format!("정책 파싱 실패: {e}")),
             None => Ok(SyncPolicy::Interval { seconds: 7200 }), // Default to 2h
         }
     }
 
-    async fn get_project_config(&self, name: &str) -> Result<(i64, String, String, String, String, SyncPolicy), String> {
+    async fn get_project_config(
+        &self,
+        name: &str,
+    ) -> Result<(i64, String, String, String, String, SyncPolicy), String> {
         let conn = self.conn.read_conn().map_err(|e| e.to_string())?;
         let row = conn.query_row(
             "SELECT p.id, si.plugin_id, si.config_json, p.path, p.storage_strategy, p.sync_policy_json
@@ -523,14 +643,16 @@ impl IndexingService {
 
     pub fn list_active_projects(&self) -> Result<Vec<String>, String> {
         let conn = self.conn.read_conn().map_err(|e| e.to_string())?;
-        let mut stmt = conn.prepare("SELECT name FROM projects WHERE status = 'active'")
+        let mut stmt = conn
+            .prepare("SELECT name FROM projects WHERE status = 'active'")
             .map_err(|e| e.to_string())?;
-        
-        let projects = stmt.query_map([], |row: &rusqlite::Row<'_>| row.get::<_, String>(0))
+
+        let projects = stmt
+            .query_map([], |row: &rusqlite::Row<'_>| row.get::<_, String>(0))
             .map_err(|e| e.to_string())?
             .filter_map(|r: Result<String, rusqlite::Error>| r.ok())
             .collect();
-        
+
         Ok(projects)
     }
 
@@ -550,18 +672,29 @@ impl IndexingService {
         ).map_err(|e| format!("삭제된 문서 정리 실패: {e}"))?;
 
         if removed > 0 {
-            crate::log_d!("indexer", "[Core-Indexer] Cleaned up {} deleted documents from project {}", removed, project_id);
+            crate::log_d!(
+                "indexer",
+                "[Core-Indexer] Cleaned up {} deleted documents from project {}",
+                removed,
+                project_id
+            );
         }
         Ok(removed)
     }
 
     /// 문서의 인덱싱 시점(last_indexed)만 업데이트합니다. (내용 변경 없이 유지 시 사용)
-    async fn update_last_indexed(&self, project_id: i64, source_doc_id: &str, timestamp: i64) -> Result<(), String> {
+    async fn update_last_indexed(
+        &self,
+        project_id: i64,
+        source_doc_id: &str,
+        timestamp: i64,
+    ) -> Result<(), String> {
         let conn = self.conn.write_conn().map_err(|e| e.to_string())?;
         conn.execute(
             "UPDATE documents SET last_indexed = ?1 WHERE project_id = ?2 AND source_doc_id = ?3",
             params![timestamp, project_id, source_doc_id],
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         Ok(())
     }
 }
@@ -570,15 +703,14 @@ impl IndexingService {
 mod tests {
     use super::*;
     use crate::db::TestDb;
-    use serial_test::serial;
-    use std::sync::Arc;
     use async_trait::async_trait;
     use doxus_plugin_sdk::{
-        DocSource, PluginMetadata, PluginKind, Capabilities, SyncPolicy,
-        FetchAllOpts, DocumentStream, FetchChangesOpts, ChangeSet,
-        PluginConfig, PluginSecrets, SourceDocId, RawDocument,
-        HealthStatus, PluginError,
+        Capabilities, ChangeSet, DocSource, DocumentStream, FetchAllOpts, FetchChangesOpts,
+        HealthStatus, PluginConfig, PluginError, PluginKind, PluginMetadata, PluginSecrets,
+        RawDocument, SourceDocId, SyncPolicy,
     };
+    use serial_test::serial;
+    use std::sync::Arc;
 
     // ── Bug 1: inject_keychain_auth 이중 호출 테스트 ──────────────────────────
 
@@ -596,15 +728,23 @@ mod tests {
         // 단일 호출
         crate::auth::inject_keychain_auth("com.doxus.confluence", &mut config, &mut secrets).await;
 
-        let token_count = secrets.fields.values()
-            .filter(|v| matches!(v, doxus_plugin_sdk::SecretValue::Text(t) if t == "test-token-123"))
+        let token_count = secrets
+            .fields
+            .values()
+            .filter(
+                |v| matches!(v, doxus_plugin_sdk::SecretValue::Text(t) if t == "test-token-123"),
+            )
             .count();
         assert_eq!(token_count, 1, "api_token은 한 번만 주입되어야 함");
 
         // 두 번 호출해도 중복 삽입 없어야 함 (HashMap이므로 overwrite됨 — 여전히 1)
         crate::auth::inject_keychain_auth("com.doxus.confluence", &mut config, &mut secrets).await;
-        let token_count_after = secrets.fields.values()
-            .filter(|v| matches!(v, doxus_plugin_sdk::SecretValue::Text(t) if t == "test-token-123"))
+        let token_count_after = secrets
+            .fields
+            .values()
+            .filter(
+                |v| matches!(v, doxus_plugin_sdk::SecretValue::Text(t) if t == "test-token-123"),
+            )
             .count();
         assert_eq!(token_count_after, 1, "두 번 호출해도 중복 주입 없어야 함");
 
@@ -642,12 +782,18 @@ mod tests {
             Ok(())
         }
 
-        async fn initialize(&mut self, _: PluginConfig, _: PluginSecrets) -> Result<(), PluginError> {
+        async fn initialize(
+            &mut self,
+            _: PluginConfig,
+            _: PluginSecrets,
+        ) -> Result<(), PluginError> {
             Ok(())
         }
 
         async fn fetch_all(&self, _opts: FetchAllOpts) -> Result<DocumentStream, PluginError> {
-            Err(PluginError::NetworkError("simulated network failure".to_string()))
+            Err(PluginError::NetworkError(
+                "simulated network failure".to_string(),
+            ))
         }
 
         async fn fetch_changes(&self, _: FetchChangesOpts) -> Result<ChangeSet, PluginError> {
@@ -659,7 +805,10 @@ mod tests {
         }
 
         async fn health_check(&self) -> HealthStatus {
-            HealthStatus { healthy: true, message: None }
+            HealthStatus {
+                healthy: true,
+                message: None,
+            }
         }
     }
 
@@ -680,9 +829,12 @@ mod tests {
             "INSERT INTO projects (name, display_name, path, source_type, created_at, updated_at) \
              VALUES ('test-proj', 'Test', '/tmp', 'obsidian', 0, 0)",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let project_id: i64 = conn
-            .query_row("SELECT id FROM projects WHERE name='test-proj'", [], |r| r.get(0))
+            .query_row("SELECT id FROM projects WHERE name='test-proj'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
 
         // 기존 문서 10개 삽입 (last_indexed = 0, sync_start_time보다 이전이므로 삭제 대상)
@@ -710,17 +862,24 @@ mod tests {
 
         // 인덱싱 실행 (첫 fetch_all부터 실패)
         let result = indexer.index_project("test-proj", false).await;
-        assert!(result.is_err(), "fetch_all 에러 시 index_project는 Err를 반환해야 함");
+        assert!(
+            result.is_err(),
+            "fetch_all 에러 시 index_project는 Err를 반환해야 함"
+        );
 
         // 기존 문서 10개가 보존되어야 함 (partial failure 시 삭제하면 안 됨)
         let conn = pool.get().unwrap();
-        let doc_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM documents WHERE project_id = ?1",
-            [project_id],
-            |r| r.get(0),
-        ).unwrap();
-        assert_eq!(doc_count, 10,
-            "fetch 실패 시 기존 문서 10개가 보존되어야 함 (현재 버그: 삭제됨)");
+        let doc_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM documents WHERE project_id = ?1",
+                [project_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            doc_count, 10,
+            "fetch 실패 시 기존 문서 10개가 보존되어야 함 (현재 버그: 삭제됨)"
+        );
     }
 
     #[tokio::test]
@@ -728,7 +887,10 @@ mod tests {
         let (_temp_dir, pool) = create_test_pool();
         let conn = pool.get().unwrap();
         let pm = Arc::new(PluginManager::new(std::path::PathBuf::from("/tmp/plugins")));
-        let engine = Arc::new(SearchEngine::with_embedder(pool.clone(), Arc::new(crate::embedding::NoOpEmbedder)));
+        let engine = Arc::new(SearchEngine::with_embedder(
+            pool.clone(),
+            Arc::new(crate::embedding::NoOpEmbedder),
+        ));
         let indexer = IndexingService::new(pool.clone(), pm, engine);
 
         // 테스트용 프로젝트 삽입
@@ -736,7 +898,8 @@ mod tests {
             "INSERT INTO projects (id, name, display_name, path, created_at, updated_at) \
              VALUES (1, 'test', 'Test', '/tmp', 0, 0)",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         // 테스트용 문서 삽입 (updated_at = 100, last_indexed = 100)
         conn.execute(
@@ -750,7 +913,8 @@ mod tests {
             "INSERT INTO chunks (document_id, content, chunk_index) \
              SELECT id, 'content', 0 FROM documents WHERE source_doc_id = 'doc1'",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         drop(conn);
 
         // 1. 타임스탬프 동일한 경우 -> false
@@ -772,14 +936,18 @@ mod tests {
         let (_temp_dir, pool) = create_test_pool();
         let conn = pool.get().unwrap();
         let pm = Arc::new(PluginManager::new(std::path::PathBuf::from("/tmp/plugins")));
-        let engine = Arc::new(SearchEngine::with_embedder(pool.clone(), Arc::new(crate::embedding::NoOpEmbedder)));
+        let engine = Arc::new(SearchEngine::with_embedder(
+            pool.clone(),
+            Arc::new(crate::embedding::NoOpEmbedder),
+        ));
         let indexer = IndexingService::new(pool.clone(), pm, engine);
 
         conn.execute(
             "INSERT INTO projects (id, name, display_name, path, created_at, updated_at) \
              VALUES (1, 'test', 'Test', '/tmp', 0, 0)",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO documents (project_id, source_doc_id, title, content_hash, updated_at, last_indexed) \
              VALUES (1, 'untitled-doc', 'Untitled', 'hash_abc', 100, 100)",
@@ -789,12 +957,15 @@ mod tests {
             "INSERT INTO chunks (document_id, content, chunk_index) \
              SELECT id, 'content', 0 FROM documents WHERE source_doc_id = 'untitled-doc'",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         drop(conn);
 
         // 동일 타임스탬프 → 변경 없음 → 재인덱싱 안 해야 함
-        assert!(!indexer.needs_reindexing(1, "untitled-doc", Some(100)).await,
-            "Untitled + 동일 타임스탬프인 경우 재인덱싱하지 않아야 함");
+        assert!(
+            !indexer.needs_reindexing(1, "untitled-doc", Some(100)).await,
+            "Untitled + 동일 타임스탬프인 경우 재인덱싱하지 않아야 함"
+        );
     }
 
     #[tokio::test]
@@ -803,14 +974,18 @@ mod tests {
         let (_temp_dir, pool) = create_test_pool();
         let conn = pool.get().unwrap();
         let pm = Arc::new(PluginManager::new(std::path::PathBuf::from("/tmp/plugins")));
-        let engine = Arc::new(SearchEngine::with_embedder(pool.clone(), Arc::new(crate::embedding::NoOpEmbedder)));
+        let engine = Arc::new(SearchEngine::with_embedder(
+            pool.clone(),
+            Arc::new(crate::embedding::NoOpEmbedder),
+        ));
         let indexer = IndexingService::new(pool.clone(), pm, engine);
 
         conn.execute(
             "INSERT INTO projects (id, name, display_name, path, created_at, updated_at) \
              VALUES (1, 'test', 'Test', '/tmp', 0, 0)",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO documents (project_id, source_doc_id, title, content_hash, updated_at, last_indexed) \
              VALUES (1, 'no-ts-doc', 'SomeTitle', 'stable_hash', NULL, 100)",
@@ -820,16 +995,25 @@ mod tests {
             "INSERT INTO chunks (document_id, content, chunk_index) \
              SELECT id, 'content', 0 FROM documents WHERE source_doc_id = 'no-ts-doc'",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         drop(conn);
 
         // updated_at=None이지만 content_hash 동일 → 재인덱싱 안 해야 함
-        assert!(!indexer.needs_reindexing_with_hash(1, "no-ts-doc", None, Some("stable_hash")).await,
-            "타임스탬프 없어도 content_hash 동일하면 재인덱싱하지 않아야 함");
+        assert!(
+            !indexer
+                .needs_reindexing_with_hash(1, "no-ts-doc", None, Some("stable_hash"))
+                .await,
+            "타임스탬프 없어도 content_hash 동일하면 재인덱싱하지 않아야 함"
+        );
 
         // content_hash 변경 → 재인덱싱 해야 함
-        assert!(indexer.needs_reindexing_with_hash(1, "no-ts-doc", None, Some("new_hash")).await,
-            "content_hash 변경 시 재인덱싱해야 함");
+        assert!(
+            indexer
+                .needs_reindexing_with_hash(1, "no-ts-doc", None, Some("new_hash"))
+                .await,
+            "content_hash 변경 시 재인덱싱해야 함"
+        );
     }
 
     #[tokio::test]
@@ -837,7 +1021,10 @@ mod tests {
         let (_temp_dir, pool) = create_test_pool();
         let conn = pool.get().unwrap();
         let pm = Arc::new(PluginManager::new(std::path::PathBuf::from("/tmp")));
-        let engine = Arc::new(SearchEngine::with_embedder(pool.clone(), Arc::new(crate::embedding::NoOpEmbedder)));
+        let engine = Arc::new(SearchEngine::with_embedder(
+            pool.clone(),
+            Arc::new(crate::embedding::NoOpEmbedder),
+        ));
         let indexer = IndexingService::new(pool.clone(), pm, engine);
 
         conn.execute(
@@ -859,7 +1046,10 @@ mod tests {
         let (_temp_dir, pool) = create_test_pool();
         let conn = pool.get().unwrap();
         let pm = Arc::new(PluginManager::new(std::path::PathBuf::from("/tmp")));
-        let engine = Arc::new(SearchEngine::with_embedder(pool.clone(), Arc::new(crate::embedding::NoOpEmbedder)));
+        let engine = Arc::new(SearchEngine::with_embedder(
+            pool.clone(),
+            Arc::new(crate::embedding::NoOpEmbedder),
+        ));
         let indexer = IndexingService::new(pool.clone(), pm, engine);
 
         // 프로젝트 삽입 (source_type = 'non_existent')
@@ -867,7 +1057,8 @@ mod tests {
             "INSERT INTO projects (name, display_name, path, source_type, created_at, updated_at) \
              VALUES ('my-proj', 'My Proj', '/tmp', 'non_existent', 0, 0)",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         drop(conn);
 
         // 실행 (플러그인을 찾을 수 없으므로 에러 발생 예상)
@@ -877,10 +1068,8 @@ mod tests {
 
         // audit_log 확인
         let conn = pool.get().unwrap();
-        let (event_type, message): (String, String) = conn.query_row(
-            "SELECT event_type, payload FROM audit_log",
-            [],
-            |r| {
+        let (event_type, message): (String, String) = conn
+            .query_row("SELECT event_type, payload FROM audit_log", [], |r| {
                 let event_type: String = r.get(0)?;
                 let payload: String = r.get(1)?;
                 let event: AuditEvent = serde_json::from_str(&payload).unwrap();
@@ -889,8 +1078,8 @@ mod tests {
                     _ => "wrong event".to_string(),
                 };
                 Ok((event_type, msg))
-            }
-        ).unwrap();
+            })
+            .unwrap();
 
         assert_eq!(event_type, "plugin_error");
         assert!(message.contains("플러그인을 찾을 수 없습니다"));

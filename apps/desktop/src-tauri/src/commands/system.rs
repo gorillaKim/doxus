@@ -1,23 +1,25 @@
+use once_cell::sync::Lazy;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use sysinfo::{Pid, System, Disks, ProcessesToUpdate};
+use sysinfo::{Disks, Pid, ProcessesToUpdate, System};
 use tauri::Emitter;
 use walkdir::WalkDir;
-use once_cell::sync::Lazy;
 
 #[derive(Debug, Serialize)]
 pub struct ResourceUsage {
-    pub cpu_usage: f32,           // Normalized % (0-100)
-    pub memory_usage: u64,        // Bytes (RSS)
-    pub total_memory: u64,        // Bytes
-    pub disk_usage: u64,          // Bytes (~/.doxus/db + models size)
-    pub total_disk: u64,          // Bytes
-    pub available_disk: u64,      // Bytes
+    pub cpu_usage: f32,      // Normalized % (0-100)
+    pub memory_usage: u64,   // Bytes (RSS)
+    pub total_memory: u64,   // Bytes
+    pub disk_usage: u64,     // Bytes (~/.doxus/db + models size)
+    pub total_disk: u64,     // Bytes
+    pub available_disk: u64, // Bytes
 }
 
 fn get_dir_size(path: PathBuf) -> u64 {
-    if !path.exists() { return 0; }
+    if !path.exists() {
+        return 0;
+    }
     WalkDir::new(path)
         .into_iter()
         .filter_map(|e| e.ok())
@@ -26,19 +28,22 @@ fn get_dir_size(path: PathBuf) -> u64 {
         .sum()
 }
 
-static SYSTEM: Lazy<Arc<Mutex<System>>> = Lazy::new(|| {
-    Arc::new(Mutex::new(System::new()))
-});
+static SYSTEM: Lazy<Arc<Mutex<System>>> = Lazy::new(|| Arc::new(Mutex::new(System::new())));
 
 type DiskInfo = (std::time::Instant, u64, u64, u64);
 static DISK_INFO_CACHE: Lazy<Arc<Mutex<DiskInfo>>> = Lazy::new(|| {
-    Arc::new(Mutex::new((std::time::Instant::now() - std::time::Duration::from_secs(3600), 0, 0, 0)))
+    Arc::new(Mutex::new((
+        std::time::Instant::now() - std::time::Duration::from_secs(3600),
+        0,
+        0,
+        0,
+    )))
 });
 
 #[tauri::command]
 pub async fn get_resource_usage() -> Result<ResourceUsage, String> {
     let mut sys = SYSTEM.lock().map_err(|_| "system lock poisoned")?;
-    
+
     let pid = Pid::from_u32(std::process::id());
     sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
     sys.refresh_memory();
@@ -60,12 +65,14 @@ pub async fn get_resource_usage() -> Result<ResourceUsage, String> {
     let doxus_root = PathBuf::from(&home).join(".doxus");
     let doxus_db_dir = doxus_root.join("db");
     let doxus_models_dir = doxus_root.join("models");
-    
+
     let (disk_usage, total_disk, available_disk) = {
-        let mut cache = DISK_INFO_CACHE.lock().map_err(|_| "disk cache lock poisoned")?;
+        let mut cache = DISK_INFO_CACHE
+            .lock()
+            .map_err(|_| "disk cache lock poisoned")?;
         if cache.0.elapsed() > std::time::Duration::from_secs(60) {
             let usage = get_dir_size(doxus_db_dir) + get_dir_size(doxus_models_dir);
-            
+
             let mut total = 0;
             let mut available = 0;
             let disks = Disks::new_with_refreshed_list();
@@ -77,7 +84,7 @@ pub async fn get_resource_usage() -> Result<ResourceUsage, String> {
                     break;
                 }
             }
-            
+
             cache.0 = std::time::Instant::now();
             cache.1 = usage;
             cache.2 = total;
@@ -157,10 +164,11 @@ pub async fn download_onnx_model(
     }
 
     // Load the new embedder and swap it in-place.
-    let new_embedder = tokio::task::spawn_blocking(doxus_core::embedding::OnnxEmbedder::from_default_path)
-        .await
-        .map_err(|e| format!("embedder load task failed: {e}"))?
-        .map_err(|e| format!("failed to load ONNX model after download: {e}"))?;
+    let new_embedder =
+        tokio::task::spawn_blocking(doxus_core::embedding::OnnxEmbedder::from_default_path)
+            .await
+            .map_err(|e| format!("embedder load task failed: {e}"))?
+            .map_err(|e| format!("failed to load ONNX model after download: {e}"))?;
 
     {
         let mut guard = state.embedder.write().await;

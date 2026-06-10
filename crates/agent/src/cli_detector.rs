@@ -64,7 +64,9 @@ pub fn detect_cli() -> CliKind {
         }
     }
     if let Ok(val) = std::env::var("GEMINI_CLI_PATH") {
-        return CliKind::GeminiCli { path: PathBuf::from(val) };
+        return CliKind::GeminiCli {
+            path: PathBuf::from(val),
+        };
     }
     if let Some(path) = find_binary("gemini") {
         return CliKind::GeminiCli { path };
@@ -100,9 +102,13 @@ pub fn find_binary(name: &str) -> Option<PathBuf> {
         PathBuf::from(&home).join(".npm-global/bin").join(name),
         PathBuf::from(&home).join(".npm/bin").join(name),
         // nvm — glob: ~/.nvm/versions/node/*/bin/<name>
-        PathBuf::from(&home).join(".nvm/versions/node/*/bin").join(name),
+        PathBuf::from(&home)
+            .join(".nvm/versions/node/*/bin")
+            .join(name),
         // fnm
-        PathBuf::from(&home).join(".local/share/fnm/node-versions/*/installation/bin").join(name),
+        PathBuf::from(&home)
+            .join(".local/share/fnm/node-versions/*/installation/bin")
+            .join(name),
     ];
 
     for candidate in candidates {
@@ -137,7 +143,9 @@ fn try_which_login_shell(name: &str) -> Option<PathBuf> {
 
 /// $PATH-only scan (no shell spawning).
 pub(crate) fn which_binary(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH")?.to_str()?.split(':')
+    std::env::var_os("PATH")?
+        .to_str()?
+        .split(':')
         .map(PathBuf::from)
         .find_map(|p| {
             let candidate = p.join(name);
@@ -222,7 +230,7 @@ fn is_valid_executable(path: &Path) -> bool {
 /// Run a Command with a wall-clock timeout. Kills the child if it exceeds the limit.
 fn command_output_timeout(mut cmd: Command, timeout: Duration) -> Option<std::process::Output> {
     cmd.stdout(std::process::Stdio::piped())
-       .stderr(std::process::Stdio::piped());
+        .stderr(std::process::Stdio::piped());
     let mut child = cmd.spawn().ok()?;
     let start = std::time::Instant::now();
     loop {
@@ -277,8 +285,14 @@ mod tests {
         // detect_cli reads CLAUDE_CODE_ENTRYPOINT first (path may not exist — that's ok for env-var branch)
         let kind = detect_cli();
         // Restore
-        match orig_claude { Some(v) => std::env::set_var("CLAUDE_CODE_ENTRYPOINT", v), None => std::env::remove_var("CLAUDE_CODE_ENTRYPOINT") }
-        match orig_gemini { Some(v) => std::env::set_var("GEMINI_CLI_PATH", v), None => std::env::remove_var("GEMINI_CLI_PATH") }
+        match orig_claude {
+            Some(v) => std::env::set_var("CLAUDE_CODE_ENTRYPOINT", v),
+            None => std::env::remove_var("CLAUDE_CODE_ENTRYPOINT"),
+        }
+        match orig_gemini {
+            Some(v) => std::env::set_var("GEMINI_CLI_PATH", v),
+            None => std::env::remove_var("GEMINI_CLI_PATH"),
+        }
         // CLAUDE_CODE_ENTRYPOINT was set → ClaudeCode wins regardless of gemini env var
         assert!(matches!(kind, CliKind::ClaudeCode { .. }));
     }

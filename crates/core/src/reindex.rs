@@ -1,7 +1,7 @@
-use std::sync::Arc;
-use rusqlite::params;
-use crate::indexing::IndexingService;
 use crate::db::DbPool;
+use crate::indexing::IndexingService;
+use rusqlite::params;
+use std::sync::Arc;
 
 pub enum ReindexScope {
     Full,
@@ -21,7 +21,11 @@ pub struct ReindexOptions {
 
 impl Default for ReindexOptions {
     fn default() -> Self {
-        Self { force: false, dry_run: false, batch_size: 50 }
+        Self {
+            force: false,
+            dry_run: false,
+            batch_size: 50,
+        }
     }
 }
 
@@ -59,7 +63,8 @@ impl ReindexService {
                 "SELECT id FROM projects WHERE name = ?1",
                 params![project_name],
                 |r| r.get(0),
-            ).map_err(|_| format!("project '{}' not found", project_name))?
+            )
+            .map_err(|_| format!("project '{}' not found", project_name))?
         };
 
         // 2. 대상 source_doc_id 목록 조회
@@ -96,14 +101,16 @@ impl ReindexService {
         // content_hash 맵 조회 (force=false 시 스킵 판단용)
         let hash_map: std::collections::HashMap<String, String> = if !options.force {
             let conn = self.conn.get().map_err(|e| e.to_string())?;
-            let mut stmt = conn.prepare(
-                "SELECT source_doc_id, content_hash FROM documents WHERE project_id = ?1"
-            ).map_err(|e| e.to_string())?;
-            let pairs: Vec<(String, String)> = stmt.query_map(params![project_id], |r: &rusqlite::Row<'_>| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            }).map_err(|e| e.to_string())?
-            .filter_map(|r| r.ok())
-            .collect();
+            let mut stmt = conn
+                .prepare("SELECT source_doc_id, content_hash FROM documents WHERE project_id = ?1")
+                .map_err(|e| e.to_string())?;
+            let pairs: Vec<(String, String)> = stmt
+                .query_map(params![project_id], |r: &rusqlite::Row<'_>| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })
+                .map_err(|e| e.to_string())?
+                .filter_map(|r| r.ok())
+                .collect();
             pairs.into_iter().collect()
         } else {
             std::collections::HashMap::new()
@@ -116,7 +123,8 @@ impl ReindexService {
                 "SELECT storage_strategy FROM projects WHERE id = ?1",
                 params![project_id],
                 |r| r.get(0),
-            ).unwrap_or_else(|_| "full".to_string())
+            )
+            .unwrap_or_else(|_| "full".to_string())
         };
 
         for chunk in targets.chunks(options.batch_size) {
@@ -145,9 +153,16 @@ impl ReindexService {
                     Ok((_title, _hash)) => {
                         let raw_doc = match self.load_raw_document(project_id, sid) {
                             Ok(d) => d,
-                            Err(e) => { errors.push(format!("load error for {}: {}", sid, e)); continue; }
+                            Err(e) => {
+                                errors.push(format!("load error for {}: {}", sid, e));
+                                continue;
+                            }
                         };
-                        match self.indexing.index_single_document(project_id, raw_doc, &strategy).await {
+                        match self
+                            .indexing
+                            .index_single_document(project_id, raw_doc, &strategy)
+                            .await
+                        {
                             Ok(_) => processed += 1,
                             Err(e) => errors.push(format!("reindex error for {}: {}", sid, e)),
                         }
@@ -157,7 +172,11 @@ impl ReindexService {
         }
 
         let duration_ms = start.elapsed().as_millis() as u64;
-        let status = if errors.is_empty() { "completed" } else { "completed_with_errors" };
+        let status = if errors.is_empty() {
+            "completed"
+        } else {
+            "completed_with_errors"
+        };
         self.record_history(HistoryEntry {
             project_id,
             scope: &scope,
@@ -178,21 +197,29 @@ impl ReindexService {
         })
     }
 
-    fn collect_targets(&self, project_id: i64, scope: &ReindexScope) -> Result<Vec<String>, String> {
+    fn collect_targets(
+        &self,
+        project_id: i64,
+        scope: &ReindexScope,
+    ) -> Result<Vec<String>, String> {
         let conn = self.conn.get().map_err(|e| e.to_string())?;
         match scope {
             ReindexScope::Full => {
-                let mut stmt = conn.prepare(
-                    "SELECT source_doc_id FROM documents WHERE project_id = ?1"
-                ).map_err(|e| e.to_string())?;
-                let ids: Result<Vec<_>, _> = stmt.query_map(params![project_id], |r: &rusqlite::Row<'_>| r.get(0))
+                let mut stmt = conn
+                    .prepare("SELECT source_doc_id FROM documents WHERE project_id = ?1")
+                    .map_err(|e| e.to_string())?;
+                let ids: Result<Vec<_>, _> = stmt
+                    .query_map(params![project_id], |r: &rusqlite::Row<'_>| r.get(0))
                     .map_err(|e| e.to_string())?
                     .collect::<Result<Vec<String>, _>>();
                 ids.map_err(|e| e.to_string())
             }
             ReindexScope::Document(sid) => Ok(vec![sid.clone()]),
             ReindexScope::Documents(sids) => Ok(sids.clone()),
-            ReindexScope::DateRange { created_after, created_before } => {
+            ReindexScope::DateRange {
+                created_after,
+                created_before,
+            } => {
                 let mut conditions = vec!["project_id = ?1".to_string()];
                 let mut param_idx = 2usize;
                 if created_after.is_some() {
@@ -206,12 +233,19 @@ impl ReindexService {
                     "SELECT source_doc_id FROM documents WHERE {}",
                     conditions.join(" AND ")
                 );
-                let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(project_id)];
-                if let Some(v) = created_after { params_vec.push(Box::new(*v)); }
-                if let Some(v) = created_before { params_vec.push(Box::new(*v)); }
-                let param_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+                let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> =
+                    vec![Box::new(project_id)];
+                if let Some(v) = created_after {
+                    params_vec.push(Box::new(*v));
+                }
+                if let Some(v) = created_before {
+                    params_vec.push(Box::new(*v));
+                }
+                let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+                    params_vec.iter().map(|p| p.as_ref()).collect();
                 let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-                let ids: Vec<String> = stmt.query_map(param_refs.as_slice(), |r: &rusqlite::Row<'_>| r.get(0))
+                let ids: Vec<String> = stmt
+                    .query_map(param_refs.as_slice(), |r: &rusqlite::Row<'_>| r.get(0))
                     .map_err(|e| e.to_string())?
                     .filter_map(|r| r.ok())
                     .collect();
@@ -220,9 +254,19 @@ impl ReindexService {
         }
     }
 
-    fn load_raw_document(&self, project_id: i64, sid: &str) -> Result<doxus_plugin_sdk::RawDocument, String> {
+    fn load_raw_document(
+        &self,
+        project_id: i64,
+        sid: &str,
+    ) -> Result<doxus_plugin_sdk::RawDocument, String> {
         let conn = self.conn.get().map_err(|e| e.to_string())?;
-        type RawDocData = (Option<String>, Option<String>, Option<i64>, Option<i64>, Option<String>);
+        type RawDocData = (
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+            Option<String>,
+        );
         let (title, url, created_at, updated_at, metadata_json): RawDocData = conn.query_row(
             "SELECT title, url, created_at, updated_at, metadata_json FROM documents WHERE project_id = ?1 AND source_doc_id = ?2",
             params![project_id, sid],
@@ -234,14 +278,21 @@ impl ReindexService {
             let mut stmt = conn.prepare(
                 "SELECT chunk_index, COALESCE(content, '') FROM chunks WHERE document_id = (SELECT id FROM documents WHERE project_id=?1 AND source_doc_id=?2) ORDER BY chunk_index"
             ).map_err(|e| e.to_string())?;
-            let rows: Vec<(i64, String)> = stmt.query_map(params![project_id, sid], |r: &rusqlite::Row<'_>| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            let rows: Vec<(i64, String)> = stmt
+                .query_map(params![project_id, sid], |r: &rusqlite::Row<'_>| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+                })
                 .map_err(|e| e.to_string())?
                 .filter_map(|r| r.ok())
                 .collect();
             rows
         };
         chunks_content.sort_by_key(|(idx, _)| *idx);
-        let content = chunks_content.into_iter().map(|(_, c)| c).collect::<Vec<_>>().join("\n");
+        let content = chunks_content
+            .into_iter()
+            .map(|(_, c)| c)
+            .collect::<Vec<_>>()
+            .join("\n");
 
         let metadata: std::collections::HashMap<String, serde_json::Value> = metadata_json
             .and_then(|s| serde_json::from_str(&s).ok())
@@ -263,10 +314,7 @@ impl ReindexService {
         })
     }
 
-    fn record_history(
-        &self,
-        entry: HistoryEntry,
-    ) -> Result<(), String> {
+    fn record_history(&self, entry: HistoryEntry) -> Result<(), String> {
         let scope_str = match entry.scope {
             ReindexScope::Full => "full".to_string(),
             ReindexScope::Document(s) => format!("document:{}", s),
@@ -327,7 +375,14 @@ pub async fn force_reindex_all_projects(
 
     for name in &project_names {
         if let Err(e) = service
-            .reindex(name, ReindexScope::Full, ReindexOptions { force: true, ..Default::default() })
+            .reindex(
+                name,
+                ReindexScope::Full,
+                ReindexOptions {
+                    force: true,
+                    ..Default::default()
+                },
+            )
             .await
         {
             tracing::error!(project = %name, error = %e, "force_reindex failed for project");
@@ -352,7 +407,7 @@ mod tests {
     use super::*;
     use crate::embedding::NoOpEmbedder;
     use crate::plugin::PluginManager;
-    use crate::search::{SearchEngine, SyncSearchEngine, DocMeta};
+    use crate::search::{DocMeta, SearchEngine, SyncSearchEngine};
     use std::path::PathBuf;
     use tempfile::TempDir;
 
@@ -361,7 +416,10 @@ mod tests {
         let db_path = temp_dir.path().join("test.db");
         let pool = crate::db::create_pool(&db_path).unwrap();
         let pm = Arc::new(PluginManager::new(PathBuf::from("/tmp")));
-        let engine = Arc::new(SearchEngine::with_embedder(pool.clone(), Arc::new(NoOpEmbedder)));
+        let engine = Arc::new(SearchEngine::with_embedder(
+            pool.clone(),
+            Arc::new(NoOpEmbedder),
+        ));
         let indexing = Arc::new(IndexingService::new(pool.clone(), pm, engine));
         (pool, indexing, temp_dir)
     }
@@ -373,14 +431,25 @@ mod tests {
              VALUES (?1, ?1, '/tmp', 'active', 'full', unixepoch(), unixepoch())",
             params![name],
         ).unwrap();
-        c.query_row("SELECT id FROM projects WHERE name=?1", params![name], |r| r.get::<_, i64>(0)).unwrap()
+        c.query_row(
+            "SELECT id FROM projects WHERE name=?1",
+            params![name],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
     }
 
     fn insert_doc(pool: &DbPool, pid: i64, sid: &str, title: &str, created_at: i64) {
         let c = pool.get().unwrap();
         let engine = SyncSearchEngine::from_conn(&c);
-        let meta = DocMeta { created_at: Some(created_at), updated_at: Some(created_at), ..Default::default() };
-        engine.index_document_with_meta(pid, sid, title, title, &meta, "full").unwrap();
+        let meta = DocMeta {
+            created_at: Some(created_at),
+            updated_at: Some(created_at),
+            ..Default::default()
+        };
+        engine
+            .index_document_with_meta(pid, sid, title, title, &meta, "full")
+            .unwrap();
     }
 
     #[tokio::test]
@@ -398,14 +467,18 @@ mod tests {
             ).unwrap();
         }
 
-        let count = force_reindex_all_projects(pool.clone(), indexing).await.unwrap();
+        let count = force_reindex_all_projects(pool.clone(), indexing)
+            .await
+            .unwrap();
         assert_eq!(count, 2, "active 프로젝트 2개만 재인덱싱 대상이어야 함");
     }
 
     #[tokio::test]
     async fn test_force_reindex_all_returns_zero_when_no_active() {
         let (pool, indexing, _temp) = make_service();
-        let count = force_reindex_all_projects(pool.clone(), indexing).await.unwrap();
+        let count = force_reindex_all_projects(pool.clone(), indexing)
+            .await
+            .unwrap();
         assert_eq!(count, 0, "active 프로젝트 없으면 0 반환");
     }
 
@@ -417,11 +490,17 @@ mod tests {
         insert_doc(&pool, pid, "doc2", "Document Two", 2000);
 
         let service = ReindexService::new(pool.clone(), indexing);
-        let result = service.reindex(
-            "proj",
-            ReindexScope::Full,
-            ReindexOptions { dry_run: true, ..Default::default() },
-        ).await.unwrap();
+        let result = service
+            .reindex(
+                "proj",
+                ReindexScope::Full,
+                ReindexOptions {
+                    dry_run: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
 
         assert_eq!(result.total, 2, "dry_run 대상 2개");
         assert_eq!(result.processed, 0, "dry_run 시 실제 처리 없음");
@@ -430,10 +509,13 @@ mod tests {
 
         // reindex_history에 기록됐는지 확인
         let c = pool.get().unwrap();
-        let count: i64 = c.query_row(
-            "SELECT COUNT(*) FROM reindex_history WHERE project_id=?1 AND status='dry_run'",
-            params![pid], |r| r.get(0)
-        ).unwrap();
+        let count: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM reindex_history WHERE project_id=?1 AND status='dry_run'",
+                params![pid],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 1, "dry_run 이력이 기록되어야 함");
     }
 
@@ -445,14 +527,24 @@ mod tests {
         insert_doc(&pool, pid, "beta", "Beta Doc", 2000);
 
         let service = ReindexService::new(pool.clone(), indexing);
-        let result = service.reindex(
-            "proj2",
-            ReindexScope::Document("alpha".to_string()),
-            ReindexOptions { force: true, ..Default::default() },
-        ).await.unwrap();
+        let result = service
+            .reindex(
+                "proj2",
+                ReindexScope::Document("alpha".to_string()),
+                ReindexOptions {
+                    force: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
 
         assert_eq!(result.total, 1, "단일 문서 대상");
-        assert_eq!(result.processed + result.errors.len(), 1, "처리 시도가 1건이어야 함");
+        assert_eq!(
+            result.processed + result.errors.len(),
+            1,
+            "처리 시도가 1건이어야 함"
+        );
     }
 
     #[tokio::test]
@@ -464,11 +556,20 @@ mod tests {
         insert_doc(&pool, pid, "new-doc", "New Doc", 5000);
 
         let service = ReindexService::new(pool.clone(), indexing);
-        let result = service.reindex(
-            "proj3",
-            ReindexScope::DateRange { created_after: Some(2000), created_before: Some(4000) },
-            ReindexOptions { dry_run: true, ..Default::default() },
-        ).await.unwrap();
+        let result = service
+            .reindex(
+                "proj3",
+                ReindexScope::DateRange {
+                    created_after: Some(2000),
+                    created_before: Some(4000),
+                },
+                ReindexOptions {
+                    dry_run: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
 
         assert_eq!(result.total, 1, "created_at=3000인 문서만 대상");
         assert_eq!(result.dry_run_targets.as_ref().unwrap()[0], "mid-doc");
@@ -481,17 +582,26 @@ mod tests {
         insert_doc(&pool, pid, "d1", "Doc 1", 1000);
 
         let service = ReindexService::new(pool.clone(), indexing);
-        service.reindex(
-            "proj4",
-            ReindexScope::Full,
-            ReindexOptions { force: true, ..Default::default() },
-        ).await.unwrap();
+        service
+            .reindex(
+                "proj4",
+                ReindexScope::Full,
+                ReindexOptions {
+                    force: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
 
         let c = pool.get().unwrap();
-        let count: i64 = c.query_row(
-            "SELECT COUNT(*) FROM reindex_history WHERE project_id=?1",
-            params![pid], |r| r.get(0),
-        ).unwrap();
+        let count: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM reindex_history WHERE project_id=?1",
+                params![pid],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 1, "reindex_history에 이력이 기록되어야 함");
     }
 
@@ -501,15 +611,22 @@ mod tests {
         let pid = insert_project(&pool, "history-proj");
         insert_doc(&pool, pid, "doc-a", "Doc A", 1000);
 
-        force_reindex_all_projects(pool.clone(), indexing).await.unwrap();
+        force_reindex_all_projects(pool.clone(), indexing)
+            .await
+            .unwrap();
 
         let c = pool.get().unwrap();
-        let count: i64 = c.query_row(
-            "SELECT COUNT(*) FROM reindex_history WHERE project_id = ?1",
-            params![pid],
-            |r| r.get(0),
-        ).unwrap();
-        assert!(count >= 1, "force_reindex_all_projects는 reindex_history에 이력을 남겨야 함");
+        let count: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM reindex_history WHERE project_id = ?1",
+                params![pid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            count >= 1,
+            "force_reindex_all_projects는 reindex_history에 이력을 남겨야 함"
+        );
     }
 
     #[tokio::test]
@@ -519,11 +636,17 @@ mod tests {
         insert_doc(&pool, pid, "stable", "Stable Doc", 1000);
 
         let service = ReindexService::new(pool.clone(), indexing);
-        let result = service.reindex(
-            "proj5",
-            ReindexScope::Full,
-            ReindexOptions { force: false, ..Default::default() },
-        ).await.unwrap();
+        let result = service
+            .reindex(
+                "proj5",
+                ReindexScope::Full,
+                ReindexOptions {
+                    force: false,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
 
         assert_eq!(result.skipped, 1, "hash 있는 문서는 스킵");
         assert_eq!(result.processed, 0);

@@ -9,9 +9,9 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use doxus_core::links::LinkResolver;
 use doxus_core::plugin::PluginManager;
 use doxus_core::sync::{SyncDb, SyncScheduler};
-use doxus_core::links::LinkResolver;
 use doxus_plugin_sdk::{FetchChangesOpts, PluginConfig, PluginError, PluginSecrets};
 use rand::Rng;
 
@@ -129,7 +129,9 @@ where
                 match handle_rate_limited(retry_after_secs, shutdown_rx).await {
                     RateLimitAction::Retry => continue,
                     RateLimitAction::Shutdown => {
-                        return Err(PluginError::Internal("shutdown during rate limit wait".into()));
+                        return Err(PluginError::Internal(
+                            "shutdown during rate limit wait".into(),
+                        ));
                     }
                 }
             }
@@ -156,20 +158,11 @@ where
 #[derive(Debug, Clone)]
 pub enum SyncEvent {
     /// Sync started for a source instance.
-    Progress {
-        instance_id: i64,
-        plugin_id: String,
-    },
+    Progress { instance_id: i64, plugin_id: String },
     /// Sync completed successfully.
-    Complete {
-        instance_id: i64,
-        updated: usize,
-    },
+    Complete { instance_id: i64, updated: usize },
     /// Sync failed after all retries.
-    Error {
-        instance_id: i64,
-        message: String,
-    },
+    Error { instance_id: i64, message: String },
 }
 
 /// Abstraction over "somewhere to send sync events".
@@ -203,7 +196,9 @@ impl SyncLoopHandle {
 
 pub fn spawn_sync_loop(
     conn: doxus_core::db::DbPool,
-    embedder: Arc<std::sync::Mutex<Option<Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>>>>,
+    embedder: Arc<
+        std::sync::Mutex<Option<Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>>>,
+    >,
     plugin_manager: Arc<PluginManager>,
     interval_secs: u64,
 ) -> SyncLoopHandle {
@@ -213,7 +208,9 @@ pub fn spawn_sync_loop(
 /// Spawn the background sync loop with an [`EventSink`] for UI notifications.
 pub fn spawn_sync_loop_with_sink<S: EventSink>(
     conn: doxus_core::db::DbPool,
-    embedder: Arc<std::sync::Mutex<Option<Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>>>>,
+    embedder: Arc<
+        std::sync::Mutex<Option<Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>>>,
+    >,
     plugin_manager: Arc<PluginManager>,
     interval_secs: u64,
     sink: S,
@@ -247,10 +244,17 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
             if due.is_empty() {
                 tracing::debug!("sync_loop: no instances due");
             } else {
-                tracing::info!(count = due.len(), "sync_loop: {} instance(s) due for sync", due.len());
+                tracing::info!(
+                    count = due.len(),
+                    "sync_loop: {} instance(s) due for sync",
+                    due.len()
+                );
                 for inst in due {
                     if tracker.should_skip(inst.id, Instant::now()) {
-                        tracing::debug!(instance_id = inst.id, "sync_loop: skipping instance (in backoff)");
+                        tracing::debug!(
+                            instance_id = inst.id,
+                            "sync_loop: skipping instance (in backoff)"
+                        );
                         continue;
                     }
 
@@ -261,33 +265,44 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
 
                     match plugin_manager.get_source(&inst.plugin_id) {
                         Some(mut source) => {
-                            let mut config_fields: std::collections::HashMap<String, serde_json::Value> =
-                                match serde_json::from_str(&inst.config_json) {
-                                    Ok(f) => f,
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            instance_id = inst.id,
-                                            plugin_id = %inst.plugin_id,
-                                            error = %e,
-                                            "sync_loop: malformed config_json, skipping instance"
-                                        );
-                                        sink.emit(SyncEvent::Error {
-                                            instance_id: inst.id,
-                                            message: format!("malformed config_json: {e}"),
-                                        });
-                                        continue;
-                                    }
-                                };
+                            let mut config_fields: std::collections::HashMap<
+                                String,
+                                serde_json::Value,
+                            > = match serde_json::from_str(&inst.config_json) {
+                                Ok(f) => f,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        instance_id = inst.id,
+                                        plugin_id = %inst.plugin_id,
+                                        error = %e,
+                                        "sync_loop: malformed config_json, skipping instance"
+                                    );
+                                    sink.emit(SyncEvent::Error {
+                                        instance_id: inst.id,
+                                        message: format!("malformed config_json: {e}"),
+                                    });
+                                    continue;
+                                }
+                            };
 
                             // Tauri 저장 형식 대응: "fields" 키가 있으면 내부 객체 사용
-                            if let Some(inner) = config_fields.get("fields").and_then(|v| v.as_object()) {
+                            if let Some(inner) =
+                                config_fields.get("fields").and_then(|v| v.as_object())
+                            {
                                 config_fields = inner.clone().into_iter().collect();
                             }
-                            let mut plugin_config = PluginConfig { fields: config_fields };
+                            let mut plugin_config = PluginConfig {
+                                fields: config_fields,
+                            };
                             let mut plugin_secrets = PluginSecrets::default();
-                            
+
                             // 키체인에서 인증 정보 로드하여 설정 및 시크릿에 주입
-                            doxus_core::auth::inject_keychain_auth(&inst.plugin_id, &mut plugin_config, &mut plugin_secrets).await;
+                            doxus_core::auth::inject_keychain_auth(
+                                &inst.plugin_id,
+                                &mut plugin_config,
+                                &mut plugin_secrets,
+                            )
+                            .await;
 
                             if let Err(e) = source.initialize(plugin_config, plugin_secrets).await {
                                 tracing::warn!(
@@ -334,11 +349,12 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
                                         }
                                     };
                                     if let Some(ref provider) = current_embedder {
-                                        let engine = doxus_core::search::SearchEngine::with_embedder(
-                                            conn.clone(),
-                                            Arc::clone(provider),
-                                        );
-                                        
+                                        let engine =
+                                            doxus_core::search::SearchEngine::with_embedder(
+                                                conn.clone(),
+                                                Arc::clone(provider),
+                                            );
+
                                         let mut current_batch = Vec::new();
                                         let mut current_chunk_count = 0;
                                         const MAX_CHUNKS_PER_BATCH: usize = 128;
@@ -346,12 +362,17 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
                                         for doc in &changeset.updated {
                                             // 텍스트 길이 기반으로 청크 수 대략 예측 (정밀하게는 SearchEngine 내부에서 수행)
                                             // 여기서는 보수적으로 문서 하나를 최소 1개 청크로 계산
-                                            let estimated_chunks = (doc.content.len() / 1000).max(1);
-                                            
+                                            let estimated_chunks =
+                                                (doc.content.len() / 1000).max(1);
+
                                             let req = doxus_core::search::BatchIndexingRequest {
                                                 project_id: inst.project_id,
                                                 source_doc_id: doc.id.0.clone(),
-                                                title: doc.title.as_deref().unwrap_or("Untitled").to_string(),
+                                                title: doc
+                                                    .title
+                                                    .as_deref()
+                                                    .unwrap_or("Untitled")
+                                                    .to_string(),
                                                 content: doc.content.clone(),
                                                 meta: doxus_core::search::DocMeta {
                                                     tags: doc.tags.clone(),
@@ -364,13 +385,24 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
                                                     metadata: doc.metadata.clone(),
                                                 },
                                             };
-                                            
+
                                             current_batch.push(req);
                                             current_chunk_count += estimated_chunks;
 
                                             if current_chunk_count >= MAX_CHUNKS_PER_BATCH {
-                                                let sync_start_time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().unwrap_or_default().as_secs() as i64;
-                                                if let Err(e) = engine.index_documents_batch_async(std::mem::take(&mut current_batch), sync_start_time).await {
+                                                let sync_start_time = std::time::SystemTime::now()
+                                                    .duration_since(std::time::UNIX_EPOCH)
+                                                    .ok()
+                                                    .unwrap_or_default()
+                                                    .as_secs()
+                                                    as i64;
+                                                if let Err(e) = engine
+                                                    .index_documents_batch_async(
+                                                        std::mem::take(&mut current_batch),
+                                                        sync_start_time,
+                                                    )
+                                                    .await
+                                                {
                                                     tracing::error!(instance_id = inst.id, error = %e, "sync_loop: batch indexing failed");
                                                 }
                                                 current_chunk_count = 0;
@@ -379,20 +411,36 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
 
                                         // 남은 배치 처리
                                         if !current_batch.is_empty() {
-                                            let sync_start_time = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().unwrap_or_default().as_secs() as i64;
-                                            if let Err(e) = engine.index_documents_batch_async(current_batch, sync_start_time).await {
+                                            let sync_start_time = std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .ok()
+                                                .unwrap_or_default()
+                                                .as_secs()
+                                                as i64;
+                                            if let Err(e) = engine
+                                                .index_documents_batch_async(
+                                                    current_batch,
+                                                    sync_start_time,
+                                                )
+                                                .await
+                                            {
                                                 tracing::error!(instance_id = inst.id, error = %e, "sync_loop: final batch indexing failed");
                                             }
                                         }
 
-
-                                        tracing::info!(instance_id = inst.id, count = updated_count, "sync_loop: all batches completed");
+                                        tracing::info!(
+                                            instance_id = inst.id,
+                                            count = updated_count,
+                                            "sync_loop: all batches completed"
+                                        );
                                     }
 
                                     match conn.get() {
                                         Ok(guard) => {
                                             let sync_db = SyncDb::new(&guard);
-                                            if let Err(e) = sync_db.mark_synced(inst.id, new_cursor.as_deref()) {
+                                            if let Err(e) =
+                                                sync_db.mark_synced(inst.id, new_cursor.as_deref())
+                                            {
                                                 tracing::warn!(
                                                     instance_id = inst.id,
                                                     error = %e,
@@ -420,11 +468,12 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
                                     });
                                 }
                                 Err(ref e) => {
-                                    let retry_after = if let PluginError::RateLimited { retry_after_secs } = e {
-                                        Some(*retry_after_secs)
-                                    } else {
-                                        None
-                                    };
+                                    let retry_after =
+                                        if let PluginError::RateLimited { retry_after_secs } = e {
+                                            Some(*retry_after_secs)
+                                        } else {
+                                            None
+                                        };
                                     tracker.record_failure(inst.id, retry_after, Instant::now());
                                     tracing::error!(
                                         instance_id = inst.id,
@@ -479,7 +528,10 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
                     }
                 }
                 if total_resolved > 0 {
-                    tracing::info!(resolved_count = total_resolved, "sync_loop: link resolution completed");
+                    tracing::info!(
+                        resolved_count = total_resolved,
+                        "sync_loop: link resolution completed"
+                    );
                 } else {
                     tracing::debug!("sync_loop: no new links to resolve");
                 }
@@ -499,17 +551,20 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
         tracing::info!("sync_loop: exited");
     });
 
-    SyncLoopHandle { shutdown_tx, join_handle }
+    SyncLoopHandle {
+        shutdown_tx,
+        join_handle,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::retry_tracker::{RetryTracker, MAX_RETRIES, MAX_BACKOFF_SECS};
-    use std::time::Instant;
+    use crate::retry_tracker::{RetryTracker, MAX_BACKOFF_SECS, MAX_RETRIES};
     use doxus_core::db;
     use rusqlite::Connection;
     use std::sync::{Arc, Mutex};
+    use std::time::Instant;
     use tempfile::TempDir;
 
     fn open_test_db() -> (doxus_core::db::DbPool, TempDir) {
@@ -615,7 +670,9 @@ mod tests {
         )
         .unwrap();
         let pid: i64 = conn
-            .query_row("SELECT last_insert_rowid()", [], |r: &rusqlite::Row| r.get(0))
+            .query_row("SELECT last_insert_rowid()", [], |r: &rusqlite::Row| {
+                r.get(0)
+            })
             .unwrap();
         conn.execute(
             "INSERT OR IGNORE INTO source_instances(plugin_id, project_id, name, config_json, created_at)
@@ -705,7 +762,9 @@ mod tests {
         )
         .unwrap();
         let pid: i64 = conn
-            .query_row("SELECT last_insert_rowid()", [], |r: &rusqlite::Row| r.get(0))
+            .query_row("SELECT last_insert_rowid()", [], |r: &rusqlite::Row| {
+                r.get(0)
+            })
             .unwrap();
         let config = format!(r#"{{"path":"{}"}}"#, vault_path);
         conn.execute(
@@ -714,8 +773,10 @@ mod tests {
             rusqlite::params![pid, config],
         )
         .unwrap();
-        conn.query_row("SELECT last_insert_rowid()", [], |r: &rusqlite::Row| r.get(0))
-            .unwrap()
+        conn.query_row("SELECT last_insert_rowid()", [], |r: &rusqlite::Row| {
+            r.get(0)
+        })
+        .unwrap()
     }
 
     #[tokio::test]
@@ -741,7 +802,12 @@ mod tests {
         let plugin_manager = Arc::new(pm);
 
         // interval_secs = 0 → always due
-        let handle = spawn_sync_loop(conn.clone(), Arc::new(Mutex::new(None)), Arc::clone(&plugin_manager), 0);
+        let handle = spawn_sync_loop(
+            conn.clone(),
+            Arc::new(Mutex::new(None)),
+            Arc::clone(&plugin_manager),
+            0,
+        );
         // Give the loop time to run at least one iteration
         tokio::time::sleep(Duration::from_millis(200)).await;
         handle.shutdown().await;

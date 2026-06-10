@@ -132,10 +132,7 @@ async fn exchange_code_no_refresh_token() {
         .await;
 
     let flow = OAuthFlow::new(make_config(format!("{}/oauth/token", server.uri())));
-    let token = flow
-        .exchange_code("code", "st", "st")
-        .await
-        .unwrap();
+    let token = flow.exchange_code("code", "st", "st").await.unwrap();
 
     assert_eq!(token.access_token, "access-only");
     assert!(token.refresh_token.is_none());
@@ -156,10 +153,7 @@ async fn exchange_code_no_expires_in() {
         .await;
 
     let flow = OAuthFlow::new(make_config(format!("{}/oauth/token", server.uri())));
-    let token = flow
-        .exchange_code("code", "st", "st")
-        .await
-        .unwrap();
+    let token = flow.exchange_code("code", "st", "st").await.unwrap();
 
     assert_eq!(token.access_token, "access-no-exp");
     assert!(token.expires_at.is_none());

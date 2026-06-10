@@ -1,9 +1,10 @@
 use anyhow::Result;
-use doxus_mcp::{http_server::build_router, sync_loop::spawn_sync_loop, McpRequest, McpResponse, McpServer};
+use doxus_mcp::{
+    http_server::build_router, sync_loop::spawn_sync_loop, McpRequest, McpResponse, McpServer,
+};
 use serde_json::json;
 use std::io::{BufRead, Write};
 use std::sync::Arc;
-
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -28,7 +29,7 @@ async fn main() -> Result<()> {
 
     // Main connection pool used by McpServer.
     let conn = doxus_core::db::create_pool(&db_path)?;
-    
+
     // Cleanup expired content cache on startup
     {
         // For ContentCache we need a temporary connection from pool
@@ -65,15 +66,19 @@ async fn main() -> Result<()> {
     });
     let plugin_manager = std::sync::Arc::new(plugin_manager);
 
-
-
     // Initialize with None to ensure fast handshake.
     let plugins_dir = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".doxus/plugins");
-    let server = McpServer::new(conn.clone(), db_path.clone(), None, Arc::clone(&plugin_manager), plugins_dir);
+    let server = McpServer::new(
+        conn.clone(),
+        db_path.clone(),
+        None,
+        Arc::clone(&plugin_manager),
+        plugins_dir,
+    );
     let embedder_handle = server.embedder_arc();
-    
+
     // Background thread to load default embedder (only if enabled via env)
     if std::env::var("DOXUS_ENABLE_ONNX").is_ok() {
         std::thread::spawn(move || {
@@ -86,11 +91,15 @@ async fn main() -> Result<()> {
                         tracing::info!("[MCP] Embedder load complete. Hybrid search enabled.");
                     }
                     Err(err) => {
-                        tracing::error!("[MCP] embedder mutex poisoned, cannot register embedder: {err}");
+                        tracing::error!(
+                            "[MCP] embedder mutex poisoned, cannot register embedder: {err}"
+                        );
                     }
                 }
             } else {
-                tracing::warn!("[MCP] No active embedding model available. Vector search disabled.");
+                tracing::warn!(
+                    "[MCP] No active embedding model available. Vector search disabled."
+                );
             }
         });
     } else {
@@ -99,7 +108,12 @@ async fn main() -> Result<()> {
 
     // Sync loop (only if enabled via env)
     let sync_handle_opt = if std::env::var("DOXUS_ENABLE_SYNC").is_ok() {
-        Some(spawn_sync_loop(sync_conn, server.embedder_arc(), Arc::clone(&plugin_manager), interval_secs))
+        Some(spawn_sync_loop(
+            sync_conn,
+            server.embedder_arc(),
+            Arc::clone(&plugin_manager),
+            interval_secs,
+        ))
     } else {
         tracing::info!("[MCP] Background sync disabled in sidecar.");
         None
@@ -121,8 +135,7 @@ async fn main() -> Result<()> {
     if let Some(port) = http_port {
         let server = Arc::new(server);
         // Bind early so we can report the actual port before blocking on serve.
-        let listener =
-            tokio::net::TcpListener::bind(format!("127.0.0.1:{port}")).await?;
+        let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}")).await?;
         let actual_port = listener.local_addr()?.port();
 
         // Print PORT= line so callers (e.g. Tauri) can discover the bound port.

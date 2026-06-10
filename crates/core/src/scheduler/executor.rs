@@ -15,35 +15,65 @@ pub async fn execute_system(
         "full_index" | "incremental_sync" => {
             let project = config["project"].as_str().unwrap_or("");
             if project.is_empty() {
-                return JobResult { success: false, message: "project not specified in config".into() };
+                return JobResult {
+                    success: false,
+                    message: "project not specified in config".into(),
+                };
             }
-            
+
             let is_full = action == "full_index";
             match indexer.index_project(project, is_full).await {
-                Ok(n) => JobResult { success: true, message: format!("{}: {} docs processed", project, n) },
-                Err(e) => JobResult { success: false, message: e.to_string() },
+                Ok(n) => JobResult {
+                    success: true,
+                    message: format!("{}: {} docs processed", project, n),
+                },
+                Err(e) => JobResult {
+                    success: false,
+                    message: e.to_string(),
+                },
             }
         }
         "freshness_batch" => {
             let service = crate::freshness::db::FreshnessService::new(indexer.conn().clone());
             match service.recalculate_all() {
-                Ok(n) => JobResult { success: true, message: format!("Recalculated freshness for {n} documents") },
-                Err(e) => JobResult { success: false, message: e.to_string() },
+                Ok(n) => JobResult {
+                    success: true,
+                    message: format!("Recalculated freshness for {n} documents"),
+                },
+                Err(e) => JobResult {
+                    success: false,
+                    message: e.to_string(),
+                },
             }
         }
         "co_refs_prune" => {
             let conn = match indexer.conn().get() {
                 Ok(c) => c,
-                Err(e) => return JobResult { success: false, message: e.to_string() },
+                Err(e) => {
+                    return JobResult {
+                        success: false,
+                        message: e.to_string(),
+                    }
+                }
             };
             let limit_time = chrono::Utc::now().timestamp() - 30 * 86400;
-            let sql = "DELETE FROM document_co_refs WHERE co_occurrence_count < 3 AND last_accessed < ?1";
+            let sql =
+                "DELETE FROM document_co_refs WHERE co_occurrence_count < 3 AND last_accessed < ?1";
             match conn.execute(sql, rusqlite::params![limit_time]) {
-                Ok(n) => JobResult { success: true, message: format!("Pruned {n} document co-occurrence links") },
-                Err(e) => JobResult { success: false, message: e.to_string() },
+                Ok(n) => JobResult {
+                    success: true,
+                    message: format!("Pruned {n} document co-occurrence links"),
+                },
+                Err(e) => JobResult {
+                    success: false,
+                    message: e.to_string(),
+                },
             }
         }
-        _ => JobResult { success: false, message: format!("unknown system action: {action}") }
+        _ => JobResult {
+            success: false,
+            message: format!("unknown system action: {action}"),
+        },
     }
 }
 
@@ -59,11 +89,19 @@ pub async fn execute_agent(
             project_name.unwrap_or("all")
         ),
         "custom_prompt" => config["prompt"].as_str().unwrap_or("").to_string(),
-        _ => return JobResult { success: false, message: format!("unknown agent action: {action}") }
+        _ => {
+            return JobResult {
+                success: false,
+                message: format!("unknown agent action: {action}"),
+            }
+        }
     };
-    
+
     // (Phase 2): Send to sidecar
-    JobResult { success: true, message: format!("agent prompt queued: {:.100}", prompt) }
+    JobResult {
+        success: true,
+        message: format!("agent prompt queued: {:.100}", prompt),
+    }
 }
 
 #[cfg(test)]
@@ -80,7 +118,7 @@ mod tests {
         let res2 = execute_agent("unknown", &json!({}), None).await;
         assert!(!res2.success);
     }
-    
+
     #[tokio::test]
     async fn test_agent_custom_prompt() {
         let res = execute_agent("custom_prompt", &json!({"prompt": "Hello"}), None).await;

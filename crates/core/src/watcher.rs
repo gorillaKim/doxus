@@ -1,13 +1,13 @@
+use crate::indexing::IndexingService;
+use crate::sync_manager::SyncTrigger;
+use doxus_plugin_sdk::SyncPolicy;
+use notify::{RecommendedWatcher, RecursiveMode};
+use notify_debouncer_mini::{new_debouncer, DebounceEventResult, Debouncer};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use notify::{RecursiveMode, RecommendedWatcher};
-use notify_debouncer_mini::{new_debouncer, Debouncer, DebounceEventResult};
 use tokio::sync::{mpsc, Mutex};
-use crate::indexing::IndexingService;
-use crate::sync_manager::SyncTrigger;
-use doxus_plugin_sdk::SyncPolicy;
 
 pub struct WatcherManager {
     indexing_service: Arc<IndexingService>,
@@ -25,47 +25,64 @@ impl WatcherManager {
     }
 
     pub async fn start_watching(&self, project_name: &str) -> Result<(), String> {
-        let policy = self.indexing_service.get_project_policy(project_name).await
+        let policy = self
+            .indexing_service
+            .get_project_policy(project_name)
+            .await
             .map_err(|e| format!("Failed to get policy: {}", e))?;
 
         if let SyncPolicy::Realtime(opts) = policy {
             let root_path = PathBuf::from(&opts.root);
             if !root_path.exists() {
-                return Err(format!("Watchable root does not exist: {}", opts.root.display()));
+                return Err(format!(
+                    "Watchable root does not exist: {}",
+                    opts.root.display()
+                ));
             }
 
             let tx = self.sync_tx.clone();
             let p_name = project_name.to_string();
 
-            let mut debouncer = new_debouncer(Duration::from_millis(500), move |res: DebounceEventResult| {
-                match res {
-                    Ok(events) => {
-                        for event in events {
-                            // 무시 필터링 적용
-                            if should_ignore(&event.path) {
-                                continue;
-                            }
+            let mut debouncer = new_debouncer(
+                Duration::from_millis(500),
+                move |res: DebounceEventResult| {
+                    match res {
+                        Ok(events) => {
+                            for event in events {
+                                // 무시 필터링 적용
+                                if should_ignore(&event.path) {
+                                    continue;
+                                }
 
-                            let trigger = SyncTrigger::FileEvent {
-                                project_name: p_name.clone(),
-                                path: event.path,
-                            };
-                            let _ = tx.blocking_send(trigger);
+                                let trigger = SyncTrigger::FileEvent {
+                                    project_name: p_name.clone(),
+                                    path: event.path,
+                                };
+                                let _ = tx.blocking_send(trigger);
+                            }
+                        }
+                        Err(e) => {
+                            crate::log_d!("watcher", "Watcher error: {:?}", e);
                         }
                     }
-                    Err(e) => {
-                        crate::log_d!("watcher", "Watcher error: {:?}", e);
-                    }
-                }
-            }).map_err(|e| format!("Failed to create watcher: {}", e))?;
+                },
+            )
+            .map_err(|e| format!("Failed to create watcher: {}", e))?;
 
-            debouncer.watcher().watch(&root_path, RecursiveMode::Recursive)
+            debouncer
+                .watcher()
+                .watch(&root_path, RecursiveMode::Recursive)
                 .map_err(|e| format!("Failed to start watching: {}", e))?;
 
             let mut watchers = self.watchers.lock().await;
             watchers.insert(project_name.to_string(), debouncer);
-            
-            crate::log_d!("watcher", "Started watching project: {} at {}", project_name, opts.root.display());
+
+            crate::log_d!(
+                "watcher",
+                "Started watching project: {} at {}",
+                project_name,
+                opts.root.display()
+            );
         }
 
         Ok(())
@@ -78,7 +95,9 @@ impl WatcherManager {
     }
 
     pub async fn restart_all(&self) -> Result<(), String> {
-        let projects = self.indexing_service.list_active_projects()
+        let projects = self
+            .indexing_service
+            .list_active_projects()
             .map_err(|e| format!("Failed to list active projects: {}", e))?;
 
         for project_name in projects {
@@ -93,7 +112,7 @@ fn should_ignore(path: &std::path::Path) -> bool {
     let components = path.components();
     for component in components {
         let name = component.as_os_str().to_string_lossy();
-        
+
         // 1. 숨김 디렉토리/파일 무시 (.git, .obsidian, .doxus, .claude 등)
         if name.starts_with('.') && name != "." && name != ".." {
             return true;
@@ -142,7 +161,9 @@ mod tests {
 
     #[test]
     fn should_ignore_node_modules() {
-        assert!(should_ignore(Path::new("/project/node_modules/pkg/index.js")));
+        assert!(should_ignore(Path::new(
+            "/project/node_modules/pkg/index.js"
+        )));
     }
 
     #[test]
@@ -202,13 +223,23 @@ mod tests {
         assert!(!should_ignore(Path::new("/vault/./notes.md")));
     }
 
-    async fn setup_watcher() -> (Arc<WatcherManager>, mpsc::Receiver<SyncTrigger>, TempDir, crate::db::DbPool, TempDir) {
+    async fn setup_watcher() -> (
+        Arc<WatcherManager>,
+        mpsc::Receiver<SyncTrigger>,
+        TempDir,
+        crate::db::DbPool,
+        TempDir,
+    ) {
         let db_tmp = TempDir::new().unwrap();
         let db_path = db_tmp.path().join("test.db");
         let pool = crate::db::create_pool(&db_path).unwrap();
         let tmp = TempDir::new().unwrap();
         let pm = Arc::new(PluginManager::new(std::path::PathBuf::from("/tmp")));
-        let engine = Arc::new(SearchEngine::with_embedder(pool.clone(), Arc::new(crate::embedding::NoOpEmbedder) as Arc<dyn crate::embedding::EmbeddingProvider + Send + Sync>));
+        let engine = Arc::new(SearchEngine::with_embedder(
+            pool.clone(),
+            Arc::new(crate::embedding::NoOpEmbedder)
+                as Arc<dyn crate::embedding::EmbeddingProvider + Send + Sync>,
+        ));
         let indexer = Arc::new(IndexingService::new(pool.clone(), pm, engine));
         let (tx, rx) = mpsc::channel(32);
         let wm = Arc::new(WatcherManager::new(indexer, tx));
@@ -247,7 +278,9 @@ mod tests {
         std::fs::write(&valid_md, "hello").unwrap();
 
         // 트리거 확인: 숨김/DB 파일에 대해서는 트리거가 발생하지 않고, valid.md에 대해서만 한 번 발생해야 함
-        let trigger = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap();
+        let trigger = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap();
         assert!(trigger.is_some());
         if let Some(SyncTrigger::FileEvent { path, .. }) = trigger {
             assert!(path.to_string_lossy().contains("valid.md"));

@@ -66,7 +66,9 @@ pub async fn dispatch_tool(server: &McpServer, name: &str, id: Value, args: &Val
 
         // ── Freshness ─────────────────────────────────────────────────────
         "doxus_get_freshness_report" => tools::freshness::get_freshness_report(server, id, args),
-        "doxus_update_freshness_config" => tools::freshness::update_freshness_config(server, id, args),
+        "doxus_update_freshness_config" => {
+            tools::freshness::update_freshness_config(server, id, args)
+        }
 
         // ── Graph ─────────────────────────────────────────────────────────
         "doxus_get_backlinks" => tools::graph::get_backlinks(server, id, args),
@@ -83,7 +85,6 @@ pub async fn dispatch_tool(server: &McpServer, name: &str, id: Value, args: &Val
         "doxus_plugin_status" => tools::plugin::status(server, id, args),
         "doxus_plugin_logs" => tools::plugin::logs(server, id, args),
         "doxus_plugin_info" => tools::plugin::info(server, id, args),
-
 
         // ── Reindex ───────────────────────────────────────────────────────
         "doxus_reindex_documents" => tools::reindex::reindex_documents(server, id, args).await,

@@ -21,7 +21,10 @@ pub struct AgentManager {
 
 impl AgentManager {
     pub fn new(sidecar_path: std::path::PathBuf) -> Self {
-        Self { sidecar_path, process: None }
+        Self {
+            sidecar_path,
+            process: None,
+        }
     }
 
     /// Start the Node.js sidecar process.

@@ -1,8 +1,8 @@
-use std::fs::File;
-use std::path::Path;
-use memmap2::Mmap;
 use aho_corasick::{AhoCorasick, MatchKind};
 use anyhow::Result;
+use memmap2::Mmap;
+use std::fs::File;
+use std::path::Path;
 
 /// 고성능 하이라이터: 원본 파일 또는 텍스트에서 검색어 조각을 추출하고 하이라이팅 함.
 pub struct HighlightingResult {
@@ -21,7 +21,7 @@ impl Highlighter {
             .ascii_case_insensitive(true)
             .build(keywords)
             .map_err(|e| anyhow::anyhow!("failed to build AhoCorasick: {}", e))?;
-        
+
         Ok(Self { ac })
     }
 
@@ -63,7 +63,7 @@ impl Highlighter {
 
             // 매치 이전 텍스트 추가
             result.push_str(&text[last_match_end..start]);
-            
+
             // 하이라이트 태그 삽입
             result.push_str("<b>");
             result.push_str(&text[start..end]);
@@ -111,7 +111,10 @@ mod tests {
     fn test_basic_highlighting() {
         let hl = Highlighter::new(&vec!["rust".to_string(), "highlighter".to_string()]).unwrap();
         let res = hl.highlight_text("This is a rust highlighter test.");
-        assert_eq!(res.snippet, "This is a <b>rust</b> <b>highlighter</b> test.");
+        assert_eq!(
+            res.snippet,
+            "This is a <b>rust</b> <b>highlighter</b> test."
+        );
         assert_eq!(res.matches_found, 2);
     }
 

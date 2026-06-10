@@ -69,10 +69,13 @@ impl RetryTracker {
         retry_after_secs: Option<u64>,
         now: std::time::Instant,
     ) {
-        let state = self.states.entry(instance_id).or_insert(InstanceRetryState {
-            retry_count: 0,
-            next_retry_at: None,
-        });
+        let state = self
+            .states
+            .entry(instance_id)
+            .or_insert(InstanceRetryState {
+                retry_count: 0,
+                next_retry_at: None,
+            });
         let backoff = match retry_after_secs {
             Some(s) => std::time::Duration::from_secs(s.min(MAX_BACKOFF_SECS)),
             None => compute_backoff(state.retry_count, 10, MAX_BACKOFF_SECS),

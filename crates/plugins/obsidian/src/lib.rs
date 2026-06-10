@@ -7,8 +7,6 @@ use doxus_plugin_sdk::{
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-
-
 /// Parse tags from YAML frontmatter and inline #hashtags.
 fn parse_tags(content: &str) -> Vec<String> {
     let mut tags: Vec<String> = Vec::new();
@@ -76,38 +74,50 @@ fn parse_tags(content: &str) -> Vec<String> {
 }
 
 /// Extract `aliases:` and `created:` / `date:` from YAML frontmatter.
-fn parse_frontmatter_meta(fm: &str) -> (Vec<String>, Option<i64>, Option<String>, std::collections::HashMap<String, serde_json::Value>) {
+fn parse_frontmatter_meta(
+    fm: &str,
+) -> (
+    Vec<String>,
+    Option<i64>,
+    Option<String>,
+    std::collections::HashMap<String, serde_json::Value>,
+) {
     let mut aliases: Vec<String> = Vec::new();
     let mut created_at: Option<i64> = None;
     let mut title: Option<String> = None;
     let mut metadata = std::collections::HashMap::new();
-    
+
     let mut lines = fm.lines().peekable();
     while let Some(line) = lines.next() {
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') { continue; }
-        
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
         if let Some((key, value)) = trimmed.split_once(':') {
             let key = key.trim().to_string();
             let raw_value = value.trim();
-            
+
             let parsed_value = if raw_value.starts_with('[') {
                 // inline list: [a, b]
                 let inner = raw_value.trim_start_matches('[').trim_end_matches(']');
-                let items: Vec<serde_json::Value> = inner.split(',')
+                let items: Vec<serde_json::Value> = inner
+                    .split(',')
                     .map(|s| {
                         let val = s.trim().trim_matches('"').trim_matches('\'');
                         serde_json::Value::String(val.to_string())
                     })
                     .filter(|v| v.as_str().map(|s| !s.is_empty()).unwrap_or(false))
                     .collect();
-                
+
                 if key == "aliases" {
                     for item in &items {
-                        if let Some(s) = item.as_str() { aliases.push(s.to_string()); }
+                        if let Some(s) = item.as_str() {
+                            aliases.push(s.to_string());
+                        }
                     }
                 }
-                
+
                 serde_json::Value::Array(items)
             } else if raw_value.is_empty() {
                 // check for block list:
@@ -116,11 +126,19 @@ fn parse_frontmatter_meta(fm: &str) -> (Vec<String>, Option<i64>, Option<String>
                 while let Some(next) = lines.peek() {
                     let nt = next.trim();
                     if let Some(item_str) = nt.strip_prefix("- ") {
-                        let val = item_str.trim().trim_matches('"').trim_matches('\'').to_string();
+                        let val = item_str
+                            .trim()
+                            .trim_matches('"')
+                            .trim_matches('\'')
+                            .to_string();
                         items.push(serde_json::Value::String(val.clone()));
-                        if key == "aliases" { aliases.push(val); }
+                        if key == "aliases" {
+                            aliases.push(val);
+                        }
                         lines.next();
-                    } else { break; }
+                    } else {
+                        break;
+                    }
                 }
                 if !items.is_empty() {
                     serde_json::Value::Array(items)
@@ -130,40 +148,51 @@ fn parse_frontmatter_meta(fm: &str) -> (Vec<String>, Option<i64>, Option<String>
             } else {
                 // single value
                 let val = raw_value.trim_matches('"').trim_matches('\'');
-                
+
                 if key == "aliases" {
                     aliases.push(val.to_string());
                 }
-                
+
                 // date/created extraction logic
-                if (key == "created" || key == "date")
-                    && val.len() >= 10 {
-                        let date_part = &val[..10];
-                        let parts: Vec<&str> = date_part.split('-').collect();
-                        if parts.len() == 3 {
-                            if let (Ok(y), Ok(m), Ok(d)) = (
-                                parts[0].parse::<i64>(),
-                                parts[1].parse::<u32>(),
-                                parts[2].parse::<u32>(),
-                            ) {
-                                let days = (y - 1970) * 365 + (y - 1969) / 4
-                                    + match m {
-                                        1 => 0, 2 => 31, 3 => 59, 4 => 90, 5 => 120, 6 => 151,
-                                        7 => 181, 8 => 212, 9 => 243, 10 => 273, 11 => 304, _ => 334,
-                                    } as i64
-                                    + d as i64 - 1;
-                                created_at = Some(days * 86400);
-                            }
+                if (key == "created" || key == "date") && val.len() >= 10 {
+                    let date_part = &val[..10];
+                    let parts: Vec<&str> = date_part.split('-').collect();
+                    if parts.len() == 3 {
+                        if let (Ok(y), Ok(m), Ok(d)) = (
+                            parts[0].parse::<i64>(),
+                            parts[1].parse::<u32>(),
+                            parts[2].parse::<u32>(),
+                        ) {
+                            let days = (y - 1970) * 365
+                                + (y - 1969) / 4
+                                + match m {
+                                    1 => 0,
+                                    2 => 31,
+                                    3 => 59,
+                                    4 => 90,
+                                    5 => 120,
+                                    6 => 151,
+                                    7 => 181,
+                                    8 => 212,
+                                    9 => 243,
+                                    10 => 273,
+                                    11 => 304,
+                                    _ => 334,
+                                } as i64
+                                + d as i64
+                                - 1;
+                            created_at = Some(days * 86400);
                         }
                     }
+                }
 
                 if key == "title" {
                     title = Some(val.to_string());
                 }
-                
+
                 serde_json::Value::String(val.to_string())
             };
-            
+
             if parsed_value != serde_json::Value::Null {
                 metadata.insert(key, parsed_value);
             }
@@ -239,15 +268,23 @@ impl ObsidianPlugin {
     /// 1. Frontmatter 'title' property
     /// 2. First Markdown H1-H6 header
     /// 3. File stem (filename without extension)
-    fn extract_title(&self, content: &str, fm_title: Option<String>, file_path: &std::path::Path) -> Option<String> {
-        let first_header = content.lines()
+    fn extract_title(
+        &self,
+        content: &str,
+        fm_title: Option<String>,
+        file_path: &std::path::Path,
+    ) -> Option<String> {
+        let first_header = content
+            .lines()
             .find(|l| l.trim().starts_with('#'))
             .map(|l| l.trim().trim_start_matches('#').trim().to_string());
 
-        fm_title.filter(|s| !s.trim().is_empty())
+        fm_title
+            .filter(|s| !s.trim().is_empty())
             .or(first_header.filter(|s| !s.trim().is_empty()))
             .or_else(|| {
-                file_path.file_stem()
+                file_path
+                    .file_stem()
                     .map(|s| s.to_string_lossy().to_string())
                     .filter(|s| !s.trim().is_empty())
             })
@@ -293,16 +330,17 @@ impl ObsidianPlugin {
         // 1. Try to find title in frontmatter
         // 2. Try to find first markdown header (any level)
         // 3. Fallback to file stem
-        let (aliases, fm_created_at, fm_title, mut metadata) = if let Some(rest) = content.strip_prefix("---") {
-            let rest = rest.strip_prefix('\n').unwrap_or(rest);
-            if let Some(end) = rest.find("\n---") {
-                parse_frontmatter_meta(&rest[..end])
+        let (aliases, fm_created_at, fm_title, mut metadata) =
+            if let Some(rest) = content.strip_prefix("---") {
+                let rest = rest.strip_prefix('\n').unwrap_or(rest);
+                if let Some(end) = rest.find("\n---") {
+                    parse_frontmatter_meta(&rest[..end])
+                } else {
+                    (vec![], None, None, Default::default())
+                }
             } else {
                 (vec![], None, None, Default::default())
-            }
-        } else {
-            (vec![], None, None, Default::default())
-        };
+            };
 
         let title = self.extract_title(&content, fm_title, file_path);
 
@@ -312,11 +350,19 @@ impl ObsidianPlugin {
         let updated_at = file_meta
             .as_ref()
             .and_then(|m| m.modified().ok())
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs() as i64));
+            .and_then(|t| {
+                t.duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_secs() as i64)
+            });
         let fs_created_at = file_meta
             .as_ref()
             .and_then(|m| m.created().ok())
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs() as i64));
+            .and_then(|t| {
+                t.duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| d.as_secs() as i64)
+            });
 
         let created_at = fm_created_at.or(fs_created_at);
 
@@ -324,7 +370,11 @@ impl ObsidianPlugin {
             metadata.insert(
                 "links".into(),
                 serde_json::Value::Array(
-                    links.iter().cloned().map(serde_json::Value::String).collect(),
+                    links
+                        .iter()
+                        .cloned()
+                        .map(serde_json::Value::String)
+                        .collect(),
                 ),
             );
         }
@@ -365,7 +415,11 @@ impl DocSource for ObsidianPlugin {
             native_search: false,
             sync_policy: doxus_plugin_sdk::SyncPolicy::Realtime(doxus_plugin_sdk::WatchOptions {
                 root: self.vault_path.clone().unwrap_or_default(),
-                ignore_patterns: vec![".git".to_string(), ".obsidian".to_string(), "node_modules".to_string()],
+                ignore_patterns: vec![
+                    ".git".to_string(),
+                    ".obsidian".to_string(),
+                    "node_modules".to_string(),
+                ],
                 extensions: vec!["md".to_string(), "txt".to_string()],
             }),
         }
@@ -406,7 +460,7 @@ impl DocSource for ObsidianPlugin {
         let (page_paths, total, offset, page_size) = {
             let mut cache = self.cached_paths.lock().unwrap();
             let now = std::time::Instant::now();
-            
+
             // Validate or refresh cache
             let paths = if let Some((ts, ref paths)) = *cache {
                 if now.duration_since(ts) < std::time::Duration::from_secs(300) {
@@ -429,15 +483,12 @@ impl DocSource for ObsidianPlugin {
                 None => 0,
             };
 
-            let p_paths: Vec<PathBuf> = paths.iter()
-                .skip(offset)
-                .take(page_size)
-                .cloned()
-                .collect();
-                
+            let p_paths: Vec<PathBuf> =
+                paths.iter().skip(offset).take(page_size).cloned().collect();
+
             (p_paths, total, offset, page_size)
         };
-        
+
         let mut documents = Vec::new();
         for file_path in page_paths {
             let rel_path = file_path
@@ -450,10 +501,15 @@ impl DocSource for ObsidianPlugin {
             let updated_at = file_meta
                 .as_ref()
                 .and_then(|m| m.modified().ok())
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs() as i64));
-            
+                .and_then(|t| {
+                    t.duration_since(std::time::UNIX_EPOCH)
+                        .ok()
+                        .map(|d| d.as_secs() as i64)
+                });
+
             // For listing, we use filename as title to avoid reading file body
-            let title = file_path.file_stem()
+            let title = file_path
+                .file_stem()
                 .map(|s| s.to_string_lossy().to_string());
 
             documents.push(RawDocument {
@@ -488,26 +544,28 @@ impl DocSource for ObsidianPlugin {
     async fn fetch_document(&self, id: &SourceDocId) -> Result<RawDocument, PluginError> {
         let vault = self.vault()?;
         let path = vault.join(&id.0);
-        
-        let file_meta = path.metadata()
+
+        let file_meta = path
+            .metadata()
             .map_err(|e| PluginError::NotFound(format!("{}: {e}", id.0)))?;
-        
+
         let content = std::fs::read_to_string(&path)
             .map_err(|e| PluginError::Internal(format!("{}: {e}", id.0)))?;
 
         // 1. Try to find title in frontmatter
         // 2. Try to find first markdown header (any level)
         // 3. Fallback to file stem
-        let (aliases, fm_created_at, fm_title, metadata) = if let Some(rest) = content.strip_prefix("---") {
-            let rest = rest.strip_prefix('\n').unwrap_or(rest);
-            if let Some(end) = rest.find("\n---") {
-                parse_frontmatter_meta(&rest[..end])
+        let (aliases, fm_created_at, fm_title, metadata) =
+            if let Some(rest) = content.strip_prefix("---") {
+                let rest = rest.strip_prefix('\n').unwrap_or(rest);
+                if let Some(end) = rest.find("\n---") {
+                    parse_frontmatter_meta(&rest[..end])
+                } else {
+                    (vec![], None, None, Default::default())
+                }
             } else {
                 (vec![], None, None, Default::default())
-            }
-        } else {
-            (vec![], None, None, Default::default())
-        };
+            };
 
         let title = self.extract_title(&content, fm_title, &path);
 
@@ -517,8 +575,11 @@ impl DocSource for ObsidianPlugin {
             .filter(|l| l != &id.0)
             .collect();
 
-        let updated_at = file_meta.modified().ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs() as i64));
+        let updated_at = file_meta.modified().ok().and_then(|t| {
+            t.duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_secs() as i64)
+        });
 
         Ok(RawDocument {
             id: id.clone(),
@@ -538,10 +599,16 @@ impl DocSource for ObsidianPlugin {
 
     async fn health_check(&self) -> HealthStatus {
         match &self.vault_path {
-            None => HealthStatus { healthy: false, message: Some("not initialized".into()) },
+            None => HealthStatus {
+                healthy: false,
+                message: Some("not initialized".into()),
+            },
             Some(path) => {
                 if path.exists() {
-                    HealthStatus { healthy: true, message: None }
+                    HealthStatus {
+                        healthy: true,
+                        message: None,
+                    }
                 } else {
                     HealthStatus {
                         healthy: false,
@@ -564,11 +631,11 @@ impl DocSource for ObsidianPlugin {
         metadata: Option<&HashMap<String, serde_json::Value>>,
     ) -> Result<SourceDocId, PluginError> {
         let vault = self.vault()?;
-        
+
         // 1. Standardize hierarchical path using SDK utility
         let segments = doxus_plugin_sdk::path_utils::parse_hierarchical_path(folder, title)?;
         let folder_segments = if segments.len() > 1 {
-            &segments[..segments.len()-1]
+            &segments[..segments.len() - 1]
         } else {
             &[]
         };
@@ -579,7 +646,7 @@ impl DocSource for ObsidianPlugin {
         for segment in folder_segments {
             target_dir = target_dir.join(segment);
         }
-        
+
         if !target_dir.exists() {
             std::fs::create_dir_all(&target_dir)
                 .map_err(|e| PluginError::Internal(format!("Failed to create directory: {}", e)))?;
@@ -593,11 +660,19 @@ impl DocSource for ObsidianPlugin {
         loop {
             attempts += 1;
             if attempts > 10 {
-                return Err(PluginError::Internal(format!("Failed to find unique filename for '{}' after 10 attempts", title)));
+                return Err(PluginError::Internal(format!(
+                    "Failed to find unique filename for '{}' after 10 attempts",
+                    title
+                )));
             }
 
             // Sanitize title for filesystem
-            let safe_title = current_title.replace(|c: char| !c.is_alphanumeric() && c != ' ' && c != '-' && c != '_' && c != '(' && c != ')', "");
+            let safe_title = current_title.replace(
+                |c: char| {
+                    !c.is_alphanumeric() && c != ' ' && c != '-' && c != '_' && c != '(' && c != ')'
+                },
+                "",
+            );
             let filename = format!("{}.md", safe_title.trim());
             let path = target_dir.join(&filename);
 
@@ -619,8 +694,13 @@ impl DocSource for ObsidianPlugin {
                     let val_str = match val {
                         serde_json::Value::String(s) => s.clone(),
                         serde_json::Value::Array(arr) => {
-                            let items: Vec<String> = arr.iter()
-                                .map(|v| v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string()))
+                            let items: Vec<String> = arr
+                                .iter()
+                                .map(|v| {
+                                    v.as_str()
+                                        .map(|s| s.to_string())
+                                        .unwrap_or_else(|| v.to_string())
+                                })
                                 .collect();
                             format!("\n  - {}", items.join("\n  - "))
                         }
@@ -637,7 +717,8 @@ impl DocSource for ObsidianPlugin {
             content.to_string()
         };
 
-        std::fs::write(&final_path, final_content).map_err(|e| PluginError::Internal(e.to_string()))?;
+        std::fs::write(&final_path, final_content)
+            .map_err(|e| PluginError::Internal(e.to_string()))?;
 
         let rel_path = final_path.strip_prefix(vault).unwrap_or(&final_path);
         Ok(SourceDocId(rel_path.to_string_lossy().to_string()))
@@ -656,8 +737,8 @@ impl DocSource for ObsidianPlugin {
             return Err(PluginError::NotFound(id.0.clone()));
         }
 
-        let current_raw = std::fs::read_to_string(&path)
-            .map_err(|e| PluginError::Internal(e.to_string()))?;
+        let current_raw =
+            std::fs::read_to_string(&path).map_err(|e| PluginError::Internal(e.to_string()))?;
 
         // Split current file into frontmatter and body
         let (mut fm_text, mut body_text) = if let Some(rest) = current_raw.strip_prefix("---") {
@@ -685,7 +766,10 @@ impl DocSource for ObsidianPlugin {
                     serde_json::Value::Array(arr) => {
                         let mut list = String::new();
                         for v in arr {
-                            let item = v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string());
+                            let item = v
+                                .as_str()
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| v.to_string());
                             list.push_str(&format!("\n  - {}", item));
                         }
                         list
@@ -706,7 +790,9 @@ impl DocSource for ObsidianPlugin {
                         } else {
                             new_lines.push(format!("{}: {}", key, val_str));
                         }
-                    } else if skipping && (trimmed.starts_with("- ") || (trimmed.is_empty() && !line.is_empty())) {
+                    } else if skipping
+                        && (trimmed.starts_with("- ") || (trimmed.is_empty() && !line.is_empty()))
+                    {
                         continue;
                     } else {
                         skipping = false;
@@ -786,7 +872,9 @@ impl DocSource for ObsidianPlugin {
                 .ok()
                 .and_then(|m| m.modified().ok())
                 .and_then(|t| {
-                    t.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs() as i64)
+                    t.duration_since(std::time::UNIX_EPOCH)
+                        .ok()
+                        .map(|d| d.as_secs() as i64)
                 });
 
             // Re-index if modified after 'since'
@@ -823,7 +911,11 @@ impl DocSource for ObsidianPlugin {
             None
         };
 
-        Ok(ChangeSet { updated, deleted_ids, next_cursor })
+        Ok(ChangeSet {
+            updated,
+            deleted_ids,
+            next_cursor,
+        })
     }
 }
 
@@ -835,8 +927,14 @@ mod tests {
     async fn health_check_missing_vault_is_unhealthy() {
         let mut plugin = ObsidianPlugin::new();
         let mut config = PluginConfig::default();
-        config.fields.insert("path".into(), serde_json::json!("/nonexistent/vault/path_xyz"));
-        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+        config.fields.insert(
+            "path".into(),
+            serde_json::json!("/nonexistent/vault/path_xyz"),
+        );
+        plugin
+            .initialize(config, PluginSecrets::default())
+            .await
+            .unwrap();
         let status = plugin.health_check().await;
         assert!(!status.healthy);
     }
@@ -846,8 +944,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut plugin = ObsidianPlugin::new();
         let mut config = PluginConfig::default();
-        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
-        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+        config.fields.insert(
+            "path".into(),
+            serde_json::json!(dir.path().to_str().unwrap()),
+        );
+        plugin
+            .initialize(config, PluginSecrets::default())
+            .await
+            .unwrap();
         let status = plugin.health_check().await;
         assert!(status.healthy);
     }
@@ -860,10 +964,22 @@ mod tests {
 
         let mut plugin = ObsidianPlugin::new();
         let mut config = PluginConfig::default();
-        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
-        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+        config.fields.insert(
+            "path".into(),
+            serde_json::json!(dir.path().to_str().unwrap()),
+        );
+        plugin
+            .initialize(config, PluginSecrets::default())
+            .await
+            .unwrap();
 
-        let stream = plugin.fetch_all(FetchAllOpts { cursor: None, page_size: 100 }).await.unwrap();
+        let stream = plugin
+            .fetch_all(FetchAllOpts {
+                cursor: None,
+                page_size: 100,
+            })
+            .await
+            .unwrap();
         assert_eq!(stream.documents.len(), 2);
     }
 
@@ -876,10 +992,22 @@ mod tests {
 
         let mut plugin = ObsidianPlugin::new();
         let mut config = PluginConfig::default();
-        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
-        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+        config.fields.insert(
+            "path".into(),
+            serde_json::json!(dir.path().to_str().unwrap()),
+        );
+        plugin
+            .initialize(config, PluginSecrets::default())
+            .await
+            .unwrap();
 
-        let stream = plugin.fetch_all(FetchAllOpts { cursor: None, page_size: 100 }).await.unwrap();
+        let stream = plugin
+            .fetch_all(FetchAllOpts {
+                cursor: None,
+                page_size: 100,
+            })
+            .await
+            .unwrap();
         assert_eq!(stream.documents.len(), 1);
         assert_eq!(stream.documents[0].id.0, "note.md");
     }
@@ -900,18 +1028,42 @@ body context";
 
         let mut plugin = ObsidianPlugin::new();
         let mut config = PluginConfig::default();
-        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
-        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+        config.fields.insert(
+            "path".into(),
+            serde_json::json!(dir.path().to_str().unwrap()),
+        );
+        plugin
+            .initialize(config, PluginSecrets::default())
+            .await
+            .unwrap();
 
-        let stream = plugin.fetch_all(FetchAllOpts { cursor: None, page_size: 100 }).await.unwrap();
+        let stream = plugin
+            .fetch_all(FetchAllOpts {
+                cursor: None,
+                page_size: 100,
+            })
+            .await
+            .unwrap();
         assert_eq!(stream.documents.len(), 1);
-        let doc = plugin.fetch_document(&stream.documents[0].id).await.unwrap();
-        
-        assert_eq!(doc.metadata.get("status").unwrap().as_str().unwrap(), "in-progress");
-        assert_eq!(doc.metadata.get("category").unwrap().as_str().unwrap(), "research");
-        assert_eq!(doc.metadata.get("author").unwrap().as_str().unwrap(), "John Doe");
+        let doc = plugin
+            .fetch_document(&stream.documents[0].id)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            doc.metadata.get("status").unwrap().as_str().unwrap(),
+            "in-progress"
+        );
+        assert_eq!(
+            doc.metadata.get("category").unwrap().as_str().unwrap(),
+            "research"
+        );
+        assert_eq!(
+            doc.metadata.get("author").unwrap().as_str().unwrap(),
+            "John Doe"
+        );
         assert_eq!(doc.metadata.get("priority").unwrap().as_str().unwrap(), "5");
-        
+
         // Aliases check
         assert!(doc.aliases.contains(&"alias1".to_string()));
         assert!(doc.aliases.contains(&"alias2".to_string()));
@@ -935,7 +1087,9 @@ body context";
     async fn validate_config_rejects_nonexistent_path() {
         let plugin = ObsidianPlugin::new();
         let mut config = PluginConfig::default();
-        config.fields.insert("path".into(), serde_json::json!("/nonexistent/vault"));
+        config
+            .fields
+            .insert("path".into(), serde_json::json!("/nonexistent/vault"));
         let result = plugin.validate_config(&config).await;
         assert!(matches!(result, Err(PluginError::ConfigInvalid(_))));
     }
@@ -948,15 +1102,24 @@ body context";
 
         let mut plugin = ObsidianPlugin::new();
         let mut config = PluginConfig::default();
-        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
-        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+        config.fields.insert(
+            "path".into(),
+            serde_json::json!(dir.path().to_str().unwrap()),
+        );
+        plugin
+            .initialize(config, PluginSecrets::default())
+            .await
+            .unwrap();
 
         let stream = plugin
-            .fetch_all(FetchAllOpts { cursor: None, page_size: 100 })
+            .fetch_all(FetchAllOpts {
+                cursor: None,
+                page_size: 100,
+            })
             .await
             .unwrap();
         assert_eq!(stream.documents.len(), 2);
-        
+
         let mut docs = Vec::new();
         for d in &stream.documents {
             docs.push(plugin.fetch_document(&d.id).await.unwrap());
@@ -977,11 +1140,26 @@ body context";
 
         let mut plugin = ObsidianPlugin::new();
         let mut config = PluginConfig::default();
-        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
-        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+        config.fields.insert(
+            "path".into(),
+            serde_json::json!(dir.path().to_str().unwrap()),
+        );
+        plugin
+            .initialize(config, PluginSecrets::default())
+            .await
+            .unwrap();
 
-        let stream = plugin.fetch_all(FetchAllOpts { cursor: None, page_size: 100 }).await.unwrap();
-        let doc = plugin.fetch_document(&stream.documents[0].id).await.unwrap();
+        let stream = plugin
+            .fetch_all(FetchAllOpts {
+                cursor: None,
+                page_size: 100,
+            })
+            .await
+            .unwrap();
+        let doc = plugin
+            .fetch_document(&stream.documents[0].id)
+            .await
+            .unwrap();
         assert_eq!(doc.tags, vec!["rust", "doxus"]);
     }
 
@@ -996,11 +1174,26 @@ body context";
 
         let mut plugin = ObsidianPlugin::new();
         let mut config = PluginConfig::default();
-        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
-        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+        config.fields.insert(
+            "path".into(),
+            serde_json::json!(dir.path().to_str().unwrap()),
+        );
+        plugin
+            .initialize(config, PluginSecrets::default())
+            .await
+            .unwrap();
 
-        let stream = plugin.fetch_all(FetchAllOpts { cursor: None, page_size: 100 }).await.unwrap();
-        let doc = plugin.fetch_document(&stream.documents[0].id).await.unwrap();
+        let stream = plugin
+            .fetch_all(FetchAllOpts {
+                cursor: None,
+                page_size: 100,
+            })
+            .await
+            .unwrap();
+        let doc = plugin
+            .fetch_document(&stream.documents[0].id)
+            .await
+            .unwrap();
         assert_eq!(doc.tags, vec!["alpha", "beta"]);
     }
 
@@ -1015,11 +1208,26 @@ body context";
 
         let mut plugin = ObsidianPlugin::new();
         let mut config = PluginConfig::default();
-        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
-        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+        config.fields.insert(
+            "path".into(),
+            serde_json::json!(dir.path().to_str().unwrap()),
+        );
+        plugin
+            .initialize(config, PluginSecrets::default())
+            .await
+            .unwrap();
 
-        let stream = plugin.fetch_all(FetchAllOpts { cursor: None, page_size: 100 }).await.unwrap();
-        let doc = plugin.fetch_document(&stream.documents[0].id).await.unwrap();
+        let stream = plugin
+            .fetch_all(FetchAllOpts {
+                cursor: None,
+                page_size: 100,
+            })
+            .await
+            .unwrap();
+        let doc = plugin
+            .fetch_document(&stream.documents[0].id)
+            .await
+            .unwrap();
         let tags = &doc.tags;
         assert!(tags.contains(&"rust".to_string()));
         assert!(tags.contains(&"doxus".to_string()));
@@ -1032,10 +1240,22 @@ body context";
 
         let mut plugin = ObsidianPlugin::new();
         let mut config = PluginConfig::default();
-        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
-        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+        config.fields.insert(
+            "path".into(),
+            serde_json::json!(dir.path().to_str().unwrap()),
+        );
+        plugin
+            .initialize(config, PluginSecrets::default())
+            .await
+            .unwrap();
 
-        let stream = plugin.fetch_all(FetchAllOpts { cursor: None, page_size: 100 }).await.unwrap();
+        let stream = plugin
+            .fetch_all(FetchAllOpts {
+                cursor: None,
+                page_size: 100,
+            })
+            .await
+            .unwrap();
         assert_eq!(stream.documents[0].tags, Vec::<String>::new());
     }
 
@@ -1055,12 +1275,21 @@ body context";
 
         let mut plugin = ObsidianPlugin::new();
         let mut config = PluginConfig::default();
-        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
-        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+        config.fields.insert(
+            "path".into(),
+            serde_json::json!(dir.path().to_str().unwrap()),
+        );
+        plugin
+            .initialize(config, PluginSecrets::default())
+            .await
+            .unwrap();
 
         // First page: items 0..10
         let page1 = plugin
-            .fetch_all(FetchAllOpts { cursor: None, page_size: 10 })
+            .fetch_all(FetchAllOpts {
+                cursor: None,
+                page_size: 10,
+            })
             .await
             .unwrap();
         assert_eq!(page1.documents.len(), 10);
@@ -1068,17 +1297,21 @@ body context";
 
         // Second page: items 10..20
         let page2 = plugin
-            .fetch_all(FetchAllOpts { cursor: page1.next_cursor.clone(), page_size: 10 })
+            .fetch_all(FetchAllOpts {
+                cursor: page1.next_cursor.clone(),
+                page_size: 10,
+            })
             .await
             .unwrap();
         assert_eq!(page2.documents.len(), 10);
 
         // The two pages must be disjoint
-        let ids1: std::collections::HashSet<_> =
-            page1.documents.iter().map(|d| &d.id.0).collect();
-        let ids2: std::collections::HashSet<_> =
-            page2.documents.iter().map(|d| &d.id.0).collect();
-        assert!(ids1.is_disjoint(&ids2), "pages overlap: {ids1:?} ∩ {ids2:?}");
+        let ids1: std::collections::HashSet<_> = page1.documents.iter().map(|d| &d.id.0).collect();
+        let ids2: std::collections::HashSet<_> = page2.documents.iter().map(|d| &d.id.0).collect();
+        assert!(
+            ids1.is_disjoint(&ids2),
+            "pages overlap: {ids1:?} ∩ {ids2:?}"
+        );
 
         // estimated_total should reflect the full vault
         assert_eq!(page1.estimated_total, Some(100));
@@ -1086,7 +1319,10 @@ body context";
         // Verify cursor arithmetic: last page has no next_cursor
         let last_cursor = Some("90".to_string());
         let last_page = plugin
-            .fetch_all(FetchAllOpts { cursor: last_cursor, page_size: 10 })
+            .fetch_all(FetchAllOpts {
+                cursor: last_cursor,
+                page_size: 10,
+            })
             .await
             .unwrap();
         assert_eq!(last_page.documents.len(), 10);
@@ -1105,8 +1341,14 @@ body context";
 
         let mut plugin = ObsidianPlugin::new();
         let mut config = PluginConfig::default();
-        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
-        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+        config.fields.insert(
+            "path".into(),
+            serde_json::json!(dir.path().to_str().unwrap()),
+        );
+        plugin
+            .initialize(config, PluginSecrets::default())
+            .await
+            .unwrap();
 
         let changes = plugin
             .fetch_changes(FetchChangesOpts {
@@ -1131,8 +1373,14 @@ body context";
 
         let mut plugin = ObsidianPlugin::new();
         let mut config = PluginConfig::default();
-        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
-        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+        config.fields.insert(
+            "path".into(),
+            serde_json::json!(dir.path().to_str().unwrap()),
+        );
+        plugin
+            .initialize(config, PluginSecrets::default())
+            .await
+            .unwrap();
 
         let changes = plugin
             .fetch_changes(FetchChangesOpts {
@@ -1159,8 +1407,14 @@ body context";
 
         let mut plugin = ObsidianPlugin::new();
         let mut config = PluginConfig::default();
-        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
-        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+        config.fields.insert(
+            "path".into(),
+            serde_json::json!(dir.path().to_str().unwrap()),
+        );
+        plugin
+            .initialize(config, PluginSecrets::default())
+            .await
+            .unwrap();
 
         let changes = plugin
             .fetch_changes(FetchChangesOpts {
@@ -1180,26 +1434,35 @@ body context";
 
     #[test]
     fn parse_links_wikilink_simple() {
-        let links = doxus_plugin_sdk::links::LinkExtractor::extract_links("See [[PageA]] for details.");
+        let links =
+            doxus_plugin_sdk::links::LinkExtractor::extract_links("See [[PageA]] for details.");
         assert!(links.contains(&"PageA".to_string()), "got: {links:?}");
     }
 
     #[test]
     fn parse_links_wikilink_alias() {
-        let links = doxus_plugin_sdk::links::LinkExtractor::extract_links("See [[PageB|some alias]] here.");
+        let links =
+            doxus_plugin_sdk::links::LinkExtractor::extract_links("See [[PageB|some alias]] here.");
         assert!(links.contains(&"PageB".to_string()), "got: {links:?}");
         assert!(!links.contains(&"some alias".to_string()));
     }
 
     #[test]
     fn parse_links_markdown_relative() {
-        let links = doxus_plugin_sdk::links::LinkExtractor::extract_links("Read [the guide](notes/guide.md) now.");
-        assert!(links.contains(&"notes/guide.md".to_string()), "got: {links:?}");
+        let links = doxus_plugin_sdk::links::LinkExtractor::extract_links(
+            "Read [the guide](notes/guide.md) now.",
+        );
+        assert!(
+            links.contains(&"notes/guide.md".to_string()),
+            "got: {links:?}"
+        );
     }
 
     #[test]
     fn parse_links_ignores_absolute_urls() {
-        let links = doxus_plugin_sdk::links::LinkExtractor::extract_links("Check [Google](https://google.com) and [[Local]].");
+        let links = doxus_plugin_sdk::links::LinkExtractor::extract_links(
+            "Check [Google](https://google.com) and [[Local]].",
+        );
         assert!(!links.contains(&"https://google.com".to_string()));
         assert!(links.contains(&"Local".to_string()));
     }
@@ -1209,19 +1472,26 @@ body context";
         // LinkExtractor is raw, filtering happens in fetch_document or similar.
         // For the test purpose, we verify the filter logic we implemented.
         let current_id = SourceDocId("self".into());
-        let links = doxus_plugin_sdk::links::LinkExtractor::extract_links("See [[self]] and [[Other]].")
-            .into_iter()
-            .filter(|l| l != &current_id.0)
-            .collect::<Vec<_>>();
-            
-        assert!(!links.contains(&"self".to_string()), "self-ref must be excluded: {links:?}");
+        let links =
+            doxus_plugin_sdk::links::LinkExtractor::extract_links("See [[self]] and [[Other]].")
+                .into_iter()
+                .filter(|l| l != &current_id.0)
+                .collect::<Vec<_>>();
+
+        assert!(
+            !links.contains(&"self".to_string()),
+            "self-ref must be excluded: {links:?}"
+        );
         assert!(links.contains(&"Other".to_string()));
     }
 
     #[test]
     fn parse_links_deduplicates() {
         let links = doxus_plugin_sdk::links::LinkExtractor::extract_links("[[A]] and [[A]] again.");
-        assert_eq!(links.iter().filter(|l: &&String| l.as_str() == "A").count(), 1);
+        assert_eq!(
+            links.iter().filter(|l: &&String| l.as_str() == "A").count(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -1235,11 +1505,26 @@ body context";
 
         let mut plugin = ObsidianPlugin::new();
         let mut config = PluginConfig::default();
-        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
-        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+        config.fields.insert(
+            "path".into(),
+            serde_json::json!(dir.path().to_str().unwrap()),
+        );
+        plugin
+            .initialize(config, PluginSecrets::default())
+            .await
+            .unwrap();
 
-        let stream = plugin.fetch_all(FetchAllOpts { cursor: None, page_size: 100 }).await.unwrap();
-        let doc = plugin.fetch_document(&stream.documents[0].id).await.unwrap();
+        let stream = plugin
+            .fetch_all(FetchAllOpts {
+                cursor: None,
+                page_size: 100,
+            })
+            .await
+            .unwrap();
+        let doc = plugin
+            .fetch_document(&stream.documents[0].id)
+            .await
+            .unwrap();
         let links = &doc.links;
         assert!(links.contains(&"OtherPage".to_string()), "got: {links:?}");
         assert!(links.contains(&"guide.md".to_string()), "got: {links:?}");
@@ -1249,23 +1534,39 @@ body context";
     async fn fetch_all_pagination() {
         let dir = tempfile::tempdir().unwrap();
         for i in 0..5 {
-            std::fs::write(dir.path().join(format!("note{i}.md")), format!("# Note {i}")).unwrap();
+            std::fs::write(
+                dir.path().join(format!("note{i}.md")),
+                format!("# Note {i}"),
+            )
+            .unwrap();
         }
 
         let mut plugin = ObsidianPlugin::new();
         let mut config = PluginConfig::default();
-        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
-        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+        config.fields.insert(
+            "path".into(),
+            serde_json::json!(dir.path().to_str().unwrap()),
+        );
+        plugin
+            .initialize(config, PluginSecrets::default())
+            .await
+            .unwrap();
 
         let page1 = plugin
-            .fetch_all(FetchAllOpts { cursor: None, page_size: 3 })
+            .fetch_all(FetchAllOpts {
+                cursor: None,
+                page_size: 3,
+            })
             .await
             .unwrap();
         assert_eq!(page1.documents.len(), 3);
         assert!(page1.next_cursor.is_some());
 
         let page2 = plugin
-            .fetch_all(FetchAllOpts { cursor: page1.next_cursor, page_size: 3 })
+            .fetch_all(FetchAllOpts {
+                cursor: page1.next_cursor,
+                page_size: 3,
+            })
             .await
             .unwrap();
         assert_eq!(page2.documents.len(), 2);
@@ -1283,12 +1584,21 @@ body context";
         let dir = tempfile::tempdir().unwrap();
         let mut plugin = ObsidianPlugin::new();
         let mut config = PluginConfig::default();
-        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
-        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+        config.fields.insert(
+            "path".into(),
+            serde_json::json!(dir.path().to_str().unwrap()),
+        );
+        plugin
+            .initialize(config, PluginSecrets::default())
+            .await
+            .unwrap();
 
-        let id = plugin.create_document("New Note", "# New Note\nBody content", None, None).await.unwrap();
+        let id = plugin
+            .create_document("New Note", "# New Note\nBody content", None, None)
+            .await
+            .unwrap();
         assert_eq!(id.0, "New Note.md");
-        
+
         let path = dir.path().join("New Note.md");
         assert!(path.exists());
         let content = std::fs::read_to_string(path).unwrap();
@@ -1302,10 +1612,19 @@ body context";
 
         let mut plugin = ObsidianPlugin::new();
         let mut config = PluginConfig::default();
-        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
-        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+        config.fields.insert(
+            "path".into(),
+            serde_json::json!(dir.path().to_str().unwrap()),
+        );
+        plugin
+            .initialize(config, PluginSecrets::default())
+            .await
+            .unwrap();
 
-        let id = plugin.create_document("Existing", "new content", None, None).await.unwrap();
+        let id = plugin
+            .create_document("Existing", "new content", None, None)
+            .await
+            .unwrap();
         assert_eq!(id.0, "Existing (1).md");
         assert!(dir.path().join("Existing (1).md").exists());
     }
@@ -1315,21 +1634,36 @@ body context";
         let dir = tempfile::tempdir().unwrap();
         let mut plugin = ObsidianPlugin::new();
         let mut config = PluginConfig::default();
-        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
-        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+        config.fields.insert(
+            "path".into(),
+            serde_json::json!(dir.path().to_str().unwrap()),
+        );
+        plugin
+            .initialize(config, PluginSecrets::default())
+            .await
+            .unwrap();
 
         let mut metadata = HashMap::new();
         metadata.insert("tags".into(), serde_json::json!(["rust", "testing"]));
         metadata.insert("status".into(), serde_json::json!("draft"));
 
-        let id = plugin.create_document("Metadata Test", "Body here", None, Some(&metadata)).await.unwrap();
+        let id = plugin
+            .create_document("Metadata Test", "Body here", None, Some(&metadata))
+            .await
+            .unwrap();
         assert_eq!(id.0, "Metadata Test.md");
 
         let path = dir.path().join("Metadata Test.md");
         let content = std::fs::read_to_string(path).unwrap();
 
-        assert!(content.starts_with("---\n"), "Must start with frontmatter delimiter");
-        assert!(content.contains("status: draft"), "Must contain status metadata");
+        assert!(
+            content.starts_with("---\n"),
+            "Must start with frontmatter delimiter"
+        );
+        assert!(
+            content.contains("status: draft"),
+            "Must contain status metadata"
+        );
         // Body must appear after frontmatter
         assert!(content.contains("Body here"), "Must contain body content");
     }
@@ -1341,18 +1675,27 @@ body context";
 
         let mut plugin = ObsidianPlugin::new();
         let mut config = PluginConfig::default();
-        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
-        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+        config.fields.insert(
+            "path".into(),
+            serde_json::json!(dir.path().to_str().unwrap()),
+        );
+        plugin
+            .initialize(config, PluginSecrets::default())
+            .await
+            .unwrap();
 
         let mut new_meta = std::collections::HashMap::new();
         new_meta.insert("tags".into(), serde_json::json!(["new", "tags"]));
         new_meta.insert("status".into(), serde_json::json!("updated"));
 
-        plugin.update_document(
-            &SourceDocId("Note.md".into()),
-            Some("# Note\nNew body"),
-            Some(&new_meta)
-        ).await.unwrap();
+        plugin
+            .update_document(
+                &SourceDocId("Note.md".into()),
+                Some("# Note\nNew body"),
+                Some(&new_meta),
+            )
+            .await
+            .unwrap();
 
         let content = std::fs::read_to_string(&note_path).unwrap();
         assert!(content.contains("New body"));
@@ -1370,10 +1713,19 @@ body context";
 
         let mut plugin = ObsidianPlugin::new();
         let mut config = PluginConfig::default();
-        config.fields.insert("path".into(), serde_json::json!(dir.path().to_str().unwrap()));
-        plugin.initialize(config, PluginSecrets::default()).await.unwrap();
+        config.fields.insert(
+            "path".into(),
+            serde_json::json!(dir.path().to_str().unwrap()),
+        );
+        plugin
+            .initialize(config, PluginSecrets::default())
+            .await
+            .unwrap();
 
-        plugin.delete_document(&SourceDocId("DeleteMe.md".into())).await.unwrap();
+        plugin
+            .delete_document(&SourceDocId("DeleteMe.md".into()))
+            .await
+            .unwrap();
         assert!(!note_path.exists());
     }
 }

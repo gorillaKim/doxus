@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use doxus_core::db;
-use doxus_core::search::SearchQuery;
 use doxus_core::links::LinkResolver;
+use doxus_core::search::SearchQuery;
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -60,17 +60,11 @@ enum ProjectAction {
     /// List all projects
     List,
     /// Remove a project (index only — original files are never deleted)
-    Remove {
-        name: String,
-    },
+    Remove { name: String },
     /// Enable a project
-    Enable {
-        name: String,
-    },
+    Enable { name: String },
     /// Disable a project (keeps index, excludes from search)
-    Disable {
-        name: String,
-    },
+    Disable { name: String },
 }
 
 fn db_path() -> PathBuf {
@@ -83,8 +77,7 @@ fn db_path() -> PathBuf {
 #[tokio::main]
 async fn main() -> Result<()> {
     // ORT INFO 로그 억제: RUST_LOG 미설정 시 ort 크레이트는 error 레벨만 출력
-    let log_filter = std::env::var("RUST_LOG")
-        .unwrap_or_else(|_| "info,ort=error".to_string());
+    let log_filter = std::env::var("RUST_LOG").unwrap_or_else(|_| "info,ort=error".to_string());
     tracing_subscriber::fmt().with_env_filter(log_filter).init();
 
     let cli = Cli::parse();
@@ -95,7 +88,9 @@ async fn main() -> Result<()> {
     let conn = db::open(&db_path).context("failed to open database")?;
 
     // Load default embedder based on configuration (ONNX, Ollama, or NoOp/FTS-only).
-    let embedder: Option<std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>> = {
+    let embedder: Option<
+        std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>,
+    > = {
         let e = doxus_core::embedding::get_default_embedder();
         if e.dimension() > 0 {
             Some(e)
@@ -107,9 +102,11 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Project(args) => handle_project(&conn, args.action)?,
         Commands::Index => handle_index(&conn).await?,
-        Commands::Search { query, limit, project } => {
-            handle_search(&conn, &db_path, embedder, query, limit, project).await?
-        }
+        Commands::Search {
+            query,
+            limit,
+            project,
+        } => handle_search(&conn, &db_path, embedder, query, limit, project).await?,
         Commands::Status => handle_status(&conn)?,
         Commands::Plugin(args) => handle_plugin(&conn, args.action)?,
         Commands::Workspace(args) => handle_workspace(&conn, args.action)?,
@@ -121,7 +118,11 @@ async fn main() -> Result<()> {
 
 fn handle_project(conn: &rusqlite::Connection, action: ProjectAction) -> Result<()> {
     match action {
-        ProjectAction::Add { name, path, display_name } => {
+        ProjectAction::Add {
+            name,
+            path,
+            display_name,
+        } => {
             let display = display_name.unwrap_or_else(|| name.clone());
             let path_str = path.to_string_lossy();
             conn.execute(
@@ -133,9 +134,8 @@ fn handle_project(conn: &rusqlite::Connection, action: ProjectAction) -> Result<
             println!("✅ Added project '{name}' → {path_str}");
         }
         ProjectAction::List => {
-            let mut stmt = conn.prepare(
-                "SELECT name, display_name, path, status FROM projects ORDER BY name",
-            )?;
+            let mut stmt = conn
+                .prepare("SELECT name, display_name, path, status FROM projects ORDER BY name")?;
             let rows = stmt.query_map([], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
@@ -192,9 +192,9 @@ fn handle_project(conn: &rusqlite::Connection, action: ProjectAction) -> Result<
 }
 
 async fn handle_index(conn: &rusqlite::Connection) -> Result<()> {
-    use doxus_plugin_sdk::{DocSource, FetchAllOpts, PluginConfig, PluginSecrets};
+    use doxus_core::search::{DocMeta, SearchEngine};
     use doxus_plugin_obsidian::ObsidianPlugin;
-    use doxus_core::search::{SearchEngine, DocMeta};
+    use doxus_plugin_sdk::{DocSource, FetchAllOpts, PluginConfig, PluginSecrets};
 
     let mut stmt = conn.prepare(
         "SELECT id, name, path, COALESCE(source_project_id, name) FROM projects WHERE status='active'",
@@ -222,7 +222,10 @@ async fn handle_index(conn: &rusqlite::Connection) -> Result<()> {
 
         loop {
             let stream = plugin
-                .fetch_all(FetchAllOpts { cursor, page_size: 50 })
+                .fetch_all(FetchAllOpts {
+                    cursor,
+                    page_size: 50,
+                })
                 .await
                 .map_err(|e| anyhow::anyhow!("fetch error: {e}"))?;
 
@@ -240,14 +243,16 @@ async fn handle_index(conn: &rusqlite::Connection) -> Result<()> {
                     relative_path: doc.relative_path.clone(),
                 };
 
-                engine.index_document_with_meta(
-                    pid,
-                    &doc.id.0,
-                    doc.title.as_deref().unwrap_or("Untitled"),
-                    &doc.content,
-                    &meta,
-                    &source_project_id,
-                ).map_err(|e| anyhow::anyhow!("indexing error: {e}"))?;
+                engine
+                    .index_document_with_meta(
+                        pid,
+                        &doc.id.0,
+                        doc.title.as_deref().unwrap_or("Untitled"),
+                        &doc.content,
+                        &meta,
+                        &source_project_id,
+                    )
+                    .map_err(|e| anyhow::anyhow!("indexing error: {e}"))?;
             }
 
             total += stream.documents.len();
@@ -287,7 +292,11 @@ async fn handle_search(
 
     let project_ids: Vec<i64> = if let Some(ref name) = project {
         let id: i64 = conn
-            .query_row("SELECT id FROM projects WHERE name=?1", rusqlite::params![name], |r| r.get(0))
+            .query_row(
+                "SELECT id FROM projects WHERE name=?1",
+                rusqlite::params![name],
+                |r| r.get(0),
+            )
             .context("project not found")?;
         vec![id]
     } else {
@@ -301,13 +310,14 @@ async fn handle_search(
     // Use hybrid search when ONNX embedder is available; otherwise fall back to FTS-only.
     let hits: Vec<doxus_core::search::Hit> = if let Some(emb) = embedder {
         let pool = db::create_pool(db_path).context("failed to create db pool")?;
-        let engine = SearchEngine::with_embedder(
-            pool,
-            emb,
-        );
-        engine.search_async(&query).await.map_err(|e: doxus_core::search::SearchError| anyhow::anyhow!(e))?
+        let engine = SearchEngine::with_embedder(pool, emb);
+        engine
+            .search_async(&query)
+            .await
+            .map_err(|e: doxus_core::search::SearchError| anyhow::anyhow!(e))?
     } else {
-        SearchEngine::sync(conn).search(&query)
+        SearchEngine::sync(conn)
+            .search(&query)
             .map_err(|e: doxus_core::search::SearchError| anyhow::anyhow!(e))?
             .into_iter()
             .map(doxus_core::search::Hit::from)
@@ -338,16 +348,21 @@ async fn handle_search(
 }
 
 fn handle_status(conn: &rusqlite::Connection) -> Result<()> {
-    let project_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))?;
-    let doc_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))?;
-    let chunk_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))?;
+    let project_count: i64 = conn.query_row("SELECT COUNT(*) FROM projects", [], |r| r.get(0))?;
+    let doc_count: i64 = conn.query_row("SELECT COUNT(*) FROM documents", [], |r| r.get(0))?;
+    let chunk_count: i64 = conn.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))?;
 
     let embedder = doxus_core::embedding::get_default_embedder();
     let embed_mode = if embedder.dimension() > 0 {
-        format!("{} ({})", embedder.model_info().name, if embedder.model_info().path.is_some() { "ONNX" } else { "Ollama" })
+        format!(
+            "{} ({})",
+            embedder.model_info().name,
+            if embedder.model_info().path.is_some() {
+                "ONNX"
+            } else {
+                "Ollama"
+            }
+        )
     } else {
         "FTS-only (no embedding model)".to_string()
     };
@@ -400,9 +415,7 @@ fn handle_plugin(conn: &rusqlite::Connection, action: PluginAction) -> Result<()
             let mut stmt = conn.prepare(
                 "SELECT plugin_id, COUNT(*) as instances FROM source_instances GROUP BY plugin_id ORDER BY plugin_id",
             )?;
-            let rows = stmt.query_map([], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
-            })?;
+            let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
             println!("{:<40} INSTANCES", "PLUGIN_ID");
             println!("{}", "─".repeat(50));
             for row in rows.flatten() {
@@ -415,7 +428,10 @@ fn handle_plugin(conn: &rusqlite::Connection, action: PluginAction) -> Result<()
                 rusqlite::params![plugin_id],
                 |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?)),
             )?;
-            let last_sync = result.1.map(|t| t.to_string()).unwrap_or_else(|| "never".into());
+            let last_sync = result
+                .1
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| "never".into());
             println!("Plugin:     {plugin_id}");
             println!("Instances:  {}", result.0);
             println!("Last sync:  {last_sync}");
@@ -541,7 +557,10 @@ fn handle_workspace(conn: &rusqlite::Connection, action: WorkspaceAction) -> Res
         WorkspaceAction::Create { name, description } => {
             let display_name = description.unwrap_or_else(|| name.clone());
             // CLI의 경우 실행 디렉토리 기준 .doxus/workspace/{name} 사용이 바람직함
-            let ws_path = std::env::current_dir()?.join(".doxus").join("workspace").join(&name);
+            let ws_path = std::env::current_dir()?
+                .join(".doxus")
+                .join("workspace")
+                .join(&name);
             conn.execute(
                 "INSERT INTO projects(name, display_name, path, source_type, created_at, updated_at)
                  VALUES (?1, ?2, ?3, 'workspace', unixepoch(), unixepoch())",
@@ -553,7 +572,6 @@ fn handle_workspace(conn: &rusqlite::Connection, action: WorkspaceAction) -> Res
     }
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -582,7 +600,9 @@ mod tests {
         // plugin_id not in source_instances → COUNT=0, MAX=NULL
         handle_plugin(
             &conn,
-            PluginAction::Status { plugin_id: "com.doxus.confluence".into() },
+            PluginAction::Status {
+                plugin_id: "com.doxus.confluence".into(),
+            },
         )
         .unwrap();
     }
@@ -606,8 +626,9 @@ mod tests {
             [],
         )
         .unwrap();
-        let project_id: i64 =
-            conn.query_row("SELECT id FROM projects WHERE name='p1'", [], |r| r.get(0)).unwrap();
+        let project_id: i64 = conn
+            .query_row("SELECT id FROM projects WHERE name='p1'", [], |r| r.get(0))
+            .unwrap();
 
         conn.execute(
             "INSERT INTO source_instances(plugin_id, project_id, name, config_json, created_at)
@@ -645,8 +666,11 @@ mod tests {
             [],
         )
         .unwrap();
-        let pid: i64 =
-            conn.query_row("SELECT id FROM projects WHERE name='proj'", [], |r| r.get(0)).unwrap();
+        let pid: i64 = conn
+            .query_row("SELECT id FROM projects WHERE name='proj'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         conn.execute(
             "INSERT INTO source_instances(plugin_id, project_id, name, config_json, last_synced, created_at)
              VALUES ('com.doxus.conf', ?1, 'i1', '{}', 1700000000, unixepoch())",
@@ -656,7 +680,9 @@ mod tests {
 
         handle_plugin(
             &conn,
-            PluginAction::Status { plugin_id: "com.doxus.conf".into() },
+            PluginAction::Status {
+                plugin_id: "com.doxus.conf".into(),
+            },
         )
         .unwrap();
     }
@@ -683,7 +709,11 @@ mod tests {
         .unwrap();
 
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM projects WHERE name='my-ws' AND source_type='workspace'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM projects WHERE name='my-ws' AND source_type='workspace'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 1);
 
@@ -696,12 +726,19 @@ mod tests {
 
         handle_workspace(
             &conn,
-            WorkspaceAction::Create { name: "bare-ws".into(), description: None },
+            WorkspaceAction::Create {
+                name: "bare-ws".into(),
+                description: None,
+            },
         )
         .unwrap();
 
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM projects WHERE name='bare-ws' AND source_type='workspace'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM projects WHERE name='bare-ws' AND source_type='workspace'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 1);
     }
@@ -719,10 +756,8 @@ mod tests {
 
     #[test]
     fn cli_parses_project_add() {
-        let cli = Cli::try_parse_from([
-            "doxus", "project", "add", "my-proj", "/tmp/vault",
-        ])
-        .unwrap();
+        let cli =
+            Cli::try_parse_from(["doxus", "project", "add", "my-proj", "/tmp/vault"]).unwrap();
         match cli.command {
             Commands::Project(args) => match args.action {
                 ProjectAction::Add { name, path, .. } => {
@@ -764,16 +799,36 @@ mod tests {
         let (conn, _dir) = setup_test_db();
 
         // Install
-        handle_plugin(&conn, PluginAction::Install { plugin_id: "com.test.plugin".into() }).unwrap();
+        handle_plugin(
+            &conn,
+            PluginAction::Install {
+                plugin_id: "com.test.plugin".into(),
+            },
+        )
+        .unwrap();
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM plugins WHERE id='com.test.plugin'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM plugins WHERE id='com.test.plugin'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 1);
 
         // Remove
-        handle_plugin(&conn, PluginAction::Remove { plugin_id: "com.test.plugin".into() }).unwrap();
+        handle_plugin(
+            &conn,
+            PluginAction::Remove {
+                plugin_id: "com.test.plugin".into(),
+            },
+        )
+        .unwrap();
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM plugins WHERE id='com.test.plugin'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM plugins WHERE id='com.test.plugin'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 0);
     }
@@ -782,24 +837,52 @@ mod tests {
     fn test_plugin_remove_not_found() {
         let (conn, _dir) = setup_test_db();
         // Should not error even when plugin doesn't exist
-        handle_plugin(&conn, PluginAction::Remove { plugin_id: "com.nonexistent".into() }).unwrap();
+        handle_plugin(
+            &conn,
+            PluginAction::Remove {
+                plugin_id: "com.nonexistent".into(),
+            },
+        )
+        .unwrap();
     }
 
     #[test]
     fn test_plugin_update_not_found() {
         let (conn, _dir) = setup_test_db();
         // Should not error even when plugin doesn't exist
-        handle_plugin(&conn, PluginAction::Update { plugin_id: "com.nonexistent".into() }).unwrap();
+        handle_plugin(
+            &conn,
+            PluginAction::Update {
+                plugin_id: "com.nonexistent".into(),
+            },
+        )
+        .unwrap();
     }
 
     #[test]
     fn test_plugin_install_idempotent() {
         let (conn, _dir) = setup_test_db();
-        handle_plugin(&conn, PluginAction::Install { plugin_id: "com.test.plugin".into() }).unwrap();
+        handle_plugin(
+            &conn,
+            PluginAction::Install {
+                plugin_id: "com.test.plugin".into(),
+            },
+        )
+        .unwrap();
         // Second install should be a no-op (INSERT OR IGNORE)
-        handle_plugin(&conn, PluginAction::Install { plugin_id: "com.test.plugin".into() }).unwrap();
+        handle_plugin(
+            &conn,
+            PluginAction::Install {
+                plugin_id: "com.test.plugin".into(),
+            },
+        )
+        .unwrap();
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM plugins WHERE id='com.test.plugin'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM plugins WHERE id='com.test.plugin'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 1);
     }
@@ -810,13 +893,19 @@ mod tests {
 
         handle_workspace(
             &conn,
-            WorkspaceAction::Create { name: "dup".into(), description: None },
+            WorkspaceAction::Create {
+                name: "dup".into(),
+                description: None,
+            },
         )
         .unwrap();
 
         let result = handle_workspace(
             &conn,
-            WorkspaceAction::Create { name: "dup".into(), description: None },
+            WorkspaceAction::Create {
+                name: "dup".into(),
+                description: None,
+            },
         );
         assert!(result.is_err());
     }
@@ -858,9 +947,15 @@ async fn handle_graph(
                 "SELECT d.source_doc_id, d.title, l.link_type 
                  FROM document_links l 
                  JOIN documents d ON l.target_id = d.id 
-                 WHERE l.source_id = ?1"
+                 WHERE l.source_id = ?1",
             )?;
-            let rows = stmt.query_map([db_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?)))?;
+            let rows = stmt.query_map([db_id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?;
             println!("{:<40} {:<30} TYPE", "TARGET_ID", "TITLE");
             println!("{}", "─".repeat(85));
             for r in rows.flatten() {
@@ -873,16 +968,23 @@ async fn handle_graph(
                 "SELECT d.source_doc_id, d.title 
                  FROM document_links l 
                  JOIN documents d ON l.source_id = d.id 
-                 WHERE l.target_id = ?1"
+                 WHERE l.target_id = ?1",
             )?;
-            let rows = stmt.query_map([db_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)))?;
+            let rows = stmt.query_map([db_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+            })?;
             println!("{:<40} TITLE", "SOURCE_ID");
             println!("{}", "─".repeat(70));
             for r in rows.flatten() {
                 println!("{:<40} {}", r.0, r.1.unwrap_or_default());
             }
         }
-        GraphAction::Path { project, from, to, max_hops } => {
+        GraphAction::Path {
+            project,
+            from,
+            to,
+            max_hops,
+        } => {
             let (from_id, _) = resolve_id(conn, &project, &from)?;
             let (to_id, _) = resolve_id(conn, &project, &to)?;
 
@@ -894,9 +996,13 @@ async fn handle_graph(
                     JOIN path p ON l.source_id = p.id
                     WHERE p.depth < ?3 AND p.id != ?2
                 )
-                SELECT path_str FROM path WHERE id = ?2 ORDER BY depth LIMIT 1".to_string();
+                SELECT path_str FROM path WHERE id = ?2 ORDER BY depth LIMIT 1"
+                .to_string();
 
-            let result: Result<String, _> = conn.query_row(&sql, rusqlite::params![from_id, to_id, max_hops], |r| r.get(0));
+            let result: Result<String, _> =
+                conn.query_row(&sql, rusqlite::params![from_id, to_id, max_hops], |r| {
+                    r.get(0)
+                });
             match result {
                 Ok(path) => println!("Path found: {}", path),
                 Err(_) => println!("No path found within {} hops.", max_hops),
@@ -904,7 +1010,7 @@ async fn handle_graph(
         }
         GraphAction::Cluster { project, id, depth } => {
             let (db_id, _) = resolve_id(conn, &project, &id)?;
-            
+
             let sql = "WITH RECURSIVE cluster(id, level) AS (
                     SELECT ?1, 0
                     UNION
@@ -921,11 +1027,18 @@ async fn handle_graph(
                 SELECT DISTINCT d.source_doc_id, d.title, c.level 
                 FROM cluster c 
                 JOIN documents d ON c.id = d.id 
-                ORDER BY c.level, d.title".to_string();
+                ORDER BY c.level, d.title"
+                .to_string();
 
             let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map(rusqlite::params![db_id, depth], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, i64>(2)?)))?;
-            
+            let rows = stmt.query_map(rusqlite::params![db_id, depth], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })?;
+
             println!("Knowledge Cluster (depth {}):", depth);
             for r in rows.flatten() {
                 println!("  {} {} (level {})", " ".repeat(r.2 as usize * 2), r.0, r.2);

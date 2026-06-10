@@ -87,7 +87,9 @@ pub async fn save_settings(
 ) -> Result<(), String> {
     let path = config_path(&app_handle);
     doxus_core::observability::set_debug_tags(settings.debug_tags.clone());
-    state.sidecar.set_debug(doxus_core::observability::is_debug_enabled("agent"));
+    state
+        .sidecar
+        .set_debug(doxus_core::observability::is_debug_enabled("agent"));
     save_settings_to_path(&settings, &path)
 }
 

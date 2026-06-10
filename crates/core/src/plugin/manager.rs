@@ -62,7 +62,8 @@ impl PluginManager {
     where
         F: Fn() -> Box<dyn DocSource + Send + Sync> + Send + Sync + 'static,
     {
-        self.factories.insert(plugin_id.to_string(), Box::new(factory));
+        self.factories
+            .insert(plugin_id.to_string(), Box::new(factory));
     }
 
     /// Verifies the ED25519 signature before installing.
@@ -78,7 +79,9 @@ impl PluginManager {
         let entry_key_bytes = hex::decode(&entry.public_key_hex)
             .map_err(|e| SigningError::HexDecode(e.to_string()))?;
         if entry_key_bytes != plugin.public_key {
-            return Err(ManagerError::SignatureInvalid(SigningError::InvalidSignature));
+            return Err(ManagerError::SignatureInvalid(
+                SigningError::InvalidSignature,
+            ));
         }
         verify_plugin(plugin)?;
         Ok(self.installer.install(entry, &plugin.wasm_bytes)?)
@@ -115,9 +118,12 @@ impl PluginManager {
     /// fails (failure is logged via `tracing::warn`).
     pub fn get_source(&self, plugin_id: &str) -> Option<Box<dyn DocSource + Send + Sync>> {
         let normalized_id = Self::normalize_id(plugin_id);
-        
+
         // Reject invalid plugin_ids
-        if normalized_id.contains('/') || normalized_id.contains('\\') || normalized_id.contains("..") {
+        if normalized_id.contains('/')
+            || normalized_id.contains('\\')
+            || normalized_id.contains("..")
+        {
             tracing::warn!("get_source: invalid plugin_id '{}'", normalized_id);
             return None;
         }
@@ -353,7 +359,10 @@ secrets = []
         // We verify this by registering a factory for a plugin_id that also has a
         // .wasm file present. The factory call increments a counter; if WASM were
         // loaded instead the counter would stay 0.
-        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
 
         let tmp = TempDir::new().unwrap();
         let mut pm = PluginManager::new(tmp.path().to_path_buf());
@@ -391,11 +400,17 @@ secrets = []
         );
 
         // Now verify factory is called (will panic with our sentinel)
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            pm.get_source(plugin_id)
-        }));
-        assert!(result.is_err(), "factory should have been called (sentinel panic)");
-        assert_eq!(counter.load(Ordering::SeqCst), 1, "factory invoked exactly once");
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pm.get_source(plugin_id)));
+        assert!(
+            result.is_err(),
+            "factory should have been called (sentinel panic)"
+        );
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            1,
+            "factory invoked exactly once"
+        );
     }
 
     #[test]
@@ -462,11 +477,8 @@ secrets = []
         let plugin_id = "com.test.statelesspm";
 
         write_manifest(tmp.path(), plugin_id, SUPPORTED_ABI_VERSION);
-        
-        let minimal_wasm = vec![
-            0x00, 0x61, 0x73, 0x6d,
-            0x01, 0x00, 0x00, 0x00,
-        ];
+
+        let minimal_wasm = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
         std::fs::write(tmp.path().join(format!("{plugin_id}.wasm")), minimal_wasm).unwrap();
 
         let source1 = pm.get_source(plugin_id).expect("should load adapter");

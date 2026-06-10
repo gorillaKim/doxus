@@ -35,15 +35,21 @@ pub struct DbPool {
 }
 
 impl DbPool {
-    pub fn read_conn(&self) -> Result<r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager>, r2d2::Error> {
+    pub fn read_conn(
+        &self,
+    ) -> Result<r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager>, r2d2::Error> {
         self.read.get()
     }
 
-    pub fn write_conn(&self) -> Result<r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager>, r2d2::Error> {
+    pub fn write_conn(
+        &self,
+    ) -> Result<r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager>, r2d2::Error> {
         self.write.get()
     }
 
-    pub fn get(&self) -> Result<r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager>, r2d2::Error> {
+    pub fn get(
+        &self,
+    ) -> Result<r2d2::PooledConnection<r2d2_sqlite::SqliteConnectionManager>, r2d2::Error> {
         self.write.get()
     }
 }
@@ -78,7 +84,7 @@ impl r2d2::CustomizeConnection<Connection, rusqlite::Error> for DbReadConnection
 /// Create a connection pool for doxus database.
 pub fn create_pool(path: &std::path::Path) -> Result<DbPool, DbError> {
     ensure_vec_extension();
-    
+
     // 1. Initialize schema and run migrations on a single connection first.
     {
         let _conn = open(path)?;
@@ -92,15 +98,15 @@ pub fn create_pool(path: &std::path::Path) -> Result<DbPool, DbError> {
         .build(write_manager)?;
 
     // 3. Build the read pool.
-    let read_flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY 
-        | rusqlite::OpenFlags::SQLITE_OPEN_URI 
+    let read_flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+        | rusqlite::OpenFlags::SQLITE_OPEN_URI
         | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
     let read_manager = r2d2_sqlite::SqliteConnectionManager::file(path).with_flags(read_flags);
     let read_pool = r2d2::Pool::builder()
         .max_size(4)
         .connection_customizer(Box::new(DbReadConnectionCustomizer))
         .build(read_manager)?;
-        
+
     Ok(DbPool {
         read: read_pool,
         write: write_pool,
@@ -181,9 +187,14 @@ pub fn ensure_vec_extension() {
         // signature expected by sqlite3_auto_extension. The transmute converts
         // from a typed fn pointer to the opaque fn() that sqlite3_auto_extension
         // requires.
-        let init_fn = std::mem::transmute::<*const (), unsafe extern "C" fn(*mut rusqlite::ffi::sqlite3, *mut *mut i8, *const rusqlite::ffi::sqlite3_api_routines) -> i32>(
-            sqlite_vec::sqlite3_vec_init as *const (),
-        );
+        let init_fn = std::mem::transmute::<
+            *const (),
+            unsafe extern "C" fn(
+                *mut rusqlite::ffi::sqlite3,
+                *mut *mut i8,
+                *const rusqlite::ffi::sqlite3_api_routines,
+            ) -> i32,
+        >(sqlite_vec::sqlite3_vec_init as *const ());
         rusqlite::ffi::sqlite3_auto_extension(Some(init_fn));
     });
 }
@@ -219,7 +230,9 @@ pub fn checkpoint_db(conn: &Connection) -> Result<(), DbError> {
 pub fn open_readonly(path: &Path) -> Result<Connection, DbError> {
     ensure_vec_extension();
     // SQLITE_OPEN_READONLY | SQLITE_OPEN_URI
-    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+        | rusqlite::OpenFlags::SQLITE_OPEN_URI
+        | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
     let conn = Connection::open_with_flags(path, flags).map_err(DbError::Sqlite)?;
     apply_pragmas(&conn).map_err(DbError::Sqlite)?;
     Ok(conn)
@@ -228,48 +241,168 @@ pub fn open_readonly(path: &Path) -> Result<Connection, DbError> {
 /// Migration SQL tuples: (name, sql).
 /// V4 (sqlite-vec) is skipped here — vec0 requires the extension loaded first.
 static MIGRATIONS: &[(&str, &str)] = &[
-    ("V1__initial_projects",   include_str!("migrations/V1__initial_projects.sql")),
-    ("V2__documents",          include_str!("migrations/V2__documents.sql")),
-    ("V3__chunks_fts",         include_str!("migrations/V3__chunks_fts.sql")),
-    ("V4__vec0_placeholder",   "-- vec0 DDL applied separately via create_vec0_table()"),
-    ("V5__graph",              include_str!("migrations/V5__graph.sql")),
-    ("V6__view_counts",        include_str!("migrations/V6__view_counts.sql")),
-    ("V7__plugins",            include_str!("migrations/V7__plugins.sql")),
-    ("V8__workspace",          include_str!("migrations/V8__workspace.sql")),
-    ("V9__workspace_content",  include_str!("migrations/V9__workspace_content.sql")),
-    ("V10__plugin_kv",         include_str!("migrations/V10__plugin_kv.sql")),
-    ("V11__project_source",    include_str!("migrations/V11__project_source.sql")),
-    ("V12__content_cache",     include_str!("migrations/V12__content_cache.sql")),
-    ("V13__document_meta",          include_str!("migrations/V13__document_meta.sql")),
-    ("V14__workspace_unification",  include_str!("migrations/V14__workspace_unification.sql")),
-    ("V15__drop_legacy_workspace",  include_str!("migrations/V15__drop_legacy_workspace_tables.sql")),
-    ("V16__expand_doc_type",        include_str!("migrations/V16__expand_doc_type.sql")),
-    ("V17__content_cache_data",     include_str!("migrations/V17__content_cache_data.sql")),
-    ("V18__remove_default_workspace", include_str!("migrations/V18__remove_default_workspace.sql")),
-    ("V19__add_url_to_documents",      include_str!("migrations/V19__add_url_to_documents.sql")),
-    ("V20__clear_document_content",    include_str!("migrations/V20__clear_document_content.sql")),
-    ("V21__add_cascade_triggers",      include_str!("migrations/V21__add_cascade_triggers.sql")),
-    ("V23__remove_document_content_column", include_str!("migrations/V23__remove_document_content_column.sql")),
-    ("V24__vector_int8_schema", include_str!("migrations/V24__vector_int8_schema.sql")),
-    ("V25__force_reindex_after_quantization", include_str!("migrations/V25__force_reindex_after_quantization.sql")),
-    ("V26__force_resync", include_str!("migrations/V26__force_resync.sql")),
-    ("V27__hybrid_storage_schema", include_str!("migrations/V27__hybrid_storage_schema.sql")),
-    ("V28__hybrid_storage_repair", include_str!("migrations/V28__hybrid_storage_repair.sql")),
-    ("V29__add_source_project_id", include_str!("migrations/V29__add_source_project_id.sql")),
-    ("V30__add_sync_config", include_str!("migrations/V30__add_sync_config.sql")),
-    ("V31__add_title_to_fts", include_str!("migrations/V31__add_title_to_fts.sql")),
-    ("V32__date_indexes", include_str!("migrations/V32__date_indexes.sql")),
-    ("V33__reindex_history", include_str!("migrations/V33__reindex_history.sql")),
-    ("V34__scheduler", include_str!("migrations/V34__scheduler.sql")),
-    ("V35__document_freshness", include_str!("migrations/V35__document_freshness.sql")),
-    ("V36__freshness_config", include_str!("migrations/V36__freshness_config.sql")),
-    ("V37__link_optimization", include_str!("migrations/V37__link_optimization.sql")),
-    ("V38__scheduler_details",      include_str!("migrations/V38__scheduler_details.sql")),
-    ("V39__add_last_fetched_at",    include_str!("migrations/V39__add_last_fetched_at.sql")),
-    ("V40__add_system_config",      include_str!("migrations/V40__add_system_config.sql")),
-    ("V41__add_summary_column",     include_str!("migrations/V41__add_summary_column.sql")),
-    ("V42__feedback_schema",        include_str!("migrations/V42__feedback_schema.sql")),
-    ("V43__co_refs_schema",        include_str!("migrations/V43__co_refs_schema.sql")),
+    (
+        "V1__initial_projects",
+        include_str!("migrations/V1__initial_projects.sql"),
+    ),
+    (
+        "V2__documents",
+        include_str!("migrations/V2__documents.sql"),
+    ),
+    (
+        "V3__chunks_fts",
+        include_str!("migrations/V3__chunks_fts.sql"),
+    ),
+    (
+        "V4__vec0_placeholder",
+        "-- vec0 DDL applied separately via create_vec0_table()",
+    ),
+    ("V5__graph", include_str!("migrations/V5__graph.sql")),
+    (
+        "V6__view_counts",
+        include_str!("migrations/V6__view_counts.sql"),
+    ),
+    ("V7__plugins", include_str!("migrations/V7__plugins.sql")),
+    (
+        "V8__workspace",
+        include_str!("migrations/V8__workspace.sql"),
+    ),
+    (
+        "V9__workspace_content",
+        include_str!("migrations/V9__workspace_content.sql"),
+    ),
+    (
+        "V10__plugin_kv",
+        include_str!("migrations/V10__plugin_kv.sql"),
+    ),
+    (
+        "V11__project_source",
+        include_str!("migrations/V11__project_source.sql"),
+    ),
+    (
+        "V12__content_cache",
+        include_str!("migrations/V12__content_cache.sql"),
+    ),
+    (
+        "V13__document_meta",
+        include_str!("migrations/V13__document_meta.sql"),
+    ),
+    (
+        "V14__workspace_unification",
+        include_str!("migrations/V14__workspace_unification.sql"),
+    ),
+    (
+        "V15__drop_legacy_workspace",
+        include_str!("migrations/V15__drop_legacy_workspace_tables.sql"),
+    ),
+    (
+        "V16__expand_doc_type",
+        include_str!("migrations/V16__expand_doc_type.sql"),
+    ),
+    (
+        "V17__content_cache_data",
+        include_str!("migrations/V17__content_cache_data.sql"),
+    ),
+    (
+        "V18__remove_default_workspace",
+        include_str!("migrations/V18__remove_default_workspace.sql"),
+    ),
+    (
+        "V19__add_url_to_documents",
+        include_str!("migrations/V19__add_url_to_documents.sql"),
+    ),
+    (
+        "V20__clear_document_content",
+        include_str!("migrations/V20__clear_document_content.sql"),
+    ),
+    (
+        "V21__add_cascade_triggers",
+        include_str!("migrations/V21__add_cascade_triggers.sql"),
+    ),
+    (
+        "V23__remove_document_content_column",
+        include_str!("migrations/V23__remove_document_content_column.sql"),
+    ),
+    (
+        "V24__vector_int8_schema",
+        include_str!("migrations/V24__vector_int8_schema.sql"),
+    ),
+    (
+        "V25__force_reindex_after_quantization",
+        include_str!("migrations/V25__force_reindex_after_quantization.sql"),
+    ),
+    (
+        "V26__force_resync",
+        include_str!("migrations/V26__force_resync.sql"),
+    ),
+    (
+        "V27__hybrid_storage_schema",
+        include_str!("migrations/V27__hybrid_storage_schema.sql"),
+    ),
+    (
+        "V28__hybrid_storage_repair",
+        include_str!("migrations/V28__hybrid_storage_repair.sql"),
+    ),
+    (
+        "V29__add_source_project_id",
+        include_str!("migrations/V29__add_source_project_id.sql"),
+    ),
+    (
+        "V30__add_sync_config",
+        include_str!("migrations/V30__add_sync_config.sql"),
+    ),
+    (
+        "V31__add_title_to_fts",
+        include_str!("migrations/V31__add_title_to_fts.sql"),
+    ),
+    (
+        "V32__date_indexes",
+        include_str!("migrations/V32__date_indexes.sql"),
+    ),
+    (
+        "V33__reindex_history",
+        include_str!("migrations/V33__reindex_history.sql"),
+    ),
+    (
+        "V34__scheduler",
+        include_str!("migrations/V34__scheduler.sql"),
+    ),
+    (
+        "V35__document_freshness",
+        include_str!("migrations/V35__document_freshness.sql"),
+    ),
+    (
+        "V36__freshness_config",
+        include_str!("migrations/V36__freshness_config.sql"),
+    ),
+    (
+        "V37__link_optimization",
+        include_str!("migrations/V37__link_optimization.sql"),
+    ),
+    (
+        "V38__scheduler_details",
+        include_str!("migrations/V38__scheduler_details.sql"),
+    ),
+    (
+        "V39__add_last_fetched_at",
+        include_str!("migrations/V39__add_last_fetched_at.sql"),
+    ),
+    (
+        "V40__add_system_config",
+        include_str!("migrations/V40__add_system_config.sql"),
+    ),
+    (
+        "V41__add_summary_column",
+        include_str!("migrations/V41__add_summary_column.sql"),
+    ),
+    (
+        "V42__feedback_schema",
+        include_str!("migrations/V42__feedback_schema.sql"),
+    ),
+    (
+        "V43__co_refs_schema",
+        include_str!("migrations/V43__co_refs_schema.sql"),
+    ),
 ];
 
 // ── Test helper ──────────────────────────────────────────────────────────────
@@ -373,7 +506,9 @@ mod tests {
             .unwrap();
         let pid: i64 = db
             .conn
-            .query_row("SELECT id FROM projects WHERE name='proj'", [], |r| r.get(0))
+            .query_row("SELECT id FROM projects WHERE name='proj'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         db.conn
             .execute(
@@ -442,7 +577,10 @@ mod tests {
             .expect("KNN query should return result");
 
         assert_eq!(chunk_id, 1);
-        assert!(distance < 0.001, "identical vectors should have near-zero distance");
+        assert!(
+            distance < 0.001,
+            "identical vectors should have near-zero distance"
+        );
     }
 
     // ── V14 워크스페이스 통합 마이그레이션 테스트 ────────────────────────────
@@ -450,10 +588,14 @@ mod tests {
     #[test]
     fn v14_templates_table_exists() {
         let db = TestDb::new();
-        let exists: i64 = db.conn.query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='templates'",
-            [], |r| r.get(0),
-        ).unwrap();
+        let exists: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='templates'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(exists, 1, "templates 테이블이 존재해야 함");
     }
 
@@ -478,9 +620,12 @@ mod tests {
              VALUES ('proj-a', 'Proj A', '/tmp/a', 'obsidian', unixepoch(), unixepoch())",
             [],
         ).unwrap();
-        let pid: i64 = db.conn.query_row(
-            "SELECT id FROM projects WHERE name='proj-a'", [], |r| r.get(0),
-        ).unwrap();
+        let pid: i64 = db
+            .conn
+            .query_row("SELECT id FROM projects WHERE name='proj-a'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
 
         // 전역 템플릿 (project_id NULL)
         db.conn.execute(
@@ -489,15 +634,18 @@ mod tests {
         ).expect("전역 템플릿 허용");
 
         // 프로젝트 전용 템플릿
-        db.conn.execute(
-            "INSERT INTO templates(project_id, name, doc_type, content, created_at)
+        db.conn
+            .execute(
+                "INSERT INTO templates(project_id, name, doc_type, content, created_at)
              VALUES (?1, '프로젝트 템플릿', 'meeting', '# 회의록', unixepoch())",
-            [pid],
-        ).expect("프로젝트 전용 템플릿 허용");
+                [pid],
+            )
+            .expect("프로젝트 전용 템플릿 허용");
 
-        let count: i64 = db.conn.query_row(
-            "SELECT COUNT(*) FROM templates", [], |r| r.get(0),
-        ).unwrap();
+        let count: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM templates", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(count, 2);
     }
 
@@ -509,21 +657,33 @@ mod tests {
              VALUES ('proj-del', 'Del Proj', '/tmp/del', 'workspace', unixepoch(), unixepoch())",
             [],
         ).unwrap();
-        let pid: i64 = db.conn.query_row(
-            "SELECT id FROM projects WHERE name='proj-del'", [], |r| r.get(0),
-        ).unwrap();
+        let pid: i64 = db
+            .conn
+            .query_row("SELECT id FROM projects WHERE name='proj-del'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
 
-        db.conn.execute(
-            "INSERT INTO templates(project_id, name, doc_type, content, created_at)
+        db.conn
+            .execute(
+                "INSERT INTO templates(project_id, name, doc_type, content, created_at)
              VALUES (?1, '삭제될 템플릿', 'note', '', unixepoch())",
-            [pid],
-        ).unwrap();
+                [pid],
+            )
+            .unwrap();
 
-        db.conn.execute("DELETE FROM projects WHERE id=?1", [pid]).unwrap();
+        db.conn
+            .execute("DELETE FROM projects WHERE id=?1", [pid])
+            .unwrap();
 
-        let count: i64 = db.conn.query_row(
-            "SELECT COUNT(*) FROM templates WHERE project_id=?1", [pid], |r| r.get(0),
-        ).unwrap();
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM templates WHERE project_id=?1",
+                [pid],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 0, "프로젝트 삭제 시 템플릿도 CASCADE 삭제되어야 함");
     }
 
@@ -532,10 +692,14 @@ mod tests {
     #[test]
     fn v40_system_config_table_exists() {
         let db = TestDb::new();
-        let count: i64 = db.conn.query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='system_config'",
-            [], |r| r.get(0),
-        ).unwrap();
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='system_config'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 1, "system_config 테이블이 존재해야 함");
     }
 
@@ -552,10 +716,14 @@ mod tests {
     #[test]
     fn v40_system_config_bootstrap_default() {
         let db = TestDb::new();
-        let val: String = db.conn.query_row(
-            "SELECT value FROM system_config WHERE key='last_run_version'",
-            [], |r| r.get(0),
-        ).unwrap();
+        let val: String = db
+            .conn
+            .query_row(
+                "SELECT value FROM system_config WHERE key='last_run_version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(val, "0.0.0", "부트스트랩: last_run_version 초기값은 0.0.0");
     }
 
@@ -589,33 +757,44 @@ mod tests {
             let mut stmt = db.conn.prepare(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('workspaces','workspace_documents','workspace_templates')"
             ).unwrap();
-            stmt.query_map([], |r| r.get(0)).unwrap()
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
                 .filter_map(|r| r.ok())
                 .collect()
         };
-        assert!(old_tables.is_empty(), "V15 이후 구 워크스페이스 테이블이 없어야 함: {:?}", old_tables);
+        assert!(
+            old_tables.is_empty(),
+            "V15 이후 구 워크스페이스 테이블이 없어야 함: {:?}",
+            old_tables
+        );
     }
 
     #[test]
     fn test_document_url_persistence() {
         let db = TestDb::new();
-        db.conn.execute(
-            "INSERT INTO projects(name, display_name, path, created_at, updated_at)
+        db.conn
+            .execute(
+                "INSERT INTO projects(name, display_name, path, created_at, updated_at)
              VALUES ('test-proj', 'Test', '/tmp', unixepoch(), unixepoch())",
-            []
-        ).unwrap();
+                [],
+            )
+            .unwrap();
         let project_id: i64 = db.conn.last_insert_rowid();
 
         let test_url = "obsidian://open?path=/tmp/test.md";
-        
+
         // This should succeed
         let res = db.conn.execute(
             "INSERT INTO documents(project_id, source_doc_id, title, content_hash, url)
              VALUES (?1, 'doc1', 'Doc 1', 'abc', ?2)",
-            rusqlite::params![project_id, test_url]
+            rusqlite::params![project_id, test_url],
         );
 
-        assert!(res.is_ok(), "Failed to insert document with url: {:?}", res.err());
+        assert!(
+            res.is_ok(),
+            "Failed to insert document with url: {:?}",
+            res.err()
+        );
     }
 
     #[test]
@@ -627,11 +806,14 @@ mod tests {
             [],
         ).expect("sync_policy_json column should exist in projects table");
 
-        let policy: String = db.conn.query_row(
-            "SELECT sync_policy_json FROM projects WHERE name='policy-test'",
-            [],
-            |r| r.get(0)
-        ).unwrap();
+        let policy: String = db
+            .conn
+            .query_row(
+                "SELECT sync_policy_json FROM projects WHERE name='policy-test'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(policy, "{\"type\":\"manual\"}");
     }
 
@@ -664,60 +846,83 @@ mod tests {
     #[test]
     fn v33_reindex_history_table_exists() {
         let db = TestDb::new();
-        let count: i64 = db.conn.query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='reindex_history'",
-            [],
-            |r| r.get(0),
-        ).unwrap();
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='reindex_history'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 1, "reindex_history 테이블이 존재해야 함");
     }
 
     #[test]
     fn v33_reindex_history_accepts_basic_insert() {
         let db = TestDb::new();
-        db.conn.execute(
-            "INSERT INTO projects(name, display_name, path, created_at, updated_at)
+        db.conn
+            .execute(
+                "INSERT INTO projects(name, display_name, path, created_at, updated_at)
              VALUES ('rh-test', 'RH Test', '/tmp', unixepoch(), unixepoch())",
-            [],
-        ).unwrap();
-        let pid: i64 = db.conn.query_row(
-            "SELECT id FROM projects WHERE name='rh-test'", [], |r| r.get(0),
-        ).unwrap();
+                [],
+            )
+            .unwrap();
+        let pid: i64 = db
+            .conn
+            .query_row("SELECT id FROM projects WHERE name='rh-test'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
 
         db.conn.execute(
             "INSERT INTO reindex_history(project_id, scope, started_at) VALUES (?1, 'all', unixepoch())",
             [pid],
         ).expect("reindex_history 기본 INSERT 성공해야 함");
 
-        let status: String = db.conn.query_row(
-            "SELECT status FROM reindex_history WHERE project_id=?1",
-            [pid],
-            |r| r.get(0),
-        ).unwrap();
+        let status: String = db
+            .conn
+            .query_row(
+                "SELECT status FROM reindex_history WHERE project_id=?1",
+                [pid],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(status, "pending", "status 기본값은 'pending'");
     }
 
     #[test]
     fn v33_reindex_history_cascade_delete() {
         let db = TestDb::new();
-        db.conn.execute(
-            "INSERT INTO projects(name, display_name, path, created_at, updated_at)
+        db.conn
+            .execute(
+                "INSERT INTO projects(name, display_name, path, created_at, updated_at)
              VALUES ('rh-cascade', 'RH Cascade', '/tmp', unixepoch(), unixepoch())",
-            [],
-        ).unwrap();
-        let pid: i64 = db.conn.query_row(
-            "SELECT id FROM projects WHERE name='rh-cascade'", [], |r| r.get(0),
-        ).unwrap();
+                [],
+            )
+            .unwrap();
+        let pid: i64 = db
+            .conn
+            .query_row("SELECT id FROM projects WHERE name='rh-cascade'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
 
         db.conn.execute(
             "INSERT INTO reindex_history(project_id, scope, started_at) VALUES (?1, 'all', unixepoch())",
             [pid],
         ).unwrap();
 
-        db.conn.execute("DELETE FROM projects WHERE id=?1", [pid]).unwrap();
-        let count: i64 = db.conn.query_row(
-            "SELECT COUNT(*) FROM reindex_history WHERE project_id=?1", [pid], |r| r.get(0),
-        ).unwrap();
+        db.conn
+            .execute("DELETE FROM projects WHERE id=?1", [pid])
+            .unwrap();
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM reindex_history WHERE project_id=?1",
+                [pid],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 0, "프로젝트 삭제 시 reindex_history도 CASCADE 삭제");
     }
 
@@ -737,14 +942,21 @@ mod tests {
     #[test]
     fn v34_scheduled_jobs_cascade_delete() {
         let db = TestDb::new();
-        db.conn.execute(
-            "INSERT INTO projects(name, display_name, path, created_at, updated_at)
+        db.conn
+            .execute(
+                "INSERT INTO projects(name, display_name, path, created_at, updated_at)
              VALUES ('sch-cascade', 'Sch Cascade', '/tmp', unixepoch(), unixepoch())",
-            [],
-        ).unwrap();
-        let pid: i64 = db.conn.query_row(
-            "SELECT id FROM projects WHERE name='sch-cascade'", [], |r| r.get(0),
-        ).unwrap();
+                [],
+            )
+            .unwrap();
+        let pid: i64 = db
+            .conn
+            .query_row(
+                "SELECT id FROM projects WHERE name='sch-cascade'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
 
         db.conn.execute(
             "INSERT INTO scheduled_jobs(project_id, job_name, executor, action, schedule_json, next_run_at, created_at)
@@ -753,20 +965,34 @@ mod tests {
         ).unwrap();
         let job_id: i64 = db.conn.last_insert_rowid();
 
-        db.conn.execute(
-            "INSERT INTO job_runs(job_id, started_at) VALUES (?1, unixepoch())",
-            [job_id],
-        ).unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO job_runs(job_id, started_at) VALUES (?1, unixepoch())",
+                [job_id],
+            )
+            .unwrap();
 
         // CASCADE DELETE TEST
-        db.conn.execute("DELETE FROM projects WHERE id=?1", [pid]).unwrap();
-        
-        let job_count: i64 = db.conn.query_row(
-            "SELECT COUNT(*) FROM scheduled_jobs WHERE project_id=?1", [pid], |r| r.get(0),
-        ).unwrap();
-        let run_count: i64 = db.conn.query_row(
-            "SELECT COUNT(*) FROM job_runs WHERE job_id=?1", [job_id], |r| r.get(0),
-        ).unwrap();
+        db.conn
+            .execute("DELETE FROM projects WHERE id=?1", [pid])
+            .unwrap();
+
+        let job_count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM scheduled_jobs WHERE project_id=?1",
+                [pid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let run_count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM job_runs WHERE job_id=?1",
+                [job_id],
+                |r| r.get(0),
+            )
+            .unwrap();
 
         assert_eq!(job_count, 0, "프로젝트 삭제 시 scheduled_jobs CASCADE 삭제");
         assert_eq!(run_count, 0, "scheduled_jobs 삭제 시 job_runs CASCADE 삭제");
@@ -782,7 +1008,10 @@ mod tests {
             [],
             |r| r.get(0),
         ).unwrap();
-        assert_eq!(count, 2, "document_freshness, document_change_log 테이블이 존재해야 함");
+        assert_eq!(
+            count, 2,
+            "document_freshness, document_change_log 테이블이 존재해야 함"
+        );
     }
 
     #[test]
@@ -799,11 +1028,13 @@ mod tests {
     #[test]
     fn v35_freshness_trigger_works() {
         let db = TestDb::new();
-        db.conn.execute(
-            "INSERT INTO projects(name, display_name, path, created_at, updated_at)
+        db.conn
+            .execute(
+                "INSERT INTO projects(name, display_name, path, created_at, updated_at)
              VALUES ('trigger-test', 'Trigger Test', '/tmp', unixepoch(), unixepoch())",
-            [],
-        ).unwrap();
+                [],
+            )
+            .unwrap();
         let pid: i64 = db.conn.last_insert_rowid();
 
         db.conn.execute(
@@ -820,27 +1051,38 @@ mod tests {
         ).unwrap();
 
         // 2. Trigger content_hash update
-        db.conn.execute(
-            "UPDATE documents SET content_hash = 'hash_v2' WHERE id = ?1",
-            [doc_id],
-        ).unwrap();
+        db.conn
+            .execute(
+                "UPDATE documents SET content_hash = 'hash_v2' WHERE id = ?1",
+                [doc_id],
+            )
+            .unwrap();
 
         // 3. Verify trigger resets freshness and updates log
-        let score: f64 = db.conn.query_row(
-            "SELECT freshness_score FROM document_freshness WHERE document_id = ?1",
-            [doc_id],
-            |r| r.get(0),
-        ).unwrap();
-        let status: String = db.conn.query_row(
-            "SELECT status FROM document_freshness WHERE document_id = ?1",
-            [doc_id],
-            |r| r.get(0),
-        ).unwrap();
-        let changes: i64 = db.conn.query_row(
-            "SELECT change_count FROM document_freshness WHERE document_id = ?1",
-            [doc_id],
-            |r| r.get(0),
-        ).unwrap();
+        let score: f64 = db
+            .conn
+            .query_row(
+                "SELECT freshness_score FROM document_freshness WHERE document_id = ?1",
+                [doc_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let status: String = db
+            .conn
+            .query_row(
+                "SELECT status FROM document_freshness WHERE document_id = ?1",
+                [doc_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let changes: i64 = db
+            .conn
+            .query_row(
+                "SELECT change_count FROM document_freshness WHERE document_id = ?1",
+                [doc_id],
+                |r| r.get(0),
+            )
+            .unwrap();
 
         assert_eq!(score, 100.0, "Score should reset to 100.0");
         assert_eq!(status, "fresh", "Status should reset to 'fresh'");
@@ -859,17 +1101,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test_checkpoint.db");
         let wal_path = dir.path().join("test_checkpoint.db-wal");
-        
+
         // 1. Create conn1, insert data and keep it open to ensure WAL file is kept
         let conn1 = open(&db_path).unwrap();
         conn1.execute("CREATE TABLE foo (bar TEXT);", []).unwrap();
         conn1.execute("BEGIN TRANSACTION;", []).unwrap();
         for i in 0..100 {
-            conn1.execute("INSERT INTO foo VALUES (?1);", [format!("data-{}", i)]).unwrap();
+            conn1
+                .execute("INSERT INTO foo VALUES (?1);", [format!("data-{}", i)])
+                .unwrap();
         }
         conn1.execute("COMMIT;", []).unwrap();
-        
-        assert!(wal_path.exists(), "WAL file should exist while connection is alive");
+
+        assert!(
+            wal_path.exists(),
+            "WAL file should exist while connection is alive"
+        );
         let initial_size = std::fs::metadata(&wal_path).unwrap().len();
         assert!(initial_size > 0, "WAL file should have some content");
 
@@ -877,14 +1124,18 @@ mod tests {
         // We assert that it does NOT truncate on open (this will fail under current implementation).
         let conn2 = open(&db_path).unwrap();
         let opened_size = std::fs::metadata(&wal_path).unwrap().len();
-        assert_eq!(opened_size, initial_size, "WAL size should not be truncated on db::open");
-        
+        assert_eq!(
+            opened_size, initial_size,
+            "WAL size should not be truncated on db::open"
+        );
+
         // 3. Close conn1 and perform manual checkpoint. This should truncate the WAL to 0.
         drop(conn1);
         checkpoint_db(&conn2).unwrap();
         let checkpointed_size = std::fs::metadata(&wal_path).unwrap().len();
-        assert_eq!(checkpointed_size, 0, "WAL size should be 0 after explicit checkpoint_db(TRUNCATE)");
+        assert_eq!(
+            checkpointed_size, 0,
+            "WAL size should be 0 after explicit checkpoint_db(TRUNCATE)"
+        );
     }
 }
-
-

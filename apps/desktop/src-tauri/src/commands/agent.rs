@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use doxus_agent::cli_detector::{detect_cli, CliKind};
+use serde::{Deserialize, Serialize};
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 // ── 브리지 응답 (사이드카 → Rust) ───────────────────────────────────────────
 
@@ -91,19 +91,30 @@ pub fn spawn_background_reader(
         loop {
             let mut line = String::new();
             match reader.read_line(&mut line) {
-                Ok(0) => { eprintln!("[reader] sidecar EOF"); break; }
+                Ok(0) => {
+                    eprintln!("[reader] sidecar EOF");
+                    break;
+                }
                 Ok(_) => {
                     let trimmed = line.trim();
-                    if trimmed.is_empty() { continue; }
+                    if trimmed.is_empty() {
+                        continue;
+                    }
                     let resp: BridgeResponse = match serde_json::from_str(trimmed) {
                         Ok(r) => r,
-                        Err(e) => { eprintln!("[reader] parse error: {e}: {trimmed}"); continue; }
+                        Err(e) => {
+                            eprintln!("[reader] parse error: {e}: {trimmed}");
+                            continue;
+                        }
                     };
 
-                    if resp.msg_type == "init" { continue; }
+                    if resp.msg_type == "init" {
+                        continue;
+                    }
 
                     let session_id = resp.session_id.clone();
-                    let is_terminal = matches!(resp.msg_type.as_str(), "result" | "error" | "cancelled");
+                    let is_terminal =
+                        matches!(resp.msg_type.as_str(), "result" | "error" | "cancelled");
 
                     // Collect content if this session is marked for collection
                     if let Some(content) = resp.content.as_deref() {
@@ -125,7 +136,10 @@ pub fn spawn_background_reader(
                         }
                     }
                 }
-                Err(e) => { eprintln!("[reader] read error: {e}"); break; }
+                Err(e) => {
+                    eprintln!("[reader] read error: {e}");
+                    break;
+                }
             }
         }
 
@@ -144,7 +158,7 @@ pub async fn chat_start_session_impl(
     app: tauri::AppHandle,
     state: &crate::AppState,
     session_id: String,
-    cli_type: String,  // "claude" | "gemini"
+    cli_type: String, // "claude" | "gemini"
     cli_path: String,
     model: String,
 ) -> Result<(), String> {
@@ -166,7 +180,12 @@ pub async fn chat_start_session_impl(
     // MCP 서버 설정: HTTP 엔드포인트 우선, 없으면 stdio fallback
     let mcp_servers = {
         let endpoint = state.mcp_endpoint.lock().ok().and_then(|g| g.clone());
-        let token = state.mcp_token.lock().ok().map(|g| g.clone()).unwrap_or_default();
+        let token = state
+            .mcp_token
+            .lock()
+            .ok()
+            .map(|g| g.clone())
+            .unwrap_or_default();
         if let Some(url) = endpoint {
             serde_json::json!({
                 "doxus": {
@@ -219,7 +238,10 @@ pub async fn chat_send_message_impl(
 
     let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
     {
-        let mut pending = state.pending_messages.lock().map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
+        let mut pending = state
+            .pending_messages
+            .lock()
+            .map_err(|e: std::sync::PoisonError<_>| e.to_string())?;
         pending.insert(session_id.clone(), tx);
     }
 
@@ -278,20 +300,16 @@ pub fn chat_close_session(
 pub async fn detect_cli_path(provider: String) -> Result<serde_json::Value, String> {
     let kind = detect_cli();
     match kind {
-        CliKind::ClaudeCode { path } if provider == "claude" => {
-            Ok(serde_json::json!({
-                "found": true,
-                "cliType": "claude",
-                "cliPath": path.to_string_lossy(),
-            }))
-        }
-        CliKind::GeminiCli { path } if provider == "gemini" => {
-            Ok(serde_json::json!({
-                "found": true,
-                "cliType": "gemini",
-                "cliPath": path.to_string_lossy(),
-            }))
-        }
+        CliKind::ClaudeCode { path } if provider == "claude" => Ok(serde_json::json!({
+            "found": true,
+            "cliType": "claude",
+            "cliPath": path.to_string_lossy(),
+        })),
+        CliKind::GeminiCli { path } if provider == "gemini" => Ok(serde_json::json!({
+            "found": true,
+            "cliType": "gemini",
+            "cliPath": path.to_string_lossy(),
+        })),
         _ => {
             // 특정 프로바이더가 감지되지 않았거나 다른 프로바이더가 감지됨
             Ok(serde_json::json!({
@@ -324,11 +342,13 @@ pub struct ClaudeMcpConfig {
 }
 
 fn get_claude_config_file_path() -> Result<std::path::PathBuf, String> {
-    let home = std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
-    
+    let home =
+        std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
+
     // Candidates for Claude Desktop config
     let paths = vec![
-        std::path::PathBuf::from(&home).join("Library/Application Support/Claude/claude_desktop_config.json"),
+        std::path::PathBuf::from(&home)
+            .join("Library/Application Support/Claude/claude_desktop_config.json"),
         std::path::PathBuf::from(&home).join(".claude/claude_desktop_config.json"),
     ];
 
@@ -339,15 +359,16 @@ fn get_claude_config_file_path() -> Result<std::path::PathBuf, String> {
     }
 
     // Default to the official macOS location if neither exists
-    Ok(std::path::PathBuf::from(&home).join("Library/Application Support/Claude/claude_desktop_config.json"))
+    Ok(std::path::PathBuf::from(&home)
+        .join("Library/Application Support/Claude/claude_desktop_config.json"))
 }
-
 
 #[tauri::command]
 pub async fn get_claude_mcp_config() -> Result<serde_json::Value, String> {
-    let home = std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
+    let home =
+        std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
     let desktop_path = get_claude_config_file_path()?;
-    
+
     // Check multiple CLI paths
     let cli_paths = vec![
         std::path::PathBuf::from(&home).join(".claude.json"),
@@ -356,8 +377,12 @@ pub async fn get_claude_mcp_config() -> Result<serde_json::Value, String> {
 
     let (desktop_connected, desktop_config) = if desktop_path.exists() {
         let content = std::fs::read_to_string(&desktop_path).unwrap_or_default();
-        let config: serde_json::Value = serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
-        let connected = config.get("mcpServers").and_then(|m| m.get("doxus")).is_some();
+        let config: serde_json::Value =
+            serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
+        let connected = config
+            .get("mcpServers")
+            .and_then(|m| m.get("doxus"))
+            .is_some();
         (connected, Some(config))
     } else {
         (false, None)
@@ -369,13 +394,18 @@ pub async fn get_claude_mcp_config() -> Result<serde_json::Value, String> {
     for cli_path in cli_paths {
         if cli_path.exists() {
             let content = std::fs::read_to_string(&cli_path).unwrap_or_default();
-            let config: serde_json::Value = serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
-            
-            let has_mcp = config.get("mcpServers").and_then(|m| m.get("doxus")).is_some();
-            
+            let config: serde_json::Value =
+                serde_json::from_str(&content).unwrap_or(serde_json::json!({}));
+
+            let has_mcp = config
+                .get("mcpServers")
+                .and_then(|m| m.get("doxus"))
+                .is_some();
+
             // For .claude.json, we also check is_enabled
             let is_enabled = if cli_path.to_string_lossy().contains(".claude.json") {
-                config.get("enabledMcpjsonServers")
+                config
+                    .get("enabledMcpjsonServers")
                     .and_then(|a| a.as_array())
                     .map(|arr| arr.iter().any(|v| v.as_str() == Some("doxus")))
                     .unwrap_or(false)
@@ -410,7 +440,8 @@ pub async fn upsert_claude_mcp_config(
     state: tauri::State<'_, std::sync::Arc<crate::AppState>>,
     target: String,
 ) -> Result<(), String> {
-    let home = std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
+    let home =
+        std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
 
     let paths = match target.as_str() {
         "desktop" => vec![get_claude_config_file_path()?],
@@ -423,7 +454,12 @@ pub async fn upsert_claude_mcp_config(
 
     // HTTP 엔드포인트 우선, 없으면 stdio fallback
     let endpoint = state.mcp_endpoint.lock().ok().and_then(|g| g.clone());
-    let token = state.mcp_token.lock().ok().map(|g| g.clone()).unwrap_or_default();
+    let token = state
+        .mcp_token
+        .lock()
+        .ok()
+        .map(|g| g.clone())
+        .unwrap_or_default();
 
     let mcp_entry = if let Some(url) = endpoint {
         serde_json::json!({
@@ -436,12 +472,11 @@ pub async fn upsert_claude_mcp_config(
             .ok_or_else(|| "doxus-mcp not found and HTTP server not running.".to_string())?
             .to_string_lossy()
             .to_string();
-        let bridge_token = std::fs::read_to_string(
-            std::path::PathBuf::from(&home).join(".doxus/.bridge_token"),
-        )
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+        let bridge_token =
+            std::fs::read_to_string(std::path::PathBuf::from(&home).join(".doxus/.bridge_token"))
+                .unwrap_or_default()
+                .trim()
+                .to_string();
         let db_path = std::env::var("DOXUS_DB_PATH")
             .unwrap_or_else(|_| format!("{}/.doxus/db/doxus.db", home));
         serde_json::json!({
@@ -454,11 +489,13 @@ pub async fn upsert_claude_mcp_config(
 
     for path in paths {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create config directory: {e}"))?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create config directory: {e}"))?;
         }
 
         let mut config: serde_json::Value = if path.exists() {
-            let content = std::fs::read_to_string(&path).map_err(|e| format!("Failed to read config: {e}"))?;
+            let content = std::fs::read_to_string(&path)
+                .map_err(|e| format!("Failed to read config: {e}"))?;
             serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
         } else {
             serde_json::json!({})
@@ -482,14 +519,18 @@ pub async fn upsert_claude_mcp_config(
                     obj.insert("enabledMcpjsonServers".to_string(), serde_json::json!([]));
                 }
             }
-            if let Some(arr) = config.get_mut("enabledMcpjsonServers").and_then(|a| a.as_array_mut()) {
+            if let Some(arr) = config
+                .get_mut("enabledMcpjsonServers")
+                .and_then(|a| a.as_array_mut())
+            {
                 if !arr.iter().any(|v| v.as_str() == Some("doxus")) {
                     arr.push(serde_json::json!("doxus"));
                 }
             }
         }
 
-        let content = serde_json::to_string_pretty(&config).map_err(|e| format!("Failed to serialize config: {e}"))?;
+        let content = serde_json::to_string_pretty(&config)
+            .map_err(|e| format!("Failed to serialize config: {e}"))?;
         std::fs::write(&path, content).map_err(|e| format!("Failed to write config: {e}"))?;
     }
 
@@ -498,7 +539,8 @@ pub async fn upsert_claude_mcp_config(
 
 #[tauri::command]
 pub async fn remove_claude_mcp_config(target: String) -> Result<(), String> {
-    let home = std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
+    let home =
+        std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
 
     let paths = match target.as_str() {
         "desktop" => vec![get_claude_config_file_path()?],
@@ -514,8 +556,10 @@ pub async fn remove_claude_mcp_config(target: String) -> Result<(), String> {
             continue;
         }
 
-        let content = std::fs::read_to_string(&path).map_err(|e| format!("Failed to read config: {e}"))?;
-        let mut config: serde_json::Value = serde_json::from_str(&content).map_err(|e| format!("Failed to parse config: {e}"))?;
+        let content =
+            std::fs::read_to_string(&path).map_err(|e| format!("Failed to read config: {e}"))?;
+        let mut config: serde_json::Value =
+            serde_json::from_str(&content).map_err(|e| format!("Failed to parse config: {e}"))?;
 
         let mut modified = false;
 
@@ -526,7 +570,10 @@ pub async fn remove_claude_mcp_config(target: String) -> Result<(), String> {
         }
 
         if target == "cli" && path.to_string_lossy().contains(".claude.json") {
-            if let Some(arr) = config.get_mut("enabledMcpjsonServers").and_then(|a| a.as_array_mut()) {
+            if let Some(arr) = config
+                .get_mut("enabledMcpjsonServers")
+                .and_then(|a| a.as_array_mut())
+            {
                 let initial_len = arr.len();
                 arr.retain(|v| v.as_str() != Some("doxus"));
                 if arr.len() != initial_len {
@@ -536,7 +583,8 @@ pub async fn remove_claude_mcp_config(target: String) -> Result<(), String> {
         }
 
         if modified {
-            let content = serde_json::to_string_pretty(&config).map_err(|e| format!("Failed to serialize config: {e}"))?;
+            let content = serde_json::to_string_pretty(&config)
+                .map_err(|e| format!("Failed to serialize config: {e}"))?;
             std::fs::write(&path, content).map_err(|e| format!("Failed to write config: {e}"))?;
         }
     }
@@ -546,19 +594,21 @@ pub async fn remove_claude_mcp_config(target: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn generate_global_claude_md() -> Result<(), String> {
-    let home = std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
+    let home =
+        std::env::var("HOME").map_err(|_| "HOME environment variable not set".to_string())?;
     let claude_dir = std::path::PathBuf::from(home).join(".claude");
-    
+
     if !claude_dir.exists() {
         std::fs::create_dir_all(&claude_dir).map_err(|e| e.to_string())?;
     }
-    
+
     let path = claude_dir.join("CLAUDE.md");
     let instr_header = "## AI 에이전트 도구 (Doxus)";
     let instr_body = CLAUDE_MD_INSTRUCTIONS;
 
     let mut content = if path.exists() {
-        std::fs::read_to_string(&path).map_err(|e| format!("Failed to read global CLAUDE.md: {e}"))?
+        std::fs::read_to_string(&path)
+            .map_err(|e| format!("Failed to read global CLAUDE.md: {e}"))?
     } else {
         "# Global Instructions for AI Agents\n\n".to_string()
     };
@@ -594,7 +644,8 @@ pub async fn generate_project_claude_md(path: String) -> Result<(), String> {
     let instr_body = CLAUDE_MD_INSTRUCTIONS;
 
     let mut content = if claude_md_path.exists() {
-        std::fs::read_to_string(&claude_md_path).map_err(|e| format!("Failed to read CLAUDE.md: {e}"))?
+        std::fs::read_to_string(&claude_md_path)
+            .map_err(|e| format!("Failed to read CLAUDE.md: {e}"))?
     } else {
         "# Project Instructions\n\n".to_string()
     };
@@ -608,7 +659,8 @@ pub async fn generate_project_claude_md(path: String) -> Result<(), String> {
     content.push('\n');
     content.push_str(instr_body);
 
-    std::fs::write(&claude_md_path, content).map_err(|e| format!("Failed to write CLAUDE.md: {e}"))?;
+    std::fs::write(&claude_md_path, content)
+        .map_err(|e| format!("Failed to write CLAUDE.md: {e}"))?;
 
     Ok(())
 }
@@ -620,8 +672,8 @@ fn find_doxus_mcp() -> Option<std::path::PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let candidate = dir.join("doxus-mcp");
-            if candidate.exists() { 
-                return Some(candidate); 
+            if candidate.exists() {
+                return Some(candidate);
             }
         }
     }
@@ -634,16 +686,24 @@ fn find_doxus_mcp() -> Option<std::path::PathBuf> {
             if parent.file_name().map(|n| n == "target").unwrap_or(false) {
                 // Return corresponding build artifact if found
                 let debug = parent.join("debug").join("doxus-mcp");
-                if debug.exists() { return Some(debug); }
+                if debug.exists() {
+                    return Some(debug);
+                }
                 let release = parent.join("release").join("doxus-mcp");
-                if release.exists() { return Some(release); }
+                if release.exists() {
+                    return Some(release);
+                }
                 break;
             }
             if dir.file_name().map(|n| n == "target").unwrap_or(false) {
                 let debug = dir.join("debug").join("doxus-mcp");
-                if debug.exists() { return Some(debug); }
+                if debug.exists() {
+                    return Some(debug);
+                }
                 let release = dir.join("release").join("doxus-mcp");
-                if release.exists() { return Some(release); }
+                if release.exists() {
+                    return Some(release);
+                }
                 break;
             }
             dir = parent;
@@ -654,7 +714,11 @@ fn find_doxus_mcp() -> Option<std::path::PathBuf> {
     if let Some(found) = std::env::var_os("PATH").and_then(|path_var| {
         std::env::split_paths(&path_var).find_map(|dir| {
             let candidate = dir.join("doxus-mcp");
-            if candidate.exists() { Some(candidate) } else { None }
+            if candidate.exists() {
+                Some(candidate)
+            } else {
+                None
+            }
         })
     }) {
         return Some(found);
@@ -663,8 +727,11 @@ fn find_doxus_mcp() -> Option<std::path::PathBuf> {
     // 4. macOS standard installation path (Last resort fallback)
     #[cfg(target_os = "macos")]
     {
-        let installed = std::path::PathBuf::from("/Applications/doxus.app/Contents/MacOS/doxus-mcp");
-        if installed.exists() { return Some(installed); }
+        let installed =
+            std::path::PathBuf::from("/Applications/doxus.app/Contents/MacOS/doxus-mcp");
+        if installed.exists() {
+            return Some(installed);
+        }
     }
 
     None
@@ -694,7 +761,8 @@ mod tests {
 
     #[test]
     fn bridge_response_deserializes_tool_use() {
-        let json = r#"{"type":"tool_use","sessionId":"s1","toolName":"doxus_search","status":"running"}"#;
+        let json =
+            r#"{"type":"tool_use","sessionId":"s1","toolName":"doxus_search","status":"running"}"#;
         let r: BridgeResponse = serde_json::from_str(json).unwrap();
         assert_eq!(r.tool_name.unwrap(), "doxus_search");
     }

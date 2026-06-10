@@ -1,10 +1,10 @@
 pub mod core;
+pub mod freshness;
 pub mod graph;
 pub mod plugin;
 pub mod project;
 pub mod reindex;
 pub mod search;
-pub mod freshness;
 
 use rusqlite::params;
 use serde_json::Value;
@@ -98,4 +98,3 @@ pub fn resolve_doc_id_optional_project(
         Err("document ID must be a string (source_doc_id) or a number (db_id)".to_string())
     }
 }
-

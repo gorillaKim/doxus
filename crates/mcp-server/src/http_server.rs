@@ -52,10 +52,7 @@ async fn health_handler() -> impl IntoResponse {
     )
 }
 
-async fn mcp_handler(
-    State(state): State<HttpState>,
-    Json(req): Json<McpRequest>,
-) -> Response {
+async fn mcp_handler(State(state): State<HttpState>, Json(req): Json<McpRequest>) -> Response {
     // Notifications have no id — acknowledge with 204 No Content
     let Some(id) = req.id.clone() else {
         return StatusCode::NO_CONTENT.into_response();
@@ -79,9 +76,8 @@ async fn host_allowlist_middleware(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("127.0.0.1");
 
-    let is_local = host.starts_with("127.0.0.1")
-        || host.starts_with("localhost")
-        || host.starts_with("[::1]");
+    let is_local =
+        host.starts_with("127.0.0.1") || host.starts_with("localhost") || host.starts_with("[::1]");
 
     if is_local {
         Ok(next.run(req).await)
@@ -89,7 +85,6 @@ async fn host_allowlist_middleware(
         Err(StatusCode::FORBIDDEN)
     }
 }
-
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 

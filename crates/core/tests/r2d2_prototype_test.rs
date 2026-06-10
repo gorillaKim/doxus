@@ -1,6 +1,6 @@
+use rusqlite::Connection;
 use std::path::PathBuf;
 use std::sync::Arc;
-use rusqlite::Connection;
 use tempfile::TempDir;
 
 #[derive(Debug)]
@@ -24,7 +24,7 @@ impl r2d2::ManageConnection for SqliteConnectionManager {
             "PRAGMA journal_mode = WAL;
              PRAGMA synchronous = NORMAL;
              PRAGMA busy_timeout = 5000;
-             PRAGMA foreign_keys = ON;"
+             PRAGMA foreign_keys = ON;",
         )?;
         Ok(conn)
     }
@@ -45,14 +45,15 @@ async fn test_r2d2_sqlite_pool_concurrency() {
 
     {
         let conn = Connection::open(&db_path).unwrap();
-        conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);", []).unwrap();
+        conn.execute(
+            "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT);",
+            [],
+        )
+        .unwrap();
     }
 
     let manager = SqliteConnectionManager::new(db_path);
-    let pool = r2d2::Pool::builder()
-        .max_size(5)
-        .build(manager)
-        .unwrap();
+    let pool = r2d2::Pool::builder().max_size(5).build(manager).unwrap();
 
     let pool = Arc::new(pool);
     let mut handles = vec![];
@@ -61,8 +62,14 @@ async fn test_r2d2_sqlite_pool_concurrency() {
         let pool_clone = Arc::clone(&pool);
         let handle = tokio::spawn(async move {
             let conn = pool_clone.get().unwrap();
-            conn.execute("INSERT INTO users (name) VALUES (?1)", [format!("user-{}", i)]).unwrap();
-            let count: i64 = conn.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0)).unwrap();
+            conn.execute(
+                "INSERT INTO users (name) VALUES (?1)",
+                [format!("user-{}", i)],
+            )
+            .unwrap();
+            let count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))
+                .unwrap();
             count
         });
         handles.push(handle);
@@ -74,6 +81,8 @@ async fn test_r2d2_sqlite_pool_concurrency() {
     }
 
     let conn = pool.get().unwrap();
-    let final_count: i64 = conn.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0)).unwrap();
+    let final_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(final_count, 10);
 }

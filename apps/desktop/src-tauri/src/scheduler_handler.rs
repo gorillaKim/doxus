@@ -1,9 +1,9 @@
-use std::sync::Arc;
-use std::path::PathBuf;
-use doxus_core::scheduler::{AgentHandler, JobResult};
+use crate::commands::agent::{chat_send_message_impl, chat_start_session_impl, detect_cli_path};
 use crate::AppState;
-use crate::commands::agent::{detect_cli_path, chat_start_session_impl, chat_send_message_impl};
 use chrono::Local;
+use doxus_core::scheduler::{AgentHandler, JobResult};
+use std::path::PathBuf;
+use std::sync::Arc;
 
 pub struct TauriAgentHandler {
     pub state: Arc<AppState>,
@@ -19,32 +19,51 @@ impl AgentHandler for TauriAgentHandler {
         config: &serde_json::Value,
     ) -> JobResult {
         if action != "ai_agent_report" {
-            return JobResult { success: false, message: format!("Unsupported agent action: {}", action) };
+            return JobResult {
+                success: false,
+                message: format!("Unsupported agent action: {}", action),
+            };
         }
 
         match self.run_ai_report(job_name, config).await {
-            Ok(msg) => JobResult { success: true, message: msg },
-            Err(e) => JobResult { success: false, message: e },
+            Ok(msg) => JobResult {
+                success: true,
+                message: msg,
+            },
+            Err(e) => JobResult {
+                success: false,
+                message: e,
+            },
         }
     }
 }
 
 impl TauriAgentHandler {
-    async fn run_ai_report(&self, job_name: &str, config: &serde_json::Value) -> Result<String, String> {
-        let model = config["model"].as_str().unwrap_or("claude-sonnet-4-6").to_string();
-        
+    async fn run_ai_report(
+        &self,
+        job_name: &str,
+        config: &serde_json::Value,
+    ) -> Result<String, String> {
+        let model = config["model"]
+            .as_str()
+            .unwrap_or("claude-sonnet-4-6")
+            .to_string();
+
         let persona = config["persona"].as_str().unwrap_or("devlog_specialist");
         let summary_style = config["summary_style"].as_str().unwrap_or("bullet_points");
         let custom_prompt = config["custom_prompt"].as_str().unwrap_or("");
-        
+
         let scope = &config["scope"];
-        let project_names = scope["project_names"].as_array()
+        let project_names = scope["project_names"]
+            .as_array()
             .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
             .unwrap_or_default();
-        let tags = scope["tags"].as_array()
+        let tags = scope["tags"]
+            .as_array()
             .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
             .unwrap_or_default();
-        let keywords = scope["keywords"].as_array()
+        let keywords = scope["keywords"]
+            .as_array()
             .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
             .unwrap_or_default();
 
@@ -52,7 +71,10 @@ impl TauriAgentHandler {
         let target_project_name = output["project_name"].as_str().unwrap_or("");
         let sub_dir = output["sub_dir"].as_str().unwrap_or("reports");
 
-        eprintln!("[scheduler] Running AI report job: {} (model: {}, persona: {})", job_name, model, persona);
+        eprintln!(
+            "[scheduler] Running AI report job: {} (model: {}, persona: {})",
+            job_name, model, persona
+        );
 
         if project_names.is_empty() {
             return Err("Search scope projects are empty".into());
@@ -64,20 +86,32 @@ impl TauriAgentHandler {
             conn.query_row(
                 "SELECT path FROM projects WHERE name = ?1",
                 [target_project_name],
-                |r: &rusqlite::Row<'_>| r.get::<_, String>(0)
-            ).map_err(|e| format!("Target project '{}' not found: {}", target_project_name, e))?
+                |r: &rusqlite::Row<'_>| r.get::<_, String>(0),
+            )
+            .map_err(|e| format!("Target project '{}' not found: {}", target_project_name, e))?
         };
 
         // 2. Detect CLI
-        let provider = if model.contains("gemini") { "gemini" } else { "claude" };
+        let provider = if model.contains("gemini") {
+            "gemini"
+        } else {
+            "claude"
+        };
         let cli_info = detect_cli_path(provider.to_string()).await?;
-        let cli_path = cli_info["cliPath"].as_str().ok_or("CLI path not found")?.to_string();
+        let cli_path = cli_info["cliPath"]
+            .as_str()
+            .ok_or("CLI path not found")?
+            .to_string();
 
         // 3. Start Session & Register Collector
         let session_id = format!("scheduled-{}", uuid::Uuid::new_v4());
         eprintln!("[scheduler] Starting agent session: {}", session_id);
         {
-            let mut coll = self.state.collected_messages.lock().map_err(|_| "Collector lock failed")?;
+            let mut coll = self
+                .state
+                .collected_messages
+                .lock()
+                .map_err(|_| "Collector lock failed")?;
             coll.insert(session_id.clone(), String::new());
         }
 
@@ -88,7 +122,8 @@ impl TauriAgentHandler {
             provider.to_string(),
             cli_path,
             model.to_string(),
-        ).await?;
+        )
+        .await?;
 
         // 4. Build Prompt
         let persona_desc = match persona {
@@ -134,38 +169,52 @@ impl TauriAgentHandler {
 
         // 5. Send Message and Wait for Completion
         eprintln!("[scheduler] Sending main prompt to agent...");
-        chat_send_message_impl(
-            &self.state,
-            session_id.clone(),
-            main_prompt,
-        ).await?;
+        chat_send_message_impl(&self.state, session_id.clone(), main_prompt).await?;
 
         // 6. Collect final content
-        eprintln!("[scheduler] Agent finished. Collecting output for session {}", session_id);
+        eprintln!(
+            "[scheduler] Agent finished. Collecting output for session {}",
+            session_id
+        );
         let report_content = {
-            let mut coll = self.state.collected_messages.lock().map_err(|_| "Collector lock failed")?;
+            let mut coll = self
+                .state
+                .collected_messages
+                .lock()
+                .map_err(|_| "Collector lock failed")?;
             coll.remove(&session_id).unwrap_or_default()
         };
 
         if report_content.trim().is_empty() {
-            eprintln!("[scheduler] Error: AI generated empty report for job {}", job_name);
+            eprintln!(
+                "[scheduler] Error: AI generated empty report for job {}",
+                job_name
+            );
             return Err("AI generated empty report. The agent might have failed or didn't produce final text.".into());
         }
 
-        eprintln!("[scheduler] Report content received ({} characters). Saving to file...", report_content.len());
+        eprintln!(
+            "[scheduler] Report content received ({} characters). Saving to file...",
+            report_content.len()
+        );
 
         // 7. Save to File
         let date_str = Local::now().format("%Y-%m-%d").to_string();
         let file_name = format!("{}-{}.md", date_str, job_name);
         let report_dir = PathBuf::from(target_project_path).join(sub_dir);
-        
-        // Ensure directory exists
-        std::fs::create_dir_all(&report_dir).map_err(|e| format!("Failed to create report directory: {}", e))?;
-        
-        let file_path = report_dir.join(file_name);
-        std::fs::write(&file_path, report_content).map_err(|e| format!("Failed to write report file: {}", e))?;
 
-        eprintln!("[scheduler] Success: Report saved to {}", file_path.display());
+        // Ensure directory exists
+        std::fs::create_dir_all(&report_dir)
+            .map_err(|e| format!("Failed to create report directory: {}", e))?;
+
+        let file_path = report_dir.join(file_name);
+        std::fs::write(&file_path, report_content)
+            .map_err(|e| format!("Failed to write report file: {}", e))?;
+
+        eprintln!(
+            "[scheduler] Success: Report saved to {}",
+            file_path.display()
+        );
         Ok(format!("Report saved to: {}", file_path.display()))
     }
 }

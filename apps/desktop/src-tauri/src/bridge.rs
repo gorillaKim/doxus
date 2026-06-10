@@ -31,7 +31,9 @@ pub async fn run_bridge_server(secret_store: Arc<UnifiedKeychainStore>, port: u1
         .expect("Failed to bind bridge server to 127.0.0.1");
 
     eprintln!("[bridge] server running on http://127.0.0.1:{}", port);
-    axum::serve(listener, app).await.expect("Bridge server error");
+    axum::serve(listener, app)
+        .await
+        .expect("Bridge server error");
 }
 
 /// Bearer 토큰을 검증하는 미들웨어입니다.
@@ -61,6 +63,10 @@ async fn get_secret_handler(
 ) -> impl IntoResponse {
     match state.secret_store.get(&plugin_id, &key) {
         Ok(value) => (StatusCode::OK, Json(serde_json::json!({ "value": value }))).into_response(),
-        Err(_) => (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": "Secret not found" }))).into_response(),
+        Err(_) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "Secret not found" })),
+        )
+            .into_response(),
     }
 }

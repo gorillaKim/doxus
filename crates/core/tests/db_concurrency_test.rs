@@ -4,9 +4,9 @@ use tempfile::TempDir;
 use tokio::time::sleep;
 
 use doxus_core::db::create_pool;
-use doxus_core::search::{SearchEngine, SearchQuery};
 use doxus_core::indexing::IndexingService;
 use doxus_core::plugin::PluginManager;
+use doxus_core::search::{SearchEngine, SearchQuery};
 
 #[tokio::test]
 async fn test_db_concurrency_read_write_separation() {
@@ -15,10 +15,14 @@ async fn test_db_concurrency_read_write_separation() {
 
     // 1. 커넥션 풀 및 서비스 초기화
     let pool = create_pool(&db_path).unwrap();
-    
+
     let pm = Arc::new(PluginManager::new(temp_dir.path().join("plugins")));
     let search_engine = Arc::new(SearchEngine::new_fts_only(pool.clone()));
-    let _indexing_service = Arc::new(IndexingService::new(pool.clone(), pm.clone(), search_engine.clone()));
+    let _indexing_service = Arc::new(IndexingService::new(
+        pool.clone(),
+        pm.clone(),
+        search_engine.clone(),
+    ));
 
     // 2. 초기 데이터 및 프로젝트 생성
     {
@@ -27,7 +31,8 @@ async fn test_db_concurrency_read_write_separation() {
             "INSERT INTO projects(name, display_name, path, created_at, updated_at)
              VALUES ('test-project', 'Test Project', '/tmp', unixepoch(), unixepoch())",
             [],
-        ).unwrap();
+        )
+        .unwrap();
     }
 
     // 3. 백그라운드 스레드에서 쓰기(인덱싱)를 계속 진행
@@ -36,14 +41,20 @@ async fn test_db_concurrency_read_write_separation() {
         // 많은 양의 문서를 연속으로 인덱싱
         for i in 0..100 {
             let doc_id = format!("doc-{}", i);
-            let content = format!("This is the content of document number {}. It contains some text for search.", i);
-            search_engine_clone.index_document_async(
-                1, // project_id
-                &doc_id,
-                &format!("Title {}", i),
-                &content,
-                "fts",
-            ).await.expect("인덱싱 실패");
+            let content = format!(
+                "This is the content of document number {}. It contains some text for search.",
+                i
+            );
+            search_engine_clone
+                .index_document_async(
+                    1, // project_id
+                    &doc_id,
+                    &format!("Title {}", i),
+                    &content,
+                    "fts",
+                )
+                .await
+                .expect("인덱싱 실패");
             sleep(Duration::from_millis(5)).await;
         }
     });

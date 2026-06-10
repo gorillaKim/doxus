@@ -1,14 +1,14 @@
-use std::sync::Arc;
+use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use std::sync::Arc;
 use wiremock::matchers::{method, path};
-use serde_json::json;
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use doxus_core::plugin::wasm_adapter::WasmDocSourceAdapter;
 use doxus_core::plugin::manifest::PluginManifest;
+use doxus_core::plugin::wasm_adapter::WasmDocSourceAdapter;
 use doxus_core::secrets::{SecretStore, SecretsError};
-use doxus_plugin_sdk::{DocSource, PluginConfig, PluginSecrets, SecretValue, FetchAllOpts};
+use doxus_plugin_sdk::{DocSource, FetchAllOpts, PluginConfig, PluginSecrets, SecretValue};
 
 fn wasm_path() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -77,7 +77,11 @@ async fn test_set_secret_error_must_propagate() {
         abi_version: 1,
         http_domains: vec!["127.0.0.1".into()],
         kv_namespaces: vec![],
-        secrets: vec!["access_token".into(), "refresh_token".into(), "expires_at".into()],
+        secrets: vec![
+            "access_token".into(),
+            "refresh_token".into(),
+            "expires_at".into(),
+        ],
     };
 
     let mut adapter = WasmDocSourceAdapter::from_bytes(
@@ -85,7 +89,8 @@ async fn test_set_secret_error_must_propagate() {
         manifest,
         None,
         Some(Arc::new(FailingBackend)),
-    ).expect("Adapter creation failed");
+    )
+    .expect("Adapter creation failed");
 
     let config_fields: HashMap<String, serde_json::Value> = [
         ("base_url".into(), json!(base_url.clone())),
@@ -93,26 +98,40 @@ async fn test_set_secret_error_must_propagate() {
         ("client_id".into(), json!("client-123")),
         ("client_secret".into(), json!("secret-456")),
         ("oauth_base_url".into(), json!(base_url)),
-    ].into();
+    ]
+    .into();
 
     let secret_fields: HashMap<String, SecretValue> = [
         ("access_token".into(), SecretValue::Text("expired".into())),
-        ("refresh_token".into(), SecretValue::Text("old-refresh".into())),
+        (
+            "refresh_token".into(),
+            SecretValue::Text("old-refresh".into()),
+        ),
         // expires_at=0 → 토큰 갱신 강제
         ("expires_at".into(), SecretValue::Text("0".into())),
-    ].into();
+    ]
+    .into();
 
-    adapter.initialize(
-        PluginConfig { fields: config_fields },
-        PluginSecrets { fields: secret_fields },
-    ).await.unwrap();
+    adapter
+        .initialize(
+            PluginConfig {
+                fields: config_fields,
+            },
+            PluginSecrets {
+                fields: secret_fields,
+            },
+        )
+        .await
+        .unwrap();
 
     // 실행: refresh 성공 후 set_secret이 실패해야 에러 반환
     // 현재 구현(let _ = set_secret)은 에러를 무시하고 Ok()를 반환 → assert 실패(Red)
-    let result = adapter.fetch_all(FetchAllOpts {
-        cursor: None,
-        page_size: 10,
-    }).await;
+    let result = adapter
+        .fetch_all(FetchAllOpts {
+            cursor: None,
+            page_size: 10,
+        })
+        .await;
 
     assert!(result.is_err(), "set_secret 실패가 에러로 전파되어야 함. 현재는 무시되어 Ok를 반환하므로 이 테스트가 Red로 실패해야 함.");
 }

@@ -172,9 +172,7 @@ mod tests {
         cache
             .set("com.doxus.confluence", "page/123", "hello world", 30)
             .unwrap();
-        let result = cache
-            .get("com.doxus.confluence", "page/123")
-            .unwrap();
+        let result = cache.get("com.doxus.confluence", "page/123").unwrap();
         assert_eq!(result, Some("hello world".to_string()));
     }
 
@@ -191,9 +189,7 @@ mod tests {
             )
             .unwrap();
         let cache = ContentCache::new(&db.conn);
-        let result = cache
-            .get("com.doxus.confluence", "page/expired")
-            .unwrap();
+        let result = cache.get("com.doxus.confluence", "page/expired").unwrap();
         assert!(result.is_none(), "expired entry should not be returned");
     }
 
@@ -207,9 +203,7 @@ mod tests {
         cache
             .set("com.doxus.confluence", "page/123", "v2", 30)
             .unwrap();
-        let result = cache
-            .get("com.doxus.confluence", "page/123")
-            .unwrap();
+        let result = cache.get("com.doxus.confluence", "page/123").unwrap();
         assert_eq!(result, Some("v2".to_string()));
     }
 
@@ -220,9 +214,7 @@ mod tests {
         cache
             .set("com.doxus.confluence", "page/123", "content", 30)
             .unwrap();
-        let touched = cache
-            .touch("com.doxus.confluence", "page/123", 30)
-            .unwrap();
+        let touched = cache.touch("com.doxus.confluence", "page/123", 30).unwrap();
         assert!(touched, "touch should return true for a live entry");
     }
 
@@ -238,10 +230,11 @@ mod tests {
             )
             .unwrap();
         let cache = ContentCache::new(&db.conn);
-        let touched = cache
-            .touch("com.doxus.confluence", "page/exp", 30)
-            .unwrap();
-        assert!(!touched, "touch should return false for expired/missing entry");
+        let touched = cache.touch("com.doxus.confluence", "page/exp", 30).unwrap();
+        assert!(
+            !touched,
+            "touch should return false for expired/missing entry"
+        );
     }
 
     #[test]
@@ -254,9 +247,7 @@ mod tests {
         cache
             .invalidate("com.doxus.confluence", "page/123")
             .unwrap();
-        let result = cache
-            .get("com.doxus.confluence", "page/123")
-            .unwrap();
+        let result = cache.get("com.doxus.confluence", "page/123").unwrap();
         assert!(result.is_none(), "invalidated entry should not be returned");
     }
 
@@ -286,9 +277,7 @@ mod tests {
         let deleted = cache.cleanup_expired().unwrap();
         assert_eq!(deleted, 2, "should delete exactly 2 expired rows");
         // Live entry still accessible
-        let live = cache
-            .get("com.doxus.confluence", "page/live")
-            .unwrap();
+        let live = cache.get("com.doxus.confluence", "page/live").unwrap();
         assert!(live.is_some(), "live entry should survive cleanup");
     }
 

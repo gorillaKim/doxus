@@ -17,12 +17,11 @@
 ///
 /// Tests here use a third implementation, `RecordingEventSink`, defined
 /// locally so that assertions can be made without a real AppHandle.
-
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use doxus_core::db;
-use doxus_mcp::sync_loop::{EventSink, SyncEvent, spawn_sync_loop_with_sink};
+use doxus_mcp::sync_loop::{spawn_sync_loop_with_sink, EventSink, SyncEvent};
 use rusqlite::Connection;
 use tempfile::TempDir;
 
@@ -99,7 +98,9 @@ async fn sync_loop_emits_progress_event() {
 
     let events = sink.emitted();
     assert!(
-        events.iter().any(|e| matches!(e, SyncEvent::Progress { .. })),
+        events
+            .iter()
+            .any(|e| matches!(e, SyncEvent::Progress { .. })),
         "expected at least one SyncEvent::Progress, got: {events:?}"
     );
 }
@@ -143,7 +144,9 @@ async fn sync_loop_emits_complete_event() {
 
     let events = sink.emitted();
     assert!(
-        events.iter().any(|e| matches!(e, SyncEvent::Complete { .. })),
+        events
+            .iter()
+            .any(|e| matches!(e, SyncEvent::Complete { .. })),
         "expected at least one SyncEvent::Complete, got: {events:?}"
     );
 }
@@ -155,7 +158,7 @@ async fn sync_loop_emits_complete_event() {
 #[tokio::test]
 async fn sync_loop_noop_sink_does_not_panic() {
     std::env::set_var("DOXUS_SKIP_KEYCHAIN", "1");
-    use doxus_mcp::sync_loop::{NoopEventSink, spawn_sync_loop_with_sink};
+    use doxus_mcp::sync_loop::{spawn_sync_loop_with_sink, NoopEventSink};
 
     let (conn, _dir) = open_test_db();
     let handle = spawn_sync_loop_with_sink(
@@ -186,7 +189,9 @@ fn insert_obsidian_instance(conn: &Connection, vault_path: &str) {
     )
     .unwrap();
     let pid: i64 = conn
-        .query_row("SELECT last_insert_rowid()", [], |r: &rusqlite::Row| r.get(0))
+        .query_row("SELECT last_insert_rowid()", [], |r: &rusqlite::Row| {
+            r.get(0)
+        })
         .unwrap();
     let config = format!(r#"{{"path":"{}"}}"#, vault_path);
     conn.execute(

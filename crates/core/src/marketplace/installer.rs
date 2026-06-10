@@ -58,9 +58,10 @@ fn validate_redirect_destination(url: &url::Url) -> Result<(), InstallerError> {
     let host = url.host_str().unwrap_or("");
     if let Ok(addr) = host.parse::<std::net::IpAddr>() {
         if is_private_ip(addr) {
-            return Err(InstallerError::Download(
-                format!("redirect to private IP rejected: {}", host),
-            ));
+            return Err(InstallerError::Download(format!(
+                "redirect to private IP rejected: {}",
+                host
+            )));
         }
     }
     Ok(())
@@ -89,11 +90,19 @@ fn atomic_write(dest: &std::path::Path, bytes: &[u8]) -> Result<(), InstallerErr
 
 impl PluginInstaller {
     pub fn new(plugins_dir: PathBuf) -> Self {
-        Self { plugins_dir, allow_file_scheme: false, http_client: Mutex::new(None) }
+        Self {
+            plugins_dir,
+            allow_file_scheme: false,
+            http_client: Mutex::new(None),
+        }
     }
 
     pub fn new_with_file_scheme(plugins_dir: PathBuf) -> Self {
-        Self { plugins_dir, allow_file_scheme: true, http_client: Mutex::new(None) }
+        Self {
+            plugins_dir,
+            allow_file_scheme: true,
+            http_client: Mutex::new(None),
+        }
     }
 
     pub fn plugins_dir(&self) -> &Path {
@@ -112,7 +121,9 @@ impl PluginInstaller {
             let client = reqwest::blocking::Client::builder()
                 .redirect(Policy::limited(1))
                 .build()
-                .map_err(|e| InstallerError::Download(format!("failed to build HTTP client: {e}")))?;
+                .map_err(|e| {
+                    InstallerError::Download(format!("failed to build HTTP client: {e}"))
+                })?;
             *guard = Some(client);
         }
         // SAFETY: we just set `Some` above if it was `None`
@@ -156,8 +167,7 @@ impl PluginInstaller {
 
         const MAX_PLUGIN_SIZE: u64 = 50 * 1024 * 1024;
 
-        let parsed = url::Url::parse(url)
-            .map_err(|e| InstallerError::InvalidUrl(e.to_string()))?;
+        let parsed = url::Url::parse(url).map_err(|e| InstallerError::InvalidUrl(e.to_string()))?;
 
         let wasm_bytes: Vec<u8> = match parsed.scheme() {
             "http" | "https" => {
@@ -178,24 +188,29 @@ impl PluginInstaller {
                     }
 
                     if !resp.status().is_success() {
-                        return Err(InstallerError::Download(
-                            format!("HTTP {}: download failed", resp.status())
-                        ));
+                        return Err(InstallerError::Download(format!(
+                            "HTTP {}: download failed",
+                            resp.status()
+                        )));
                     }
 
                     if let Some(len) = resp.content_length() {
                         if len > MAX_PLUGIN_SIZE {
                             return Err(InstallerError::Download(format!(
-                                "plugin file too large: {} bytes (max 50MB)", len
+                                "plugin file too large: {} bytes (max 50MB)",
+                                len
                             )));
                         }
                     }
 
-                    let bytes = resp.bytes()
+                    let bytes = resp
+                        .bytes()
                         .map_err(|e| InstallerError::Download(e.to_string()))?;
 
                     if bytes.len() as u64 > MAX_PLUGIN_SIZE {
-                        return Err(InstallerError::Download("plugin file exceeds 50MB limit".into()));
+                        return Err(InstallerError::Download(
+                            "plugin file exceeds 50MB limit".into(),
+                        ));
                     }
 
                     Ok(bytes.to_vec())
@@ -210,9 +225,9 @@ impl PluginInstaller {
                     ));
                 }
                 {
-                    let path = parsed
-                        .to_file_path()
-                        .map_err(|_| InstallerError::InvalidUrl("cannot convert file:// to path".into()))?;
+                    let path = parsed.to_file_path().map_err(|_| {
+                        InstallerError::InvalidUrl("cannot convert file:// to path".into())
+                    })?;
                     let meta = std::fs::metadata(&path)?;
                     if meta.len() > MAX_PLUGIN_SIZE {
                         return Err(InstallerError::Download(format!(
@@ -363,7 +378,10 @@ mod tests {
 
         let installer = PluginInstaller::new_with_file_scheme(tmp.path().to_path_buf());
         let result = installer.install_from_url("com.test.plugin", url.as_str(), None);
-        assert!(result.is_ok(), "allow_file_scheme=true should install from file://");
+        assert!(
+            result.is_ok(),
+            "allow_file_scheme=true should install from file://"
+        );
     }
 
     #[test]
@@ -374,8 +392,13 @@ mod tests {
         let url = url::Url::from_file_path(&wasm_src).unwrap();
 
         let installer = PluginInstaller::new(tmp.path().to_path_buf()); // default: allow_file_scheme=false
-        let err = installer.install_from_url("com.test.plugin", url.as_str(), None).unwrap_err();
-        assert!(matches!(err, InstallerError::InvalidUrl(_)), "allow_file_scheme=false should reject file://");
+        let err = installer
+            .install_from_url("com.test.plugin", url.as_str(), None)
+            .unwrap_err();
+        assert!(
+            matches!(err, InstallerError::InvalidUrl(_)),
+            "allow_file_scheme=false should reject file://"
+        );
     }
 
     #[test]
@@ -400,7 +423,8 @@ mod tests {
     #[test]
     fn install_from_url_rejects_redirect() {
         let mut server = mockito::Server::new();
-        let _mock = server.mock("GET", "/plugin.wasm")
+        let _mock = server
+            .mock("GET", "/plugin.wasm")
             .with_status(302)
             .with_header("location", "http://169.254.169.254/latest/meta-data/")
             .create();
@@ -417,7 +441,8 @@ mod tests {
     fn install_from_url_succeeds_on_200_with_wasm_bytes() {
         let wasm_bytes = b"\x00asm\x01\x00\x00\x00";
         let mut server = mockito::Server::new();
-        let _mock = server.mock("GET", "/plugin.wasm")
+        let _mock = server
+            .mock("GET", "/plugin.wasm")
             .with_status(200)
             .with_header("content-type", "application/wasm")
             .with_body(wasm_bytes)
@@ -428,7 +453,11 @@ mod tests {
         let url = format!("{}/plugin.wasm", server.url());
         let result = installer.install_from_url("com.test.plugin", &url, None);
 
-        assert!(result.is_ok(), "200 response should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "200 response should succeed: {:?}",
+            result.err()
+        );
         assert!(tmp.path().join("com.test.plugin.wasm").exists());
     }
 
@@ -457,7 +486,8 @@ mod tests {
     fn install_from_url_rejects_bad_checksum() {
         let wasm_bytes = b"\x00asm\x01\x00\x00\x00";
         let mut server = mockito::Server::new();
-        let _mock = server.mock("GET", "/plugin.wasm")
+        let _mock = server
+            .mock("GET", "/plugin.wasm")
             .with_status(200)
             .with_body(wasm_bytes)
             .create();
@@ -465,8 +495,17 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let installer = PluginInstaller::new(tmp.path().to_path_buf());
         let url = format!("{}/plugin.wasm", server.url());
-        let err = installer.install_from_url("com.test.plugin", &url, Some("0000000000000000000000000000000000000000000000000000000000000000")).unwrap_err();
-        assert!(matches!(err, InstallerError::ChecksumMismatch { .. }), "expected ChecksumMismatch, got: {err:?}");
+        let err = installer
+            .install_from_url(
+                "com.test.plugin",
+                &url,
+                Some("0000000000000000000000000000000000000000000000000000000000000000"),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, InstallerError::ChecksumMismatch { .. }),
+            "expected ChecksumMismatch, got: {err:?}"
+        );
     }
 
     #[test]
@@ -474,7 +513,8 @@ mod tests {
         let wasm_bytes = b"\x00asm\x01\x00\x00\x00";
         let checksum = sha256_hex(wasm_bytes);
         let mut server = mockito::Server::new();
-        let _mock = server.mock("GET", "/plugin.wasm")
+        let _mock = server
+            .mock("GET", "/plugin.wasm")
             .with_status(200)
             .with_body(wasm_bytes)
             .create();
@@ -483,14 +523,19 @@ mod tests {
         let installer = PluginInstaller::new(tmp.path().to_path_buf());
         let url = format!("{}/plugin.wasm", server.url());
         let result = installer.install_from_url("com.test.plugin", &url, Some(&checksum));
-        assert!(result.is_ok(), "correct checksum should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "correct checksum should succeed: {:?}",
+            result.err()
+        );
     }
 
     #[test]
     fn install_from_url_none_checksum_skips_verification() {
         let wasm_bytes = b"\x00asm\x01\x00\x00\x00";
         let mut server = mockito::Server::new();
-        let _mock = server.mock("GET", "/plugin.wasm")
+        let _mock = server
+            .mock("GET", "/plugin.wasm")
             .with_status(200)
             .with_body(wasm_bytes)
             .create();
@@ -499,7 +544,11 @@ mod tests {
         let installer = PluginInstaller::new(tmp.path().to_path_buf());
         let url = format!("{}/plugin.wasm", server.url());
         let result = installer.install_from_url("com.test.plugin", &url, None);
-        assert!(result.is_ok(), "None checksum should skip verification: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "None checksum should skip verification: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -528,7 +577,11 @@ mod tests {
         let url = format!("{}/plugin.wasm", server_a.url());
         let result = installer.install_from_url("com.test.plugin", &url, None);
 
-        assert!(result.is_ok(), "single redirect to CDN (localhost) should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "single redirect to CDN (localhost) should succeed: {:?}",
+            result.err()
+        );
         assert!(tmp.path().join("com.test.plugin.wasm").exists());
     }
 
@@ -543,10 +596,16 @@ mod tests {
         for addr in &private_addrs {
             let url = url::Url::parse(addr).unwrap();
             let result = validate_redirect_destination(&url);
-            assert!(result.is_err(), "expected SSRF rejection for {addr}: got Ok");
+            assert!(
+                result.is_err(),
+                "expected SSRF rejection for {addr}: got Ok"
+            );
             match result.unwrap_err() {
                 InstallerError::Download(msg) => {
-                    assert!(msg.contains("redirect"), "expected 'redirect' in error for {addr}, got: {msg}");
+                    assert!(
+                        msg.contains("redirect"),
+                        "expected 'redirect' in error for {addr}, got: {msg}"
+                    );
                 }
                 other => panic!("expected Download error for {addr}, got: {other:?}"),
             }

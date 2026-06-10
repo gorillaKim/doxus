@@ -1,4 +1,6 @@
-use doxus_core::marketplace::registry::{find_best_match, matches_version, RegistryEntry, RegistryError};
+use doxus_core::marketplace::registry::{
+    find_best_match, matches_version, RegistryEntry, RegistryError,
+};
 
 fn make_entry(version: &str) -> RegistryEntry {
     RegistryEntry {

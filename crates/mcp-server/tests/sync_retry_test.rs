@@ -311,7 +311,9 @@ async fn rate_limited_does_not_count_as_failure() {
             async move {
                 let n = cc.fetch_add(1, Ordering::SeqCst);
                 if n == 0 {
-                    Err(PluginError::RateLimited { retry_after_secs: 1 })
+                    Err(PluginError::RateLimited {
+                        retry_after_secs: 1,
+                    })
                 } else {
                     Ok(42u32)
                 }
@@ -379,23 +381,25 @@ async fn rate_limited_then_transient_error_retries_correctly() {
     let (_tx, mut shutdown_rx) = watch::channel(false);
 
     // Call sequence: RateLimited → transient error → Ok
-    let result: Result<u32, PluginError> = doxus_mcp::sync_loop::retry_with_backoff_rate_aware(
-        &policy,
-        &mut shutdown_rx,
-        || {
+    let result: Result<u32, PluginError> =
+        doxus_mcp::sync_loop::retry_with_backoff_rate_aware(&policy, &mut shutdown_rx, || {
             let cc = Arc::clone(&cc);
             async move {
                 let n = cc.fetch_add(1, Ordering::SeqCst);
                 match n {
-                    0 => Err(PluginError::RateLimited { retry_after_secs: 1 }),
+                    0 => Err(PluginError::RateLimited {
+                        retry_after_secs: 1,
+                    }),
                     1 => Err(PluginError::Internal("transient".into())),
                     _ => Ok(99u32),
                 }
             }
-        },
-    )
-    .await;
+        })
+        .await;
 
-    assert!(result.is_ok(), "expected Ok after rate limit + transient retry");
+    assert!(
+        result.is_ok(),
+        "expected Ok after rate limit + transient retry"
+    );
     assert_eq!(call_count.load(Ordering::SeqCst), 3, "3 calls total");
 }

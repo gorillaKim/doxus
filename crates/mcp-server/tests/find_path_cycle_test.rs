@@ -48,8 +48,10 @@ fn insert_project(conn: &Connection) -> i64 {
         [],
     )
     .unwrap();
-    conn.query_row("SELECT id FROM projects WHERE name='test'", [], |r| r.get(0))
-        .unwrap()
+    conn.query_row("SELECT id FROM projects WHERE name='test'", [], |r| {
+        r.get(0)
+    })
+    .unwrap()
 }
 
 fn insert_doc(conn: &Connection, proj_id: i64, source_doc_id: &str) -> i64 {
@@ -92,16 +94,31 @@ async fn find_path_no_false_positive_on_prefix_ids() {
         proj_id
     };
 
-    let pm = Arc::new(doxus_core::plugin::PluginManager::new(tmp.path().to_path_buf()));
-    let server = McpServer::new(pool, tmp.path().join("test.db"), None, pm, tmp.path().to_path_buf());
-    let resp = server.dispatch_tool(
-        "doxus_find_path",
-        json!(1),
-        &json!({"project": "test", "from": "doc-1", "to": "doc-100"}),
-    ).await;
+    let pm = Arc::new(doxus_core::plugin::PluginManager::new(
+        tmp.path().to_path_buf(),
+    ));
+    let server = McpServer::new(
+        pool,
+        tmp.path().join("test.db"),
+        None,
+        pm,
+        tmp.path().to_path_buf(),
+    );
+    let resp = server
+        .dispatch_tool(
+            "doxus_find_path",
+            json!(1),
+            &json!({"project": "test", "from": "doc-1", "to": "doc-100"}),
+        )
+        .await;
 
-    assert!(resp.error.is_none(), "find_path should succeed: {:?}", resp.error);
-    let text = resp.result
+    assert!(
+        resp.error.is_none(),
+        "find_path should succeed: {:?}",
+        resp.error
+    );
+    let text = resp
+        .result
         .as_ref()
         .and_then(|r| r["content"][0]["text"].as_str())
         .unwrap_or("");
@@ -119,27 +136,38 @@ async fn find_path_detects_real_cycle_and_avoids_infinite_loop() {
     let _proj_id = {
         let conn = pool.get().unwrap();
         let proj_id = insert_project(&conn);
-     
+
         let ida = insert_doc(&conn, proj_id, "doc-a");
         let idb = insert_doc(&conn, proj_id, "doc-b");
         let _idc = insert_doc(&conn, proj_id, "doc-c");
-     
+
         // doc-a -> doc-b -> doc-a (cycle), doc-c is unreachable
         insert_link(&conn, ida, idb);
         insert_link(&conn, idb, ida);
         proj_id
     };
- 
-    let pm = Arc::new(doxus_core::plugin::PluginManager::new(tmp.path().to_path_buf()));
-    let server = McpServer::new(pool, tmp.path().join("test.db"), None, pm, tmp.path().to_path_buf());
-    let resp = server.dispatch_tool(
-        "doxus_find_path",
-        json!(1),
-        &json!({"project": "test", "from": "doc-a", "to": "doc-c"}),
-    ).await;
- 
+
+    let pm = Arc::new(doxus_core::plugin::PluginManager::new(
+        tmp.path().to_path_buf(),
+    ));
+    let server = McpServer::new(
+        pool,
+        tmp.path().join("test.db"),
+        None,
+        pm,
+        tmp.path().to_path_buf(),
+    );
+    let resp = server
+        .dispatch_tool(
+            "doxus_find_path",
+            json!(1),
+            &json!({"project": "test", "from": "doc-a", "to": "doc-c"}),
+        )
+        .await;
+
     // Should return a response (not hang), with no path found
-    let text = resp.result
+    let text = resp
+        .result
         .as_ref()
         .and_then(|r| r["content"][0]["text"].as_str())
         .unwrap_or("");

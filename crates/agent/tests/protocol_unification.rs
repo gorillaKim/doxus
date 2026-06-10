@@ -39,9 +39,7 @@ fn test_sidecar_manager_send_accepts_host_message() {
             &'b HostMessage,
         ) -> std::pin::Pin<
             Box<
-                dyn std::future::Future<
-                        Output = Result<(), doxus_agent::sidecar::AgentError>,
-                    > + 'a,
+                dyn std::future::Future<Output = Result<(), doxus_agent::sidecar::AgentError>> + 'a,
             >,
         >,
     ) {

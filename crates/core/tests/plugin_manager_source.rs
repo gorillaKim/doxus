@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use doxus_core::plugin::manager::PluginManager;
 use doxus_plugin_sdk::{
     Capabilities, ChangeSet, DocSource, DocumentStream, FetchAllOpts, FetchChangesOpts,
-    HealthStatus, PluginConfig, PluginError, PluginKind, PluginMetadata, PluginSecrets, RawDocument,
-    SourceDocId,
+    HealthStatus, PluginConfig, PluginError, PluginKind, PluginMetadata, PluginSecrets,
+    RawDocument, SourceDocId,
 };
 use tempfile::TempDir;
 
@@ -162,7 +162,10 @@ fn get_source_loads_wasm_from_disk() {
 
     let mgr = PluginManager::new(tmp.path().to_path_buf());
     let source = mgr.get_source("com.test.minimal");
-    assert!(source.is_some(), "expected Some when .wasm + .manifest.toml present");
+    assert!(
+        source.is_some(),
+        "expected Some when .wasm + .manifest.toml present"
+    );
     assert_eq!(source.unwrap().metadata().id, "com.test.minimal");
 }
 
@@ -174,7 +177,10 @@ fn get_source_returns_none_without_manifest() {
 
     let mgr = PluginManager::new(tmp.path().to_path_buf());
     let source = mgr.get_source("com.test.minimal");
-    assert!(source.is_none(), "expected None when .manifest.toml is missing");
+    assert!(
+        source.is_none(),
+        "expected None when .manifest.toml is missing"
+    );
 }
 
 #[test]
@@ -191,8 +197,11 @@ fn get_source_factory_takes_precedence_over_wasm() {
     let source = mgr.get_source("com.doxus.confluence").unwrap();
     // MockPlugin's kind is External; WasmDocSourceAdapter's kind is also External,
     // but we verify via the metadata name which MockPlugin sets to the id string.
-    assert_eq!(source.metadata().name, "com.doxus.confluence",
-        "factory-provided plugin should be returned, not WASM adapter");
+    assert_eq!(
+        source.metadata().name,
+        "com.doxus.confluence",
+        "factory-provided plugin should be returned, not WASM adapter"
+    );
 }
 
 #[test]
@@ -203,7 +212,10 @@ fn test_get_source_rejects_unsupported_abi_version() {
 
     let mgr = PluginManager::new(tmp.path().to_path_buf());
     let source = mgr.get_source("com.test.abi2");
-    assert!(source.is_none(), "expected None for unsupported abi_version=2");
+    assert!(
+        source.is_none(),
+        "expected None for unsupported abi_version=2"
+    );
 }
 
 #[test]

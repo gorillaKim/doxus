@@ -1,6 +1,6 @@
+use once_cell::sync::Lazy;
 use std::collections::HashSet;
 use std::sync::RwLock;
-use once_cell::sync::Lazy;
 
 static ENABLED_TAGS: Lazy<RwLock<HashSet<String>>> = Lazy::new(|| RwLock::new(HashSet::new()));
 
@@ -13,7 +13,10 @@ pub fn set_debug_tags(tags: Vec<String>) {
 
 /// Check if a specific debug tag is enabled.
 pub fn is_debug_enabled(tag: &str) -> bool {
-    ENABLED_TAGS.read().map(|guard| guard.contains(tag)).unwrap_or(false)
+    ENABLED_TAGS
+        .read()
+        .map(|guard| guard.contains(tag))
+        .unwrap_or(false)
 }
 
 /// Log a message if the given tag is enabled.
@@ -33,25 +36,42 @@ pub fn init_tracing() {
     // ORT INFO 로그가 stdout을 오염시키는 문제 방지.
     // RUST_LOG 미설정 시 "info,ort=error" 를 기본값으로 사용.
     // RUST_LOG 설정 시 해당 값을 그대로 사용 (사용자 오버라이드 가능).
-    let default_filter = std::env::var("RUST_LOG")
-        .unwrap_or_else(|_| "info,ort=error".to_string());
+    let default_filter = std::env::var("RUST_LOG").unwrap_or_else(|_| "info,ort=error".to_string());
     let filter = EnvFilter::new(default_filter);
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .init();
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
 /// Audit event types
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuditEvent {
-    IndexStart { project_id: i64 },
-    IndexComplete { project_id: i64, docs_indexed: usize },
-    PluginError { plugin_id: String, message: String },
-    SyncStart { source_instance_id: i64 },
-    SyncComplete { source_instance_id: i64, docs_synced: usize },
-    DocumentFetchError { project: String, doc_id: String, message: String },
-    SystemError { module: String, message: String },
+    IndexStart {
+        project_id: i64,
+    },
+    IndexComplete {
+        project_id: i64,
+        docs_indexed: usize,
+    },
+    PluginError {
+        plugin_id: String,
+        message: String,
+    },
+    SyncStart {
+        source_instance_id: i64,
+    },
+    SyncComplete {
+        source_instance_id: i64,
+        docs_synced: usize,
+    },
+    DocumentFetchError {
+        project: String,
+        doc_id: String,
+        message: String,
+    },
+    SystemError {
+        module: String,
+        message: String,
+    },
 }
 
 impl AuditEvent {
@@ -117,7 +137,8 @@ mod tests {
             "INSERT INTO projects (id, name, display_name, path, created_at, updated_at) \
              VALUES (1, 'test', 'Test', '/tmp', 0, 0)",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         conn
     }
 
@@ -146,7 +167,11 @@ mod tests {
         let event = AuditEvent::IndexStart { project_id: 1 };
         persist_audit(&conn, &event);
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM audit_log WHERE event_type = 'index_start'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE event_type = 'index_start'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 1);
     }
@@ -154,10 +179,17 @@ mod tests {
     #[test]
     fn persist_audit_stores_project_id() {
         let conn = make_conn();
-        let event = AuditEvent::IndexComplete { project_id: 1, docs_indexed: 99 };
+        let event = AuditEvent::IndexComplete {
+            project_id: 1,
+            docs_indexed: 99,
+        };
         persist_audit(&conn, &event);
         let project_id: Option<i64> = conn
-            .query_row("SELECT project_id FROM audit_log WHERE event_type = 'index_complete'", [], |r| r.get(0))
+            .query_row(
+                "SELECT project_id FROM audit_log WHERE event_type = 'index_complete'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(project_id, Some(1));
     }
@@ -165,10 +197,17 @@ mod tests {
     #[test]
     fn persist_audit_stores_payload_with_docs_count() {
         let conn = make_conn();
-        let event = AuditEvent::IndexComplete { project_id: 1, docs_indexed: 55 };
+        let event = AuditEvent::IndexComplete {
+            project_id: 1,
+            docs_indexed: 55,
+        };
         persist_audit(&conn, &event);
         let payload: Option<String> = conn
-            .query_row("SELECT payload FROM audit_log WHERE event_type = 'index_complete'", [], |r| r.get(0))
+            .query_row(
+                "SELECT payload FROM audit_log WHERE event_type = 'index_complete'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert!(payload.unwrap().contains("55"));
     }
@@ -182,7 +221,9 @@ mod tests {
         };
         persist_audit(&conn, &event);
         let row: (String, Option<i64>) = conn
-            .query_row("SELECT event_type, project_id FROM audit_log", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .query_row("SELECT event_type, project_id FROM audit_log", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
             .unwrap();
         assert_eq!(row.0, "plugin_error");
         assert_eq!(row.1, None);
@@ -191,9 +232,22 @@ mod tests {
     #[test]
     fn persist_audit_multiple_events_all_stored() {
         let conn = make_conn();
-        persist_audit(&conn, &AuditEvent::SyncStart { source_instance_id: 1 });
-        persist_audit(&conn, &AuditEvent::SyncComplete { source_instance_id: 1, docs_synced: 10 });
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0)).unwrap();
+        persist_audit(
+            &conn,
+            &AuditEvent::SyncStart {
+                source_instance_id: 1,
+            },
+        );
+        persist_audit(
+            &conn,
+            &AuditEvent::SyncComplete {
+                source_instance_id: 1,
+                docs_synced: 10,
+            },
+        );
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(count, 2);
     }
 }

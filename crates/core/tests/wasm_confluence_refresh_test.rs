@@ -1,14 +1,14 @@
-use std::sync::Arc;
+use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
+use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
-use wiremock::matchers::{method, path, header};
-use serde_json::json;
 
-use doxus_core::plugin::wasm_adapter::WasmDocSourceAdapter;
 use doxus_core::plugin::manifest::PluginManifest;
-use doxus_core::secrets::{SecretStore, MemorySecretStore};
-use doxus_plugin_sdk::{DocSource, PluginConfig, PluginSecrets, SecretValue, FetchAllOpts};
+use doxus_core::plugin::wasm_adapter::WasmDocSourceAdapter;
+use doxus_core::secrets::{MemorySecretStore, SecretStore};
+use doxus_plugin_sdk::{DocSource, FetchAllOpts, PluginConfig, PluginSecrets, SecretValue};
 
 /// WASM 플러그인 바이너리 경로를 워크스페이스 루트 기준으로 계산
 fn wasm_path() -> PathBuf {
@@ -136,7 +136,11 @@ async fn test_token_refresh_pushes_to_secret_backend() {
             format!("localhost:{}", port),
         ],
         kv_namespaces: vec![],
-        secrets: vec!["access_token".into(), "refresh_token".into(), "expires_at".into()],
+        secrets: vec![
+            "access_token".into(),
+            "refresh_token".into(),
+            "expires_at".into(),
+        ],
     };
 
     // 프로덕션에서는 KeyringBackend가 기본값, 테스트에서는 MemorySecretStore 주입
@@ -147,7 +151,8 @@ async fn test_token_refresh_pushes_to_secret_backend() {
         manifest,
         None,
         Some(test_backend.clone()), // None이면 KeyringBackend(Keychain)가 사용됨
-    ).expect("어댑터 생성 실패");
+    )
+    .expect("어댑터 생성 실패");
 
     // ── 초기화: 만료된 토큰 주입 ──────────────────────────────────────────────
     let config_fields: HashMap<String, serde_json::Value> = [
@@ -158,28 +163,49 @@ async fn test_token_refresh_pushes_to_secret_backend() {
         ("ancestor_id".into(), json!("ancestor-999")),
         // 핵심: OAuth 서버를 wiremock으로 리다이렉트
         ("oauth_base_url".into(), json!(base_url)),
-    ].into();
+    ]
+    .into();
 
     let secret_fields: HashMap<String, SecretValue> = [
-        ("access_token".into(), SecretValue::Text("expired-token".into())),
-        ("refresh_token".into(), SecretValue::Text("old-refresh-token".into())),
+        (
+            "access_token".into(),
+            SecretValue::Text("expired-token".into()),
+        ),
+        (
+            "refresh_token".into(),
+            SecretValue::Text("old-refresh-token".into()),
+        ),
         // expires_at = 0 으로 설정 → 항상 갱신 조건 충족
         ("expires_at".into(), SecretValue::Text("0".into())),
-    ].into();
+    ]
+    .into();
 
-    adapter.initialize(
-        PluginConfig { fields: config_fields },
-        PluginSecrets { fields: secret_fields },
-    ).await.expect("초기화 실패");
+    adapter
+        .initialize(
+            PluginConfig {
+                fields: config_fields,
+            },
+            PluginSecrets {
+                fields: secret_fields,
+            },
+        )
+        .await
+        .expect("초기화 실패");
 
     // ── 실행: fetch_all → 내부적으로 토큰 갱신 발생 ──────────────────────────
-    let stream = adapter.fetch_all(FetchAllOpts {
-        cursor: None,
-        page_size: 10,
-    }).await.expect("fetch_all 실패");
+    let stream = adapter
+        .fetch_all(FetchAllOpts {
+            cursor: None,
+            page_size: 10,
+        })
+        .await
+        .expect("fetch_all 실패");
 
     // 결과 검증
-    assert!(!stream.documents.is_empty(), "문서가 최소 1개 이상이어야 함");
+    assert!(
+        !stream.documents.is_empty(),
+        "문서가 최소 1개 이상이어야 함"
+    );
     assert_eq!(stream.documents[0].title, Some("Test Page".into()));
 
     // ── 핵심 검증: 시크릿 백엔드에 새 토큰이 저장됐는지 확인 ──────────────────

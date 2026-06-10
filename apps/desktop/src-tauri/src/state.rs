@@ -1,14 +1,14 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::AtomicBool;
+use doxus_agent::prompt::PromptLoader;
+use doxus_agent::sync_sidecar::SyncSidecarManager;
 use doxus_core::embedding::EmbeddingProvider;
 use doxus_core::plugin::PluginManager;
-use doxus_core::secrets::UnifiedKeychainStore;
-use doxus_agent::sync_sidecar::SyncSidecarManager;
-use doxus_agent::prompt::PromptLoader;
-use doxus_core::sync_manager::{SyncManager, SyncTrigger};
 use doxus_core::scheduler::SchedulerManager;
+use doxus_core::secrets::UnifiedKeychainStore;
+use doxus_core::sync_manager::{SyncManager, SyncTrigger};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, RwLock};
 
 /// Shared, swappable embedder. The inner `Arc<dyn ...>` can be replaced at runtime
@@ -17,7 +17,11 @@ use tokio::sync::{mpsc, RwLock};
 pub type SharedEmbedder = Arc<RwLock<Arc<dyn EmbeddingProvider + Send + Sync>>>;
 
 pub fn builtin_plugin_ids() -> &'static [&'static str] {
-    &["com.doxus.obsidian", "com.doxus.confluence", "com.doxus.github"]
+    &[
+        "com.doxus.obsidian",
+        "com.doxus.confluence",
+        "com.doxus.github",
+    ]
 }
 
 #[cfg(test)]
@@ -86,7 +90,10 @@ impl AppState {
         }
 
         let shared_embedder: SharedEmbedder = Arc::new(RwLock::new(embedder.clone()));
-        let search_engine = Arc::new(doxus_core::search::SearchEngine::with_embedder(conn.clone(), embedder));
+        let search_engine = Arc::new(doxus_core::search::SearchEngine::with_embedder(
+            conn.clone(),
+            embedder,
+        ));
 
         // 1. PluginManager를 먼저 생성하고 내장 플러그인 등록
         let mut plugin_manager = PluginManager::new(plugins_dir.clone());
@@ -105,12 +112,12 @@ impl AppState {
         let indexing_service = Arc::new(doxus_core::indexing::IndexingService::new(
             conn.clone(),
             plugin_manager.clone(),
-            search_engine.clone()
+            search_engine.clone(),
         ));
 
         let (sync_manager, rx) = SyncManager::new(indexing_service.clone());
         let sync_manager = Arc::new(sync_manager);
-        
+
         let scheduler_manager = Arc::new(SchedulerManager::new(conn.clone(), indexing_service));
 
         let secret_store = Arc::new(UnifiedKeychainStore::new("doxus", "com.doxus.secrets.v1"));
@@ -146,7 +153,7 @@ impl AppState {
                 mcp_endpoint: Arc::new(Mutex::new(None)),
                 mcp_token: Arc::new(Mutex::new(String::new())),
             },
-            rx
+            rx,
         )
     }
 }

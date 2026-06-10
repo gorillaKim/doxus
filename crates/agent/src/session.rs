@@ -59,9 +59,9 @@ mod tests {
     use std::sync::Arc;
 
     fn echo_bridge() -> ToolBridge {
-        ToolBridge::with_default_tools(Arc::new(|name, input| {
-            serde_json::json!({"tool": name, "input": input})
-        }))
+        ToolBridge::with_default_tools(Arc::new(
+            |name, input| serde_json::json!({"tool": name, "input": input}),
+        ))
     }
 
     /// ToolBridge routes an allowed tool_use and returns a tool_result.

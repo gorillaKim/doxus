@@ -6,8 +6,8 @@
 use std::io::{BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// Find the Node.js binary. macOS GUI apps don't inherit the user's shell PATH.
 fn find_node_binary() -> std::path::PathBuf {
@@ -94,7 +94,11 @@ impl SyncSidecarManager {
 
         let node_bin = find_node_binary();
         if self.debug_enabled.load(Ordering::Relaxed) {
-            eprintln!("[sidecar] Starting: {} {}", node_bin.display(), script.display());
+            eprintln!(
+                "[sidecar] Starting: {} {}",
+                node_bin.display(),
+                script.display()
+            );
         }
 
         let mut child = Command::new(&node_bin)
@@ -129,7 +133,9 @@ impl SyncSidecarManager {
         let stdin = guard.as_mut().ok_or("sidecar not running")?;
         let mut line = serde_json::to_string(request).map_err(|e| e.to_string())?;
         line.push('\n');
-        stdin.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
+        stdin
+            .write_all(line.as_bytes())
+            .map_err(|e| e.to_string())?;
         stdin.flush().map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -163,9 +169,13 @@ impl SyncSidecarManager {
 }
 
 impl Default for SyncSidecarManager {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Drop for SyncSidecarManager {
-    fn drop(&mut self) { self.shutdown(); }
+    fn drop(&mut self) {
+        self.shutdown();
+    }
 }

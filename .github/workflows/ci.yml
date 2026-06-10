@@ -31,21 +31,14 @@ jobs:
           touch apps/desktop/src-tauri/binaries/doxus-mcp-aarch64-apple-darwin
           touch apps/desktop/src-tauri/binaries/doxus-mcp-x86_64-apple-darwin
 
+      - name: Format Check
+        run: cargo fmt --check
+
       - name: Clippy
         run: cargo clippy --workspace --all-features -- -D warnings
 
       - name: Run Rust tests
-        run: |
-          set -euo pipefail
-          # Targeted filters skip known-hanging integration tests (wiremock/mockito OAuth tests).
-          # Assert at least one test ran to catch silent filter mismatches.
-          out=$(cargo test -p doxus-core -- db::tests reindex::tests --test-threads=4 2>&1 | tee /dev/stderr)
-          echo "$out" | grep -qE 'test result: ok\. [1-9]' \
-            || { echo "::error::No doxus-core tests ran — check filter path names"; exit 1; }
-
-          out=$(cargo test -p doxus-desktop -- update_manager::tests state::tests --test-threads=4 2>&1 | tee /dev/stderr)
-          echo "$out" | grep -qE 'test result: ok\. [1-9]' \
-            || { echo "::error::No doxus-desktop tests ran — check filter path names"; exit 1; }
+        run: cargo test --workspace --all-features
 
   # Catches Tauri macro expansion failures, build.rs errors, and missing IPC
   # command registration at PR time instead of waiting for a tag push.

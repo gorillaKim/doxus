@@ -26,7 +26,8 @@ impl SyncScheduler {
     /// Returns source instances that are due for synchronization.
     /// Delegates to `SyncDb::due_instances` with the configured interval.
     pub fn due_instances<'a>(&self, db: &'a SyncDb<'a>) -> Result<Vec<DueInstance>, SyncError> {
-        db.due_instances(self.interval_secs as i64).map_err(SyncError::Db)
+        db.due_instances(self.interval_secs as i64)
+            .map_err(SyncError::Db)
     }
 }
 

@@ -21,8 +21,17 @@ pub async fn reindex_documents(server: &McpServer, id: Value, args: &Value) -> M
         }
         "documents" => {
             let ids: Vec<String> = match args["document_ids"].as_array() {
-                Some(arr) => arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect(),
-                None => return McpResponse::err(id, -32602, "scope=documents requires document_ids array"),
+                Some(arr) => arr
+                    .iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect(),
+                None => {
+                    return McpResponse::err(
+                        id,
+                        -32602,
+                        "scope=documents requires document_ids array",
+                    )
+                }
             };
             ReindexScope::Documents(ids)
         }
@@ -55,9 +64,12 @@ pub async fn reindex_documents(server: &McpServer, id: Value, args: &Value) -> M
             if let Some(targets) = result.dry_run_targets {
                 resp["dry_run_targets"] = json!(targets);
             }
-            McpResponse::ok(id, json!({
-                "content": [{"type": "text", "text": serde_json::to_string_pretty(&resp).unwrap_or_default()}]
-            }))
+            McpResponse::ok(
+                id,
+                json!({
+                    "content": [{"type": "text", "text": serde_json::to_string_pretty(&resp).unwrap_or_default()}]
+                }),
+            )
         }
     }
 }
@@ -92,27 +104,32 @@ pub fn reindex_status(server: &McpServer, id: Value, args: &Value) -> McpRespons
         Err(e) => return McpResponse::err(id, -32603, e.to_string()),
     };
 
-    let rows: Result<Vec<Value>, _> = stmt.query_map(params![pid], |r: &rusqlite::Row<'_>| {
-        Ok(json!({
-            "id": r.get::<_, i64>(0)?,
-            "scope": r.get::<_, String>(1)?,
-            "status": r.get::<_, String>(2)?,
-            "total_docs": r.get::<_, i64>(3)?,
-            "processed_docs": r.get::<_, i64>(4)?,
-            "error_message": r.get::<_, Option<String>>(5)?,
-            "started_at": r.get::<_, i64>(6)?,
-            "completed_at": r.get::<_, Option<i64>>(7)?,
-        }))
-    }).and_then(|it| it.collect());
+    let rows: Result<Vec<Value>, _> = stmt
+        .query_map(params![pid], |r: &rusqlite::Row<'_>| {
+            Ok(json!({
+                "id": r.get::<_, i64>(0)?,
+                "scope": r.get::<_, String>(1)?,
+                "status": r.get::<_, String>(2)?,
+                "total_docs": r.get::<_, i64>(3)?,
+                "processed_docs": r.get::<_, i64>(4)?,
+                "error_message": r.get::<_, Option<String>>(5)?,
+                "started_at": r.get::<_, i64>(6)?,
+                "completed_at": r.get::<_, Option<i64>>(7)?,
+            }))
+        })
+        .and_then(|it| it.collect());
 
     match rows {
         Err(e) => McpResponse::err(id, -32603, e.to_string()),
-        Ok(rows) => McpResponse::ok(id, json!({
-            "content": [{"type": "text", "text": serde_json::to_string_pretty(&json!({
-                "project": project,
-                "history": rows,
-            })).unwrap_or_default()}]
-        })),
+        Ok(rows) => McpResponse::ok(
+            id,
+            json!({
+                "content": [{"type": "text", "text": serde_json::to_string_pretty(&json!({
+                    "project": project,
+                    "history": rows,
+                })).unwrap_or_default()}]
+            }),
+        ),
     }
 }
 
@@ -145,24 +162,42 @@ mod tests {
         }
         let pid: i64 = {
             let conn = pool.get().unwrap();
-            conn.query_row("SELECT id FROM projects WHERE name='rp'", [], |r| r.get::<_, i64>(0)).unwrap()
+            conn.query_row("SELECT id FROM projects WHERE name='rp'", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap()
         };
-        let pm = Arc::new(doxus_core::plugin::PluginManager::new(PathBuf::from("/tmp")));
+        let pm = Arc::new(doxus_core::plugin::PluginManager::new(PathBuf::from(
+            "/tmp",
+        )));
         let server = McpServer::new(pool, db_path, None, pm, PathBuf::from("/tmp"));
-        TestServer { _temp_dir: temp_dir, server, pid }
+        TestServer {
+            _temp_dir: temp_dir,
+            server,
+            pid,
+        }
     }
 
     fn insert_doc(server: &McpServer, pid: i64, sid: &str, title: &str) {
         let conn = server.conn();
         let c = conn.get().unwrap();
         let engine = SyncSearchEngine::from_conn(&c);
-        let meta = DocMeta { created_at: Some(1000), updated_at: Some(1000), ..Default::default() };
-        engine.index_document_with_meta(pid, sid, title, title, &meta, "full").unwrap();
+        let meta = DocMeta {
+            created_at: Some(1000),
+            updated_at: Some(1000),
+            ..Default::default()
+        };
+        engine
+            .index_document_with_meta(pid, sid, title, title, &meta, "full")
+            .unwrap();
     }
 
     fn get_text(resp: &McpResponse) -> String {
         let v = serde_json::to_value(resp).unwrap();
-        v["result"]["content"][0]["text"].as_str().unwrap_or_default().to_string()
+        v["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
     }
 
     // ── Step 5 TDD 테스트 ────────────────────────────────────────────────────

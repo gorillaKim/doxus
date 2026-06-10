@@ -10,12 +10,21 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
     use doxus_core::search::{SearchEngine, SearchMode, SearchQuery};
 
     let query_text = args["query"].as_str().unwrap_or("");
-    let tags = args["tags"].as_array()
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<String>>())
+    let tags = args["tags"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect::<Vec<String>>()
+        })
         .unwrap_or_default();
 
     if query_text.is_empty() && tags.is_empty() {
-        return McpResponse::err(id, -32602, "Missing required arg: either 'query' or 'tags' must be provided");
+        return McpResponse::err(
+            id,
+            -32602,
+            "Missing required arg: either 'query' or 'tags' must be provided",
+        );
     }
 
     let limit = args["limit"].as_u64().unwrap_or(20) as usize;
@@ -48,19 +57,29 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
     }
 
     // 날짜 필터 파라미터
-    if let Some(v) = args["created_after"].as_i64()  { q.created_after  = Some(v); }
-    if let Some(v) = args["created_before"].as_i64() { q.created_before = Some(v); }
-    if let Some(v) = args["updated_after"].as_i64()  { q.updated_after  = Some(v); }
-    if let Some(v) = args["updated_before"].as_i64() { q.updated_before = Some(v); }
+    if let Some(v) = args["created_after"].as_i64() {
+        q.created_after = Some(v);
+    }
+    if let Some(v) = args["created_before"].as_i64() {
+        q.created_before = Some(v);
+    }
+    if let Some(v) = args["updated_after"].as_i64() {
+        q.updated_after = Some(v);
+    }
+    if let Some(v) = args["updated_before"].as_i64() {
+        q.updated_before = Some(v);
+    }
 
     q.mode = match args["mode"].as_str() {
         Some("fts") => SearchMode::Fts,
         Some("vector") => SearchMode::Vector,
-        _ => if server.embedder().is_some() {
-            SearchMode::Hybrid
-        } else {
-            SearchMode::Fts
-        },
+        _ => {
+            if server.embedder().is_some() {
+                SearchMode::Hybrid
+            } else {
+                SearchMode::Fts
+            }
+        }
     };
 
     if let Some(embedder) = server.embedder() {
@@ -103,9 +122,14 @@ pub async fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse 
                             })
                         })
                         .collect();
-                    
+
                     let mut resp = serde_json::to_string_pretty(&items).unwrap_or_default();
-                    if hits.iter().any(|h| h.context_content.as_ref().map(|s| s.contains("truncated")).unwrap_or(false)) {
+                    if hits.iter().any(|h| {
+                        h.context_content
+                            .as_ref()
+                            .map(|s| s.contains("truncated"))
+                            .unwrap_or(false)
+                    }) {
                         resp.push_str("\n\nNOTE: Some contexts were truncated for token efficiency. Use 'doxus_get_section' with the 'heading' provided above for full content.");
                     }
                     resp
@@ -199,24 +223,32 @@ pub async fn get_document(server: &McpServer, id: Value, args: &Value) -> McpRes
     let project = project_name_resolved.as_str();
 
     let pm = server.plugin_manager();
-    let service = doxus_core::document::DocumentService::new(server.conn().clone(), Some(pm.clone()));
+    let service =
+        doxus_core::document::DocumentService::new(server.conn().clone(), Some(pm.clone()));
 
     match service.fetch_full_content(project, &source_doc_id).await {
         Err(e) => {
             if let Ok(mut file) = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open("/tmp/doxus-error.log") 
+                .open("/tmp/doxus-error.log")
             {
                 use std::io::Write;
-                let _ = writeln!(file, "[Error] fetch failed for {} in {}: {}", source_doc_id, project, e);
+                let _ = writeln!(
+                    file,
+                    "[Error] fetch failed for {} in {}: {}",
+                    source_doc_id, project, e
+                );
             }
             McpResponse::err(
                 id,
                 -32602,
-                format!("Failed to fetch document '{}' in project '{}': {}", source_doc_id, project, e),
+                format!(
+                    "Failed to fetch document '{}' in project '{}': {}",
+                    source_doc_id, project, e
+                ),
             )
-        },
+        }
         Ok(doc) => {
             if let Some(sid) = session_id {
                 if db_id > 0 {
@@ -241,14 +273,22 @@ pub async fn get_document(server: &McpServer, id: Value, args: &Value) -> McpRes
                     conn_lock.query_row(
                         "SELECT id, storage_strategy FROM projects WHERE name = ?1",
                         params![project_name],
-                        |r: &rusqlite::Row<'_>| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+                        |r: &rusqlite::Row<'_>| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
                     )
                 };
 
                 if let Ok((pid, strategy)) = project_id_res {
-                    if indexer.needs_reindexing(pid, &doc_clone.id.0, doc_clone.updated_at).await {
-                        tracing::info!("[JIT-Indexer] Background indexing triggered for document: {}", doc_sid);
-                        let _ = indexer.index_single_document(pid, doc_clone, &strategy).await;
+                    if indexer
+                        .needs_reindexing(pid, &doc_clone.id.0, doc_clone.updated_at)
+                        .await
+                    {
+                        tracing::info!(
+                            "[JIT-Indexer] Background indexing triggered for document: {}",
+                            doc_sid
+                        );
+                        let _ = indexer
+                            .index_single_document(pid, doc_clone, &strategy)
+                            .await;
                     }
                 }
             });
@@ -257,16 +297,26 @@ pub async fn get_document(server: &McpServer, id: Value, args: &Value) -> McpRes
             let tags = doc.tags.clone();
             let metadata_json = serde_json::to_string(&doc.metadata).ok();
 
-            if title.is_empty() { title = format!("Source ID: {}", source_doc_id); }
+            if title.is_empty() {
+                title = format!("Source ID: {}", source_doc_id);
+            }
             let mut header = format!("# {title}\n");
             if !tags.is_empty() {
-                header.push_str(&format!("Tags: {}\n", tags.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" ")));
+                header.push_str(&format!(
+                    "Tags: {}\n",
+                    tags.iter()
+                        .map(|t| format!("#{t}"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ));
             }
             if let Some(json) = metadata_json {
                 if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&json) {
                     for (k, v) in map {
-                          if k == "links" || k == "relative_path" { continue; }
-                          header.push_str(&format!("{k}: {v}\n"));
+                        if k == "links" || k == "relative_path" {
+                            continue;
+                        }
+                        header.push_str(&format!("{k}: {v}\n"));
                     }
                 }
             }
@@ -279,12 +329,14 @@ pub async fn get_document(server: &McpServer, id: Value, args: &Value) -> McpRes
                 }
                 "outline" => {
                     let toc = extract_toc(&doc.content);
-                    let body = if toc.is_empty() { "No headings found.".to_string() } else { toc };
+                    let body = if toc.is_empty() {
+                        "No headings found.".to_string()
+                    } else {
+                        toc
+                    };
                     McpResponse::text(id, format!("{header}{body}"))
                 }
-                _ => {
-                    McpResponse::text(id, format!("{header}{}", doc.content))
-                }
+                _ => McpResponse::text(id, format!("{header}{}", doc.content)),
             }
         }
     }
@@ -306,13 +358,21 @@ pub async fn get_toc(server: &McpServer, id: Value, args: &Value) -> McpResponse
     let project = project_name_resolved.as_str();
 
     let pm = server.plugin_manager();
-    let service = doxus_core::document::DocumentService::new(server.conn().clone(), Some(pm.clone()));
+    let service =
+        doxus_core::document::DocumentService::new(server.conn().clone(), Some(pm.clone()));
 
     match service.fetch_full_content(project, &source_doc_id).await {
         Err(e) => McpResponse::err(id, -32602, e.to_string()),
         Ok(doc) => {
             let toc = extract_toc(&doc.content);
-            McpResponse::text(id, if toc.is_empty() { "No headings found.".into() } else { toc })
+            McpResponse::text(
+                id,
+                if toc.is_empty() {
+                    "No headings found.".into()
+                } else {
+                    toc
+                },
+            )
         }
     }
 }
@@ -337,13 +397,21 @@ pub async fn get_section(server: &McpServer, id: Value, args: &Value) -> McpResp
     let project = project_name_resolved.as_str();
 
     let pm = server.plugin_manager();
-    let service = doxus_core::document::DocumentService::new(server.conn().clone(), Some(pm.clone()));
+    let service =
+        doxus_core::document::DocumentService::new(server.conn().clone(), Some(pm.clone()));
 
     match service.fetch_full_content(project, &source_doc_id).await {
         Err(e) => McpResponse::err(id, -32602, e.to_string()),
         Ok(doc) => {
             let section = extract_section(&doc.content, heading);
-            McpResponse::text(id, if section.is_empty() { format!("Heading '{}' not found.", heading) } else { section })
+            McpResponse::text(
+                id,
+                if section.is_empty() {
+                    format!("Heading '{}' not found.", heading)
+                } else {
+                    section
+                },
+            )
         }
     }
 }
@@ -355,20 +423,31 @@ pub fn get_metadata(server: &McpServer, id: Value, args: &Value) -> McpResponse 
         Ok(l) => l,
         Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
-    let (db_id, source_doc_id, project_name_resolved) = match resolve_doc_id_optional_project(&conn_lock, project_opt, &args["id"]) {
-        Ok(res) => res,
-        Err(e) => return McpResponse::err(id, -32602, e),
-    };
+    let (db_id, source_doc_id, project_name_resolved) =
+        match resolve_doc_id_optional_project(&conn_lock, project_opt, &args["id"]) {
+            Ok(res) => res,
+            Err(e) => return McpResponse::err(id, -32602, e),
+        };
     let project = project_name_resolved.as_str();
 
     let row: Result<(Option<String>, String, i64), _> = conn_lock.query_row(
         "SELECT title, content_hash, last_indexed FROM documents WHERE id = ?1",
         params![db_id],
-        |r: &rusqlite::Row<'_>| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)),
+        |r: &rusqlite::Row<'_>| {
+            Ok((
+                r.get::<_, Option<String>>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        },
     );
 
     match row {
-        Err(_) => McpResponse::err(id, -32602, format!("document '{}' not found", source_doc_id)),
+        Err(_) => McpResponse::err(
+            id,
+            -32602,
+            format!("document '{}' not found", source_doc_id),
+        ),
         Ok((title, hash, indexed)) => {
             let meta = json!({
                 "id": db_id,
@@ -378,7 +457,10 @@ pub fn get_metadata(server: &McpServer, id: Value, args: &Value) -> McpResponse 
                 "content_hash": hash,
                 "last_indexed": indexed,
             });
-            McpResponse::ok(id, json!({ "content": [{"type": "text", "text": serde_json::to_string_pretty(&meta).unwrap_or_default()}] }))
+            McpResponse::ok(
+                id,
+                json!({ "content": [{"type": "text", "text": serde_json::to_string_pretty(&meta).unwrap_or_default()}] }),
+            )
         }
     }
 }
@@ -389,7 +471,10 @@ pub fn list_documents(server: &McpServer, id: Value, args: &Value) -> McpRespons
         None => return McpResponse::err(id, -32602, "missing required arg: project"),
     };
     let limit = args["limit"].as_u64().unwrap_or(50) as i64;
-    let cursor_offset = args["cursor"].as_str().and_then(|c| c.parse::<i64>().ok()).unwrap_or(0);
+    let cursor_offset = args["cursor"]
+        .as_str()
+        .and_then(|c| c.parse::<i64>().ok())
+        .unwrap_or(0);
 
     // sort_by: "title" | "created_at" | "updated_at" | "last_indexed" (기본: source_doc_id)
     let order_col = match args["sort_by"].as_str() {
@@ -420,28 +505,43 @@ pub fn list_documents(server: &McpServer, id: Value, args: &Value) -> McpRespons
         Err(e) => return McpResponse::err(id, -32603, e.to_string()),
     };
 
-    let rows: Result<Vec<_>, _> = stmt.query_map(params![project, limit, cursor_offset], |r: &rusqlite::Row<'_>| {
-        Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, Option<String>>(1)?,
-            r.get::<_, Option<i64>>(2)?,
-            r.get::<_, Option<i64>>(3)?,
-        ))
-    }).and_then(|it| it.collect());
+    let rows: Result<Vec<_>, _> = stmt
+        .query_map(
+            params![project, limit, cursor_offset],
+            |r: &rusqlite::Row<'_>| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<i64>>(2)?,
+                    r.get::<_, Option<i64>>(3)?,
+                ))
+            },
+        )
+        .and_then(|it| it.collect());
 
     match rows {
         Err(e) => McpResponse::err(id, -32603, e.to_string()),
         Ok(rows) => {
-            let next_cursor = if rows.len() as i64 == limit { Some(cursor_offset + limit) } else { None };
-            let items: Vec<Value> = rows.iter().map(|(doc_id, title, created_at, updated_at)| {
-                json!({
-                    "id": doc_id,
-                    "title": title,
-                    "created_at": created_at,
-                    "updated_at": updated_at,
+            let next_cursor = if rows.len() as i64 == limit {
+                Some(cursor_offset + limit)
+            } else {
+                None
+            };
+            let items: Vec<Value> = rows
+                .iter()
+                .map(|(doc_id, title, created_at, updated_at)| {
+                    json!({
+                        "id": doc_id,
+                        "title": title,
+                        "created_at": created_at,
+                        "updated_at": updated_at,
+                    })
                 })
-            }).collect();
-            McpResponse::ok(id, json!({ "content": [{"type": "text", "text": serde_json::to_string_pretty(&json!({ "documents": items, "next_cursor": next_cursor })).unwrap_or_default()}] }))
+                .collect();
+            McpResponse::ok(
+                id,
+                json!({ "content": [{"type": "text", "text": serde_json::to_string_pretty(&json!({ "documents": items, "next_cursor": next_cursor })).unwrap_or_default()}] }),
+            )
         }
     }
 }
@@ -477,7 +577,10 @@ pub fn get_documents(server: &McpServer, id: Value, args: &Value) -> McpResponse
         }
     }
 
-    McpResponse::ok(id, json!({ "content": [{"type": "text", "text": serde_json::to_string_pretty(&results).unwrap_or_default()}] }))
+    McpResponse::ok(
+        id,
+        json!({ "content": [{"type": "text", "text": serde_json::to_string_pretty(&results).unwrap_or_default()}] }),
+    )
 }
 
 pub fn resolve_alias(server: &McpServer, id: Value, args: &Value) -> McpResponse {
@@ -496,7 +599,10 @@ pub fn resolve_alias(server: &McpServer, id: Value, args: &Value) -> McpResponse
         |r: &rusqlite::Row<'_>| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
     );
     match row {
-        Ok((doc_id, project)) => McpResponse::text(id, format!("alias '{alias}' → project: {project}, id: {doc_id}")),
+        Ok((doc_id, project)) => McpResponse::text(
+            id,
+            format!("alias '{alias}' → project: {project}, id: {doc_id}"),
+        ),
         Err(_) => McpResponse::err(id, -32602, format!("alias '{alias}' not found")),
     }
 }
@@ -518,12 +624,23 @@ pub fn get_ranking(server: &McpServer, id: Value, args: &Value) -> McpResponse {
         Ok(s) => s,
         Err(e) => return McpResponse::err(id, -32603, e.to_string()),
     };
-    let rows: Result<Vec<_>, _> = stmt.query_map(params![project, limit], |r: &rusqlite::Row<'_>| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, i64>(2)?))).and_then(|it| it.collect());
+    let rows: Result<Vec<_>, _> = stmt
+        .query_map(params![project, limit], |r: &rusqlite::Row<'_>| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })
+        .and_then(|it| it.collect());
     match rows {
         Err(e) => McpResponse::err(id, -32603, e.to_string()),
         Ok(rows) => {
             let items: Vec<Value> = rows.iter().map(|(doc_id, title, views)| json!({ "id": doc_id, "title": title, "views": views })).collect();
-            McpResponse::ok(id, json!({ "content": [{"type": "text", "text": serde_json::to_string_pretty(&items).unwrap_or_default()}] }))
+            McpResponse::ok(
+                id,
+                json!({ "content": [{"type": "text", "text": serde_json::to_string_pretty(&items).unwrap_or_default()}] }),
+            )
         }
     }
 }
@@ -548,10 +665,17 @@ pub fn inspect_document(server: &McpServer, id: Value, args: &Value) -> McpRespo
         |r: &rusqlite::Row<'_>| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?)),
     );
     match row {
-        Err(_) => McpResponse::err(id, -32602, format!("document '{}' not found", source_doc_id)),
+        Err(_) => McpResponse::err(
+            id,
+            -32602,
+            format!("document '{}' not found", source_doc_id),
+        ),
         Ok((db_id, title, hash, indexed, chunks)) => {
             let info = json!({ "id": db_id, "source_id": source_doc_id, "project": project, "title": title, "content_hash": hash, "last_indexed": indexed, "chunk_count": chunks });
-            McpResponse::ok(id, json!({ "content": [{"type": "text", "text": serde_json::to_string_pretty(&info).unwrap_or_default()}] }))
+            McpResponse::ok(
+                id,
+                json!({ "content": [{"type": "text", "text": serde_json::to_string_pretty(&info).unwrap_or_default()}] }),
+            )
         }
     }
 }
@@ -574,9 +698,13 @@ pub async fn create_document(server: &McpServer, id: Value, args: &Value) -> Mcp
     });
 
     let pm = server.plugin_manager();
-    let service = doxus_core::document::DocumentService::new(server.conn().clone(), Some(pm.clone()));
+    let service =
+        doxus_core::document::DocumentService::new(server.conn().clone(), Some(pm.clone()));
 
-    match service.create_document(project, title, content, folder, metadata).await {
+    match service
+        .create_document(project, title, content, folder, metadata)
+        .await
+    {
         Ok(new_id) => {
             // Immediate Sync
             if let Ok(doc) = service.fetch_full_content(project, &new_id.0).await {
@@ -588,14 +716,18 @@ pub async fn create_document(server: &McpServer, id: Value, args: &Value) -> Mcp
                         let conn_lock = match conn.read_conn() {
                             Ok(g) => g,
                             Err(e) => {
-                                tracing::error!("[create_document] db pool error, skipping indexing: {e}");
+                                tracing::error!(
+                                    "[create_document] db pool error, skipping indexing: {e}"
+                                );
                                 return;
                             }
                         };
                         conn_lock.query_row(
                             "SELECT id, storage_strategy FROM projects WHERE name = ?1",
                             params![project_name],
-                            |r: &rusqlite::Row<'_>| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+                            |r: &rusqlite::Row<'_>| {
+                                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+                            },
                         )
                     };
                     if let Ok((pid, strategy)) = project_info {
@@ -603,14 +735,22 @@ pub async fn create_document(server: &McpServer, id: Value, args: &Value) -> Mcp
                     }
                 });
             }
-            McpResponse::text(id, format!("Successfully created document '{}' in project '{}'", new_id.0, project))
-        },
+            McpResponse::text(
+                id,
+                format!(
+                    "Successfully created document '{}' in project '{}'",
+                    new_id.0, project
+                ),
+            )
+        }
         Err(e) => McpResponse::err(id, -32603, format!("Failed to create document: {}", e)),
     }
 }
 
 static RE_HEADER: OnceLock<Regex> = OnceLock::new();
-fn header_regex() -> &'static Regex { RE_HEADER.get_or_init(|| Regex::new(r"^\s{0,3}(#{1,6})(?:\s+(.*)|$)").unwrap()) }
+fn header_regex() -> &'static Regex {
+    RE_HEADER.get_or_init(|| Regex::new(r"^\s{0,3}(#{1,6})(?:\s+(.*)|$)").unwrap())
+}
 
 pub fn extract_section(content: &str, heading: &str) -> String {
     let heading_lower = heading.to_lowercase();
@@ -624,13 +764,17 @@ pub fn extract_section(content: &str, heading: &str) -> String {
             let level = caps.get(1).map_or(0, |m| m.as_str().len());
             let text = caps.get(2).map_or("", |m| m.as_str().trim()).to_lowercase();
             if in_section {
-                if level <= section_level { break; }
+                if level <= section_level {
+                    break;
+                }
             } else if text == heading_lower || text.contains(&heading_lower) {
                 in_section = true;
                 section_level = level;
             }
         }
-        if in_section { result.push(line); }
+        if in_section {
+            result.push(line);
+        }
     }
     result.join("\n")
 }
@@ -648,7 +792,10 @@ pub fn extract_toc(content: &str) -> String {
     toc.join("\n")
 }
 
-fn render_compact_search_hits(hits: &[doxus_core::db::schema::SearchHit], include_summary: bool) -> String {
+fn render_compact_search_hits(
+    hits: &[doxus_core::db::schema::SearchHit],
+    include_summary: bool,
+) -> String {
     let mut text_resp = String::new();
     for h in hits {
         let project = h.project_name.as_deref().unwrap_or("unknown");
@@ -666,9 +813,13 @@ fn render_compact_search_hits(hits: &[doxus_core::db::schema::SearchHit], includ
         };
         let cleaned = snippet_val.replace(['\n', '\r'], " ");
         let truncated: String = cleaned.chars().take(120).collect();
-        let suffix = if cleaned.chars().count() > 120 { "..." } else { "" };
+        let suffix = if cleaned.chars().count() > 120 {
+            "..."
+        } else {
+            ""
+        };
         let snippet_part = format!("\n  → {}{}", truncated, suffix);
-        
+
         text_resp.push_str(&format!(
             "[{}] \"{}\"{} (score: {})\n  ID: {}{}\n",
             project, title, heading_part, score_str, h.source_doc_id, snippet_part
@@ -696,12 +847,16 @@ fn render_compact_hits(hits: &[doxus_core::db::schema::Hit], include_summary: bo
         let snippet_part = if let Some(ref snippet) = snippet_part {
             let cleaned = snippet.replace(['\n', '\r'], " ");
             let truncated: String = cleaned.chars().take(120).collect();
-            let suffix = if cleaned.chars().count() > 120 { "..." } else { "" };
+            let suffix = if cleaned.chars().count() > 120 {
+                "..."
+            } else {
+                ""
+            };
             format!("\n  → {}{}", truncated, suffix)
         } else {
             "".to_string()
         };
-        
+
         text_resp.push_str(&format!(
             "[{}] \"{}\"{} (score: {})\n  ID: {}{}\n",
             project, title, heading_part, score_str, h.source_doc_id, snippet_part
@@ -739,7 +894,14 @@ pub async fn record_feedback(server: &McpServer, id: Value, args: &Value) -> Mcp
     };
 
     if db_id == 0 {
-        return McpResponse::err(id, -32602, format!("document '{}' not found in project '{}'", args["id"], project));
+        return McpResponse::err(
+            id,
+            -32602,
+            format!(
+                "document '{}' not found in project '{}'",
+                args["id"], project
+            ),
+        );
     }
 
     let sql = "INSERT INTO document_feedbacks (document_id, agent_id, score, session_id) VALUES (?1, ?2, ?3, ?4)";
@@ -780,23 +942,47 @@ mod tests {
                 "INSERT INTO projects(name, display_name, path, status, created_at, updated_at) \
                  VALUES ('tp', 'Test', '/tmp', 'active', unixepoch(), unixepoch())",
                 [],
-            ).unwrap();
+            )
+            .unwrap();
         }
         let pid: i64 = {
             let conn = pool.get().unwrap();
-            conn.query_row("SELECT id FROM projects WHERE name='tp'", [], |r| r.get::<_, i64>(0)).unwrap()
+            conn.query_row("SELECT id FROM projects WHERE name='tp'", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap()
         };
-        let pm = Arc::new(doxus_core::plugin::PluginManager::new(PathBuf::from("/tmp")));
+        let pm = Arc::new(doxus_core::plugin::PluginManager::new(PathBuf::from(
+            "/tmp",
+        )));
         let server = McpServer::new(pool, db_path, None, pm, PathBuf::from("/tmp"));
-        TestServer { _temp_dir: temp_dir, server, pid }
+        TestServer {
+            _temp_dir: temp_dir,
+            server,
+            pid,
+        }
     }
 
-    fn insert_doc(server: &McpServer, pid: i64, sid: &str, title: &str, content: &str, created_at: i64, updated_at: i64) {
+    fn insert_doc(
+        server: &McpServer,
+        pid: i64,
+        sid: &str,
+        title: &str,
+        content: &str,
+        created_at: i64,
+        updated_at: i64,
+    ) {
         let conn = server.conn();
         let c = conn.get().unwrap();
         let engine = SyncSearchEngine::from_conn(&c);
-        let meta = DocMeta { created_at: Some(created_at), updated_at: Some(updated_at), ..Default::default() };
-        engine.index_document_with_meta(pid, sid, title, content, &meta, "full").unwrap();
+        let meta = DocMeta {
+            created_at: Some(created_at),
+            updated_at: Some(updated_at),
+            ..Default::default()
+        };
+        engine
+            .index_document_with_meta(pid, sid, title, content, &meta, "full")
+            .unwrap();
     }
 
     fn parse_docs(text: &str) -> Vec<serde_json::Value> {
@@ -806,7 +992,10 @@ mod tests {
 
     fn get_text(resp: &McpResponse) -> String {
         let v = serde_json::to_value(resp).unwrap();
-        v["result"]["content"][0]["text"].as_str().unwrap_or_default().to_string()
+        v["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string()
     }
 
     // ── Step 3 TDD 테스트 ────────────────────────────────────────────────────
@@ -820,8 +1009,16 @@ mod tests {
         let text = get_text(&resp);
         let docs = parse_docs(&text);
         assert!(!docs.is_empty(), "문서 목록이 비어 있음");
-        assert_eq!(docs[0]["created_at"].as_i64(), Some(1234), "created_at 포함");
-        assert_eq!(docs[0]["updated_at"].as_i64(), Some(5678), "updated_at 포함");
+        assert_eq!(
+            docs[0]["created_at"].as_i64(),
+            Some(1234),
+            "created_at 포함"
+        );
+        assert_eq!(
+            docs[0]["updated_at"].as_i64(),
+            Some(5678),
+            "updated_at 포함"
+        );
     }
 
     #[test]
@@ -831,13 +1028,18 @@ mod tests {
         insert_doc(&ts.server, ts.pid, "new", "New Doc", "new", 5000, 5000);
 
         let resp = list_documents(
-            &ts.server, json!(1),
+            &ts.server,
+            json!(1),
             &json!({ "project": "tp", "sort_by": "created_at", "sort_order": "desc" }),
         );
         let text = get_text(&resp);
         let docs = parse_docs(&text);
         assert!(docs.len() >= 2, "두 문서 이상 있어야 함");
-        assert_eq!(docs[0]["id"].as_str(), Some("new"), "최신 문서(created_at=5000)가 먼저");
+        assert_eq!(
+            docs[0]["id"].as_str(),
+            Some("new"),
+            "최신 문서(created_at=5000)가 먼저"
+        );
         assert_eq!(docs[1]["id"].as_str(), Some("old"));
     }
 
@@ -848,19 +1050,32 @@ mod tests {
         insert_doc(&ts.server, ts.pid, "new", "New Doc", "new", 5000, 5000);
 
         let resp = list_documents(
-            &ts.server, json!(1),
+            &ts.server,
+            json!(1),
             &json!({ "project": "tp", "sort_by": "created_at", "sort_order": "asc" }),
         );
         let text = get_text(&resp);
         let docs = parse_docs(&text);
         assert!(docs.len() >= 2);
-        assert_eq!(docs[0]["id"].as_str(), Some("old"), "오래된 문서(created_at=1000)가 먼저");
+        assert_eq!(
+            docs[0]["id"].as_str(),
+            Some("old"),
+            "오래된 문서(created_at=1000)가 먼저"
+        );
     }
 
     #[test]
     fn test_search_response_includes_date_fields() {
         let ts = setup_server();
-        insert_doc(&ts.server, ts.pid, "d1", "Unique Keyword Title", "lorem", 1111, 2222);
+        insert_doc(
+            &ts.server,
+            ts.pid,
+            "d1",
+            "Unique Keyword Title",
+            "lorem",
+            1111,
+            2222,
+        );
 
         // SyncSearchEngine으로 직접 검색해 날짜가 DB에 저장됐는지 확인
         let conn = ts.server.conn();
@@ -894,7 +1109,15 @@ mod tests {
     #[test]
     fn test_search_response_includes_project_name() {
         let ts = setup_server();
-        insert_doc(&ts.server, ts.pid, "d1", "ProjectName Test", "content", 1111, 2222);
+        insert_doc(
+            &ts.server,
+            ts.pid,
+            "d1",
+            "ProjectName Test",
+            "content",
+            1111,
+            2222,
+        );
 
         let conn = ts.server.conn();
         let c = conn.get().unwrap();
@@ -902,7 +1125,11 @@ mod tests {
         let q = doxus_core::search::SearchQuery::new("ProjectName Test");
         let hits = engine.search(&q).unwrap();
         assert!(!hits.is_empty(), "FTS results must be non-empty");
-        assert_eq!(hits[0].project_name.as_deref(), Some("tp"), "project_name should be 'tp'");
+        assert_eq!(
+            hits[0].project_name.as_deref(),
+            Some("tp"),
+            "project_name should be 'tp'"
+        );
     }
 
     #[test]
@@ -918,8 +1145,13 @@ mod tests {
             INSERT INTO documents (id, project_id, source_doc_id, title, content, content_hash, chunk_index, last_indexed) VALUES (42, 1, 'test/doc.md', 'Test Doc', 'hello', 'hash1', 0, 0);
         ").unwrap();
 
-        let result = crate::tools::resolve_doc_id_optional_project(&conn, None, &serde_json::json!(42));
-        assert!(result.is_ok(), "numeric id without project should succeed: {:?}", result);
+        let result =
+            crate::tools::resolve_doc_id_optional_project(&conn, None, &serde_json::json!(42));
+        assert!(
+            result.is_ok(),
+            "numeric id without project should succeed: {:?}",
+            result
+        );
         let (db_id, source_id, proj_name) = result.unwrap();
         assert_eq!(db_id, 42);
         assert_eq!(source_id, "test/doc.md");
@@ -931,7 +1163,11 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        let result = crate::tools::resolve_doc_id_optional_project(&conn, None, &serde_json::json!("some/path.md"));
+        let result = crate::tools::resolve_doc_id_optional_project(
+            &conn,
+            None,
+            &serde_json::json!("some/path.md"),
+        );
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("requires 'project'"), "got: {}", err);
@@ -940,8 +1176,24 @@ mod tests {
     #[test]
     fn test_search_created_after_filter_via_engine() {
         let ts = setup_server();
-        insert_doc(&ts.server, ts.pid, "old", "Knowledge Base Old", "content", 1000, 1000);
-        insert_doc(&ts.server, ts.pid, "new", "Knowledge Base New", "content", 5000, 5000);
+        insert_doc(
+            &ts.server,
+            ts.pid,
+            "old",
+            "Knowledge Base Old",
+            "content",
+            1000,
+            1000,
+        );
+        insert_doc(
+            &ts.server,
+            ts.pid,
+            "new",
+            "Knowledge Base New",
+            "content",
+            5000,
+            5000,
+        );
 
         let conn = ts.server.conn();
         let c = conn.get().unwrap();
@@ -949,23 +1201,60 @@ mod tests {
         let mut q = doxus_core::search::SearchQuery::new("Knowledge Base");
         q.created_after = Some(2000);
         let hits = engine.search(&q).unwrap();
-        assert_eq!(hits.len(), 1, "created_after=2000 이면 created_at=5000 문서만 반환");
+        assert_eq!(
+            hits.len(),
+            1,
+            "created_after=2000 이면 created_at=5000 문서만 반환"
+        );
         assert_eq!(hits[0].title.as_deref(), Some("Knowledge Base New"));
     }
 
     #[tokio::test]
     async fn test_search_compact_format() {
         let ts = setup_server();
-        insert_doc(&ts.server, ts.pid, "d1", "Compact Format Test", "This is some content for testing", 1111, 2222);
+        insert_doc(
+            &ts.server,
+            ts.pid,
+            "d1",
+            "Compact Format Test",
+            "This is some content for testing",
+            1111,
+            2222,
+        );
 
-        let resp = search(&ts.server, json!(1), &json!({ "query": "Compact Format", "format": "compact", "include_summary": false })).await;
+        let resp = search(
+            &ts.server,
+            json!(1),
+            &json!({ "query": "Compact Format", "format": "compact", "include_summary": false }),
+        )
+        .await;
         let text = get_text(&resp);
-        
-        assert!(text.contains("[tp]"), "Compact format must contain project tag: {}", text);
-        assert!(text.contains("\"Compact Format Test\""), "Compact format must contain title: {}", text);
-        assert!(text.contains("score:"), "Compact format must contain score label: {}", text);
-        assert!(text.contains("ID: d1"), "Compact format must contain doc id: {}", text);
-        assert!(text.contains("This is some content"), "Compact format must contain snippet: {}", text);
+
+        assert!(
+            text.contains("[tp]"),
+            "Compact format must contain project tag: {}",
+            text
+        );
+        assert!(
+            text.contains("\"Compact Format Test\""),
+            "Compact format must contain title: {}",
+            text
+        );
+        assert!(
+            text.contains("score:"),
+            "Compact format must contain score label: {}",
+            text
+        );
+        assert!(
+            text.contains("ID: d1"),
+            "Compact format must contain doc id: {}",
+            text
+        );
+        assert!(
+            text.contains("This is some content"),
+            "Compact format must contain snippet: {}",
+            text
+        );
     }
 
     // Regression: tokio::spawn JIT indexer must not panic on poisoned conn.
@@ -981,7 +1270,9 @@ mod tests {
         // or since we changed to match conn.get(), it handles error gracefully.
         // We'll mock the JIT indexer spawn error handle.
         // Here we just test JIT indexer works with pool.
-        let pm = Arc::new(doxus_core::plugin::PluginManager::new(PathBuf::from("/tmp")));
+        let pm = Arc::new(doxus_core::plugin::PluginManager::new(PathBuf::from(
+            "/tmp",
+        )));
         let server = McpServer::new(conn, db_path, None, pm, PathBuf::from("/tmp"));
         let indexer = server.indexer();
         let c = indexer.conn();
@@ -1002,7 +1293,10 @@ mod tests {
             };
         });
 
-        assert!(handle.await.is_ok(), "JIT spawn must handle pool without panic");
+        assert!(
+            handle.await.is_ok(),
+            "JIT spawn must handle pool without panic"
+        );
     }
 
     // Regression: create_document conn access must not panic on poisoned conn.
@@ -1028,13 +1322,24 @@ mod tests {
             };
         }));
 
-        assert!(result.is_ok(), "create_document conn access must not panic on pool error");
+        assert!(
+            result.is_ok(),
+            "create_document conn access must not panic on pool error"
+        );
     }
 
     #[tokio::test]
     async fn test_record_feedback_success() {
         let ts = setup_server();
-        insert_doc(&ts.server, ts.pid, "doc_feedback_test", "Feedback Test", "content", 1000, 1000);
+        insert_doc(
+            &ts.server,
+            ts.pid,
+            "doc_feedback_test",
+            "Feedback Test",
+            "content",
+            1000,
+            1000,
+        );
 
         let args = json!({
             "project": "tp",
@@ -1051,18 +1356,28 @@ mod tests {
         // DB에 실제로 기록되었는지 확인
         let conn = ts.server.conn();
         let c = conn.get().unwrap();
-        let score: f64 = c.query_row(
-            "SELECT score FROM document_feedbacks WHERE agent_id = 'test-agent'",
-            [],
-            |r| r.get(0)
-        ).unwrap();
+        let score: f64 = c
+            .query_row(
+                "SELECT score FROM document_feedbacks WHERE agent_id = 'test-agent'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(score, 0.8);
     }
 
     #[tokio::test]
     async fn test_record_feedback_invalid_score() {
         let ts = setup_server();
-        insert_doc(&ts.server, ts.pid, "doc_feedback_test", "Feedback Test", "content", 1000, 1000);
+        insert_doc(
+            &ts.server,
+            ts.pid,
+            "doc_feedback_test",
+            "Feedback Test",
+            "content",
+            1000,
+            1000,
+        );
 
         let args = json!({
             "project": "tp",
@@ -1075,6 +1390,9 @@ mod tests {
         let resp = record_feedback(&ts.server, json!(1), &args).await;
         let val = serde_json::to_value(resp).unwrap();
         assert_eq!(val["error"]["code"].as_i64(), Some(-32602));
-        assert!(val["error"]["message"].as_str().unwrap().contains("score must be between"));
+        assert!(val["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("score must be between"));
     }
 }

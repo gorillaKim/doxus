@@ -10,8 +10,9 @@ pub fn matches_version(requirement: &str, candidate: &str) -> Result<bool, Regis
     } else {
         requirement.to_string()
     };
-    let req = VersionReq::parse(&normalized)
-        .map_err(|e| RegistryError::Parse(format!("invalid version requirement '{requirement}': {e}")))?;
+    let req = VersionReq::parse(&normalized).map_err(|e| {
+        RegistryError::Parse(format!("invalid version requirement '{requirement}': {e}"))
+    })?;
     let ver = Version::parse(candidate)
         .map_err(|e| RegistryError::Parse(format!("invalid version '{candidate}': {e}")))?;
     Ok(req.matches(&ver))
@@ -30,8 +31,9 @@ pub fn find_best_match<'a>(
     } else {
         requirement.to_string()
     };
-    let req = VersionReq::parse(&normalized)
-        .map_err(|e| RegistryError::Parse(format!("invalid version requirement '{requirement}': {e}")))?;
+    let req = VersionReq::parse(&normalized).map_err(|e| {
+        RegistryError::Parse(format!("invalid version requirement '{requirement}': {e}"))
+    })?;
     Ok(entries
         .iter()
         .filter_map(|e| {
@@ -91,7 +93,8 @@ impl RegistryClient {
     /// Fetch plugin registry entries from the registry server.
     pub async fn fetch_entries(&self) -> Result<Vec<RegistryEntry>, RegistryError> {
         let url = format!("{}/plugins.json", self.base_url);
-        let resp = self.client
+        let resp = self
+            .client
             .get(&url)
             .send()
             .await

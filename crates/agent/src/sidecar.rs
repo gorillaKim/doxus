@@ -48,7 +48,11 @@ impl SidecarManager {
         let stdin = child.stdin.take();
         let stdout = child.stdout.take().map(BufReader::new);
 
-        Ok(Self { child: Some(child), stdin, stdout })
+        Ok(Self {
+            child: Some(child),
+            stdin,
+            stdout,
+        })
     }
 
     /// Send a message to the sidecar via stdin as a JSONL line.
@@ -57,8 +61,8 @@ impl SidecarManager {
             .stdin
             .as_mut()
             .ok_or_else(|| AgentError::Protocol("stdin not available".into()))?;
-        let mut line = serde_json::to_string(msg)
-            .map_err(|e| AgentError::Protocol(e.to_string()))?;
+        let mut line =
+            serde_json::to_string(msg).map_err(|e| AgentError::Protocol(e.to_string()))?;
         line.push('\n');
         stdin
             .write_all(line.as_bytes())
@@ -109,7 +113,10 @@ impl SidecarManager {
             .stdin
             .as_mut()
             .ok_or_else(|| AgentError::Protocol("stdin not available".into()))?;
-        stdin.write_all(raw.as_bytes()).await.map_err(AgentError::SpawnFailed)?;
+        stdin
+            .write_all(raw.as_bytes())
+            .await
+            .map_err(AgentError::SpawnFailed)?;
         stdin.flush().await.map_err(AgentError::SpawnFailed)?;
         Ok(())
     }

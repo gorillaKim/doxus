@@ -1,6 +1,6 @@
-use std::sync::Arc;
+use doxus_core::scheduler::{Executor, Schedule, ScheduledJob, SchedulerDb};
 use serde_json::json;
-use doxus_core::scheduler::{SchedulerDb, ScheduledJob, Schedule, Executor};
+use std::sync::Arc;
 
 #[tauri::command]
 pub async fn list_scheduled_jobs(
@@ -9,7 +9,7 @@ pub async fn list_scheduled_jobs(
 ) -> Result<serde_json::Value, String> {
     let conn = state.conn.get().map_err(|e| e.to_string())?;
     let sdb = SchedulerDb::new(&conn);
-    
+
     let jobs = sdb.list_jobs(project_id).map_err(|e| e.to_string())?;
     Ok(serde_json::to_value(jobs).unwrap_or_default())
 }
@@ -29,11 +29,18 @@ pub async fn create_scheduled_job(
 ) -> Result<serde_json::Value, String> {
     let conn = state.conn.get().map_err(|e| e.to_string())?;
     let sdb = SchedulerDb::new(&conn);
-    
-    let exec = if executor == "system" { Executor::System } else { Executor::Agent };
+
+    let exec = if executor == "system" {
+        Executor::System
+    } else {
+        Executor::Agent
+    };
     let sched: Schedule = serde_json::from_value(schedule_json).map_err(|e| e.to_string())?;
-    
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
     let next_run = sched.next_run_after(now);
 
     let job = ScheduledJob {
@@ -71,7 +78,7 @@ pub async fn delete_scheduled_job(
     } else {
         sdb.delete_job(job_id).map_err(|e| e.to_string())?;
     }
-    
+
     Ok(json!({ "ok": true }))
 }
 
@@ -80,24 +87,28 @@ pub async fn get_job_history(
     state: tauri::State<'_, Arc<crate::AppState>>,
     job_id: i64,
 ) -> Result<serde_json::Value, String> {
-    // get_job_history is not yet fully implemented in SchedulerDb, 
+    // get_job_history is not yet fully implemented in SchedulerDb,
     // but we can query it directly here as a stopgap
     let conn = state.conn.get().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare(
-        "SELECT id, started_at, finished_at, status, result_text, error_text 
-         FROM job_runs WHERE job_id = ?1 ORDER BY started_at DESC LIMIT 50"
-    ).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, started_at, finished_at, status, result_text, error_text 
+         FROM job_runs WHERE job_id = ?1 ORDER BY started_at DESC LIMIT 50",
+        )
+        .map_err(|e| e.to_string())?;
 
-    let iter = stmt.query_map([job_id], |row: &rusqlite::Row<'_>| {
-        Ok(json!({
-            "id": row.get::<_, i64>(0)?,
-            "started_at": row.get::<_, i64>(1)?,
-            "finished_at": row.get::<_, Option<i64>>(2)?,
-            "status": row.get::<_, String>(3)?,
-            "result_text": row.get::<_, Option<String>>(4)?,
-            "error_text": row.get::<_, Option<String>>(5)?,
-        }))
-    }).map_err(|e| e.to_string())?;
+    let iter = stmt
+        .query_map([job_id], |row: &rusqlite::Row<'_>| {
+            Ok(json!({
+                "id": row.get::<_, i64>(0)?,
+                "started_at": row.get::<_, i64>(1)?,
+                "finished_at": row.get::<_, Option<i64>>(2)?,
+                "status": row.get::<_, String>(3)?,
+                "result_text": row.get::<_, Option<String>>(4)?,
+                "error_text": row.get::<_, Option<String>>(5)?,
+            }))
+        })
+        .map_err(|e| e.to_string())?;
 
     let mut rows = Vec::new();
     for v in iter.flatten() {
@@ -123,8 +134,12 @@ pub async fn update_scheduled_job(
 ) -> Result<serde_json::Value, String> {
     let conn = state.conn.get().map_err(|e| e.to_string())?;
     let sdb = SchedulerDb::new(&conn);
-    
-    let exec = if executor == "system" { Executor::System } else { Executor::Agent };
+
+    let exec = if executor == "system" {
+        Executor::System
+    } else {
+        Executor::Agent
+    };
     let sched: Schedule = serde_json::from_value(schedule_json).map_err(|e| e.to_string())?;
 
     let job = ScheduledJob {

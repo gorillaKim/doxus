@@ -9,9 +9,9 @@ pub fn list_projects(server: &McpServer, id: Value) -> McpResponse {
         Ok(l) => l,
         Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
-    let mut stmt = match conn_lock.prepare(
-        "SELECT name, display_name, status, path FROM projects ORDER BY name",
-    ) {
+    let mut stmt = match conn_lock
+        .prepare("SELECT name, display_name, status, path FROM projects ORDER BY name")
+    {
         Ok(s) => s,
         Err(e) => return McpResponse::err(id, -32603, e.to_string()),
     };
@@ -55,7 +55,8 @@ pub fn add_project(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     };
     let display_name = args["display_name"].as_str().unwrap_or(name);
     let source_type = args["source_type"].as_str().unwrap_or("obsidian");
-    let config_json = args["config"].as_object()
+    let config_json = args["config"]
+        .as_object()
         .map(|m| serde_json::Value::Object(m.clone()).to_string())
         .unwrap_or_else(|| "{}".to_string());
 
@@ -112,18 +113,22 @@ pub fn remove_project(server: &McpServer, id: Value, args: &Value) -> McpRespons
         Ok(l) => l,
         Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
-    let pid: Result<i64, _> = conn_lock
-        .query_row("SELECT id FROM projects WHERE name=?1", params![name], |r: &rusqlite::Row<'_>| r.get(0));
+    let pid: Result<i64, _> = conn_lock.query_row(
+        "SELECT id FROM projects WHERE name=?1",
+        params![name],
+        |r: &rusqlite::Row<'_>| r.get(0),
+    );
 
     match pid {
         Err(_) => McpResponse::err(id, -32602, format!("project '{name}' not found")),
         Ok(pid) => {
-            let _ = conn_lock
-                .execute("DELETE FROM source_instances WHERE project_id=?1", [pid]);
+            let _ = conn_lock.execute("DELETE FROM source_instances WHERE project_id=?1", [pid]);
             match conn_lock.execute("DELETE FROM projects WHERE id=?1", [pid]) {
                 Ok(_) => McpResponse::text(
                     id,
-                    format!("Project '{name}' removed (index data deleted, original files untouched)."),
+                    format!(
+                        "Project '{name}' removed (index data deleted, original files untouched)."
+                    ),
                 ),
                 Err(e) => McpResponse::err(id, -32603, e.to_string()),
             }
@@ -141,7 +146,9 @@ pub fn index_project(server: &McpServer, id: Value, args: &Value) -> McpResponse
     let indexing_service = server.indexer();
 
     let result = match tokio::runtime::Handle::try_current() {
-        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(indexing_service.index_project(&name, full))),
+        Ok(handle) => tokio::task::block_in_place(|| {
+            handle.block_on(indexing_service.index_project(&name, full))
+        }),
         Err(_) => match tokio::runtime::Runtime::new() {
             Ok(rt) => rt.block_on(indexing_service.index_project(&name, full)),
             Err(e) => return McpResponse::err(id, -32603, format!("runtime error: {e}")),
@@ -149,13 +156,16 @@ pub fn index_project(server: &McpServer, id: Value, args: &Value) -> McpResponse
     };
 
     match result {
-        Ok(indexed) => McpResponse::text(id, format!("Project '{name}' indexed: {indexed} documents.")),
+        Ok(indexed) => McpResponse::text(
+            id,
+            format!("Project '{name}' indexed: {indexed} documents."),
+        ),
         Err(e) => McpResponse::err(id, -32603, format!("index failed: {e}")),
     }
 }
 
 pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse {
-    use doxus_core::search::{SyncSearchEngine, DocMeta};
+    use doxus_core::search::{DocMeta, SyncSearchEngine};
     use doxus_plugin_sdk::{FetchChangesOpts, PluginConfig, PluginSecrets, SourceDocId};
     use std::collections::HashMap;
 
@@ -181,10 +191,12 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
     );
 
     let (si_id, plugin_id, sync_cursor, last_synced, config_json) = match row {
-        Err(_) => return McpResponse::text(
-            id,
-            format!("Project '{name}' has no source instance configured — no source instance"),
-        ),
+        Err(_) => {
+            return McpResponse::text(
+                id,
+                format!("Project '{name}' has no source instance configured — no source instance"),
+            )
+        }
         Ok(r) => r,
     };
 
@@ -200,16 +212,20 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
     };
 
     let known_ids: Vec<SourceDocId> = {
-        let mut stmt = match conn_lock.prepare(
-            "SELECT source_doc_id FROM documents WHERE project_id = ?1",
-        ) {
-            Ok(s) => s,
-            Err(e) => return McpResponse::err(id, -32603, format!("prepare known_ids: {e}")),
-        };
+        let mut stmt =
+            match conn_lock.prepare("SELECT source_doc_id FROM documents WHERE project_id = ?1") {
+                Ok(s) => s,
+                Err(e) => return McpResponse::err(id, -32603, format!("prepare known_ids: {e}")),
+            };
         let ids: Result<Vec<String>, _> = stmt
-            .query_map(params![project_id], |r: &rusqlite::Row<'_>| r.get::<_, String>(0))
+            .query_map(params![project_id], |r: &rusqlite::Row<'_>| {
+                r.get::<_, String>(0)
+            })
             .map_err(|e| format!("query known_ids: {e}"))
-            .and_then(|rows| rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string()));
+            .and_then(|rows| {
+                rows.collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| e.to_string())
+            });
         match ids {
             Ok(v) => v.into_iter().map(SourceDocId).collect(),
             Err(e) => return McpResponse::err(id, -32603, e),
@@ -219,30 +235,53 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
     let since = last_synced.unwrap_or(0);
     let cursor = sync_cursor;
 
-    let plugin = server.plugin_manager().get_source(&plugin_id)
-        .ok_or_else(|| McpResponse::err(id.clone(), -32603, format!("plugin not found: {plugin_id}")));
-    
+    let plugin = server
+        .plugin_manager()
+        .get_source(&plugin_id)
+        .ok_or_else(|| {
+            McpResponse::err(id.clone(), -32603, format!("plugin not found: {plugin_id}"))
+        });
+
     let mut plugin = match plugin {
         Ok(p) => p,
         Err(e) => return e,
     };
 
-    let fields: HashMap<String, serde_json::Value> = serde_json::from_str(&config_json)
-        .unwrap_or_default();
+    let fields: HashMap<String, serde_json::Value> =
+        serde_json::from_str(&config_json).unwrap_or_default();
     let mut config = PluginConfig { fields };
-    let mut secrets = PluginSecrets { fields: HashMap::new() };
+    let mut secrets = PluginSecrets {
+        fields: HashMap::new(),
+    };
 
     // Inject keychain auth (Wait synchronously in sync function)
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        tokio::task::block_in_place(|| handle.block_on(doxus_core::auth::inject_keychain_auth(&plugin_id, &mut config, &mut secrets)));
+        tokio::task::block_in_place(|| {
+            handle.block_on(doxus_core::auth::inject_keychain_auth(
+                &plugin_id,
+                &mut config,
+                &mut secrets,
+            ))
+        });
     } else {
-        let _ = tokio::runtime::Runtime::new().map(|rt| rt.block_on(doxus_core::auth::inject_keychain_auth(&plugin_id, &mut config, &mut secrets)));
+        let _ = tokio::runtime::Runtime::new().map(|rt| {
+            rt.block_on(doxus_core::auth::inject_keychain_auth(
+                &plugin_id,
+                &mut config,
+                &mut secrets,
+            ))
+        });
     }
 
     let run_async = async move {
         plugin.initialize(config, secrets).await?;
         let changeset = plugin
-            .fetch_changes(FetchChangesOpts { since, cursor, page_size: 1000, known_ids })
+            .fetch_changes(FetchChangesOpts {
+                since,
+                cursor,
+                page_size: 1000,
+                known_ids,
+            })
             .await?;
         Ok::<_, doxus_plugin_sdk::PluginError>(changeset)
     };
@@ -267,13 +306,17 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
     let n_deleted = changeset.deleted_ids.len();
 
     let result: Result<(), String> = (|| {
-        conn_lock.execute_batch("BEGIN").map_err(|e| format!("begin: {e}"))?;
+        conn_lock
+            .execute_batch("BEGIN")
+            .map_err(|e| format!("begin: {e}"))?;
 
-        let strategy: String = conn_lock.query_row(
-            "SELECT storage_strategy FROM projects WHERE id = ?1",
-            [project_id],
-            |r: &rusqlite::Row<'_>| r.get(0)
-        ).unwrap_or_else(|_| "full".to_string());
+        let strategy: String = conn_lock
+            .query_row(
+                "SELECT storage_strategy FROM projects WHERE id = ?1",
+                [project_id],
+                |r: &rusqlite::Row<'_>| r.get(0),
+            )
+            .unwrap_or_else(|_| "full".to_string());
 
         let engine = SyncSearchEngine::from_conn(&conn_lock);
 
@@ -288,7 +331,14 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
                 relative_path: doc.relative_path.clone(),
                 ..Default::default()
             };
-            if let Err(e) = engine.index_document_with_meta(project_id, &doc.id.0, title, &doc.content, &meta, &strategy) {
+            if let Err(e) = engine.index_document_with_meta(
+                project_id,
+                &doc.id.0,
+                title,
+                &doc.content,
+                &meta,
+                &strategy,
+            ) {
                 let _ = conn_lock.execute_batch("ROLLBACK");
                 return Err(format!("index error for '{}': {e}", doc.id.0));
             }
@@ -313,7 +363,9 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
             return Err(format!("update cursor: {e}"));
         }
 
-        conn_lock.execute_batch("COMMIT").map_err(|e| format!("commit: {e}"))?;
+        conn_lock
+            .execute_batch("COMMIT")
+            .map_err(|e| format!("commit: {e}"))?;
         Ok(())
     })();
 
@@ -328,7 +380,7 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
 pub fn setup_project_agent(_server: &McpServer, id: Value, args: &Value) -> McpResponse {
     let path_str = args["path"].as_str().unwrap_or(".");
     let project_path = std::path::PathBuf::from(path_str);
-    
+
     // Attempt to resolve absolute path for clarity
     let abs_path = std::fs::canonicalize(&project_path).unwrap_or(project_path.clone());
     let claude_md_path = abs_path.join("CLAUDE.md");
@@ -345,7 +397,9 @@ pub fn setup_project_agent(_server: &McpServer, id: Value, args: &Value) -> McpR
     let mut content = if claude_md_path.exists() {
         match std::fs::read_to_string(&claude_md_path) {
             Ok(c) => c,
-            Err(e) => return McpResponse::err(id, -32603, format!("Failed to read CLAUDE.md: {e}")),
+            Err(e) => {
+                return McpResponse::err(id, -32603, format!("Failed to read CLAUDE.md: {e}"))
+            }
         }
     } else {
         "# Project Instructions\n\n".to_string()
@@ -364,7 +418,13 @@ pub fn setup_project_agent(_server: &McpServer, id: Value, args: &Value) -> McpR
         return McpResponse::err(id, -32603, format!("Failed to write CLAUDE.md: {e}"));
     }
 
-    McpResponse::text(id, format!("Doxus agent instructions successfully added to {}.", claude_md_path.display()))
+    McpResponse::text(
+        id,
+        format!(
+            "Doxus agent instructions successfully added to {}.",
+            claude_md_path.display()
+        ),
+    )
 }
 
 #[cfg(test)]
@@ -404,9 +464,16 @@ mod tests {
             "source_type": "confluence"
         });
         let resp = add_project(&server, serde_json::json!(1), &args);
-        assert!(resp.result.is_some(), "add_project should succeed: {:?}", resp.error);
+        assert!(
+            resp.result.is_some(),
+            "add_project should succeed: {:?}",
+            resp.error
+        );
 
-        let count: i64 = server.conn().get().unwrap()
+        let count: i64 = server
+            .conn()
+            .get()
+            .unwrap()
             .query_row(
                 "SELECT COUNT(*) FROM source_instances si
                  JOIN projects p ON si.project_id = p.id
@@ -426,9 +493,16 @@ mod tests {
         // source_type 없으면 obsidian 기본값
         let args = serde_json::json!({ "name": "my-vault", "path": "/Users/me/vault" });
         let resp = add_project(&server, serde_json::json!(2), &args);
-        assert!(resp.result.is_some(), "add_project should succeed: {:?}", resp.error);
+        assert!(
+            resp.result.is_some(),
+            "add_project should succeed: {:?}",
+            resp.error
+        );
 
-        let plugin_id: String = server.conn().get().unwrap()
+        let plugin_id: String = server
+            .conn()
+            .get()
+            .unwrap()
             .query_row(
                 "SELECT si.plugin_id FROM source_instances si
                  JOIN projects p ON si.project_id = p.id

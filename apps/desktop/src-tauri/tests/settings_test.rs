@@ -1,6 +1,8 @@
 /// Settings persistence tests (TDD - RED phase)
 /// These tests verify save_settings/load_settings roundtrip via config.toml
-use doxus_desktop_lib::commands::settings::{AppSettings, load_settings_from_path, save_settings_to_path};
+use doxus_desktop_lib::commands::settings::{
+    load_settings_from_path, save_settings_to_path, AppSettings,
+};
 use tempfile::TempDir;
 
 #[test]
@@ -65,5 +67,8 @@ fn save_rejects_invalid_embedding_model() {
     let result = save_settings_to_path(&bad, &path);
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.contains("embedding_model"), "error should mention embedding_model, got: {err}");
+    assert!(
+        err.contains("embedding_model"),
+        "error should mention embedding_model, got: {err}"
+    );
 }

@@ -131,7 +131,10 @@ impl OnnxEmbedder {
             )));
         }
 
-        let tokenizer_path = path.parent().unwrap_or_else(|| std::path::Path::new(".")).join("tokenizer.json");
+        let tokenizer_path = path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("tokenizer.json");
         let mut tokenizer = Tokenizer::from_file(&tokenizer_path).ok();
         if let Some(ref mut t) = tokenizer {
             t.with_truncation(Some(tokenizers::TruncationParams {
@@ -164,9 +167,10 @@ impl EmbeddingProvider for OnnxEmbedder {
             return Err(EmbeddingError::EmptyInput);
         }
 
-        let tokenizer = self.tokenizer.as_ref().ok_or_else(|| {
-            EmbeddingError::Tokenizer("tokenizer not loaded".to_string())
-        })?;
+        let tokenizer = self
+            .tokenizer
+            .as_ref()
+            .ok_or_else(|| EmbeddingError::Tokenizer("tokenizer not loaded".to_string()))?;
 
         let mut session_guard = self
             .session
@@ -209,9 +213,10 @@ impl EmbeddingProvider for OnnxEmbedder {
             .ok_or_else(|| EmbeddingError::Inference("ONNX session not loaded".to_string()))?;
 
         {
-            let mut last_used = self.last_used.lock().map_err(|e| {
-                EmbeddingError::Inference(format!("last_used lock poisoned: {e}"))
-            })?;
+            let mut last_used = self
+                .last_used
+                .lock()
+                .map_err(|e| EmbeddingError::Inference(format!("last_used lock poisoned: {e}")))?;
             *last_used = std::time::Instant::now();
         }
 
@@ -225,100 +230,102 @@ impl EmbeddingProvider for OnnxEmbedder {
         // block_in_place signals tokio that this thread will perform CPU-bound blocking
         // work (ONNX inference), allowing the runtime to move other tasks to free threads.
         tokio::task::block_in_place(|| -> Result<(), EmbeddingError> {
-        for chunk in texts.chunks(EMBED_BATCH_SIZE) {
-            let batch_size = chunk.len();
+            for chunk in texts.chunks(EMBED_BATCH_SIZE) {
+                let batch_size = chunk.len();
 
-            // Batch tokenize (avoiding to_string() clones)
-            let encodings = tokenizer
-                .encode_batch(chunk.to_vec(), true)
-                .map_err(|e| EmbeddingError::Tokenizer(e.to_string()))?;
+                // Batch tokenize (avoiding to_string() clones)
+                let encodings = tokenizer
+                    .encode_batch(chunk.to_vec(), true)
+                    .map_err(|e| EmbeddingError::Tokenizer(e.to_string()))?;
 
-            let max_len = encodings
-                .iter()
-                .map(|e| e.get_ids().len())
-                .max()
-                .unwrap_or(0);
-
-            // Build flat i64 buffers: input_ids, attention_mask, token_type_ids
-            let mut input_ids = vec![0i64; batch_size * max_len];
-            let mut attention_mask = vec![0i64; batch_size * max_len];
-            let mut token_type_ids = vec![0i64; batch_size * max_len];
-
-            for (i, enc) in encodings.iter().enumerate() {
-                let ids = enc.get_ids();
-                let mask = enc.get_attention_mask();
-                let type_ids = enc.get_type_ids();
-                for j in 0..ids.len() {
-                    input_ids[i * max_len + j] = ids[j] as i64;
-                    attention_mask[i * max_len + j] = mask[j] as i64;
-                    token_type_ids[i * max_len + j] = type_ids[j] as i64;
-                }
-            }
-
-            // Build TensorRef from (shape, &[T]) tuples — avoids ndarray version conflicts
-            let shape = [batch_size, max_len];
-            let ids_ref = TensorRef::<i64>::from_array_view((shape, input_ids.as_slice()))
-                .map_err(|e| EmbeddingError::Inference(e.to_string()))?;
-            let mask_ref = TensorRef::<i64>::from_array_view((shape, attention_mask.as_slice()))
-                .map_err(|e| EmbeddingError::Inference(e.to_string()))?;
-            let type_ref = TensorRef::<i64>::from_array_view((shape, token_type_ids.as_slice()))
-                .map_err(|e| EmbeddingError::Inference(e.to_string()))?;
-
-            let outputs = session
-                .run(ort::inputs![
-                    "input_ids" => ids_ref,
-                    "attention_mask" => mask_ref,
-                    "token_type_ids" => type_ref,
-                ])
-                .map_err(|e| EmbeddingError::Inference(e.to_string()))?;
-
-            // last_hidden_state shape: [batch, seq_len, 384]
-            // Use try_extract_tensor which returns (&Shape, &[f32]) — no ndarray needed
-            let (hidden_shape, hidden_data) = outputs["last_hidden_state"]
-                .try_extract_tensor::<f32>()
-                .map_err(|e| EmbeddingError::Inference(e.to_string()))?;
-
-            // hidden_shape is [batch, seq_len, dim]
-            let seq_len = hidden_shape[1] as usize;
-
-            for i in 0..batch_size {
-                let mask_sum: f32 = attention_mask[i * max_len..(i + 1) * max_len]
+                let max_len = encodings
                     .iter()
-                    .map(|&m| m as f32)
-                    .sum();
-                let denom = mask_sum.max(1e-9);
+                    .map(|e| e.get_ids().len())
+                    .max()
+                    .unwrap_or(0);
 
-                // Mean pooling: sum(token_vec * mask) / sum(mask)
-                let mut pooled = vec![0f32; dim];
-                for j in 0..seq_len {
-                    let mask_val = if j < max_len {
-                        attention_mask[i * max_len + j] as f32
-                    } else {
-                        0.0
-                    };
-                    if mask_val > 0.0 {
-                        let base = (i * seq_len + j) * dim;
-                        for k in 0..dim {
-                            pooled[k] += hidden_data[base + k] * mask_val;
+                // Build flat i64 buffers: input_ids, attention_mask, token_type_ids
+                let mut input_ids = vec![0i64; batch_size * max_len];
+                let mut attention_mask = vec![0i64; batch_size * max_len];
+                let mut token_type_ids = vec![0i64; batch_size * max_len];
+
+                for (i, enc) in encodings.iter().enumerate() {
+                    let ids = enc.get_ids();
+                    let mask = enc.get_attention_mask();
+                    let type_ids = enc.get_type_ids();
+                    for j in 0..ids.len() {
+                        input_ids[i * max_len + j] = ids[j] as i64;
+                        attention_mask[i * max_len + j] = mask[j] as i64;
+                        token_type_ids[i * max_len + j] = type_ids[j] as i64;
+                    }
+                }
+
+                // Build TensorRef from (shape, &[T]) tuples — avoids ndarray version conflicts
+                let shape = [batch_size, max_len];
+                let ids_ref = TensorRef::<i64>::from_array_view((shape, input_ids.as_slice()))
+                    .map_err(|e| EmbeddingError::Inference(e.to_string()))?;
+                let mask_ref =
+                    TensorRef::<i64>::from_array_view((shape, attention_mask.as_slice()))
+                        .map_err(|e| EmbeddingError::Inference(e.to_string()))?;
+                let type_ref =
+                    TensorRef::<i64>::from_array_view((shape, token_type_ids.as_slice()))
+                        .map_err(|e| EmbeddingError::Inference(e.to_string()))?;
+
+                let outputs = session
+                    .run(ort::inputs![
+                        "input_ids" => ids_ref,
+                        "attention_mask" => mask_ref,
+                        "token_type_ids" => type_ref,
+                    ])
+                    .map_err(|e| EmbeddingError::Inference(e.to_string()))?;
+
+                // last_hidden_state shape: [batch, seq_len, 384]
+                // Use try_extract_tensor which returns (&Shape, &[f32]) — no ndarray needed
+                let (hidden_shape, hidden_data) = outputs["last_hidden_state"]
+                    .try_extract_tensor::<f32>()
+                    .map_err(|e| EmbeddingError::Inference(e.to_string()))?;
+
+                // hidden_shape is [batch, seq_len, dim]
+                let seq_len = hidden_shape[1] as usize;
+
+                for i in 0..batch_size {
+                    let mask_sum: f32 = attention_mask[i * max_len..(i + 1) * max_len]
+                        .iter()
+                        .map(|&m| m as f32)
+                        .sum();
+                    let denom = mask_sum.max(1e-9);
+
+                    // Mean pooling: sum(token_vec * mask) / sum(mask)
+                    let mut pooled = vec![0f32; dim];
+                    for j in 0..seq_len {
+                        let mask_val = if j < max_len {
+                            attention_mask[i * max_len + j] as f32
+                        } else {
+                            0.0
+                        };
+                        if mask_val > 0.0 {
+                            let base = (i * seq_len + j) * dim;
+                            for k in 0..dim {
+                                pooled[k] += hidden_data[base + k] * mask_val;
+                            }
                         }
                     }
-                }
-                for v in &mut pooled {
-                    *v /= denom;
-                }
-
-                // L2 normalize
-                let l2: f32 = pooled.iter().map(|x| x * x).sum::<f32>().sqrt();
-                if l2 > 0.0 {
                     for v in &mut pooled {
-                        *v /= l2;
+                        *v /= denom;
                     }
-                }
 
-                embeddings.push(pooled);
+                    // L2 normalize
+                    let l2: f32 = pooled.iter().map(|x| x * x).sum::<f32>().sqrt();
+                    if l2 > 0.0 {
+                        for v in &mut pooled {
+                            *v /= l2;
+                        }
+                    }
+
+                    embeddings.push(pooled);
+                }
             }
-        }
-        Ok(())
+            Ok(())
         })?;
 
         Ok(embeddings)
@@ -421,7 +428,8 @@ impl EmbeddingProvider for OllamaEmbedder {
     }
 }
 
-pub const MULTILINGUAL_E5_SMALL_SHA256: &str = "ca456c06b3a9505ddfd9131408916dd79290368331e7d76bb621f1cba6bc8665";
+pub const MULTILINGUAL_E5_SMALL_SHA256: &str =
+    "ca456c06b3a9505ddfd9131408916dd79290368331e7d76bb621f1cba6bc8665";
 
 /// Resolve the ONNX model path from multiple candidate locations.
 ///
@@ -436,14 +444,18 @@ pub const MULTILINGUAL_E5_SMALL_SHA256: &str = "ca456c06b3a9505ddfd9131408916dd7
 pub fn resolve_model_path() -> Option<std::path::PathBuf> {
     let skip_onnx = std::env::var("DOXUS_SKIP_ONNX").unwrap_or_default();
     if skip_onnx == "1" || skip_onnx == "true" {
-        tracing::debug!("resolve_model_path: DOXUS_SKIP_ONNX is set, skipping ONNX model resolution");
+        tracing::debug!(
+            "resolve_model_path: DOXUS_SKIP_ONNX is set, skipping ONNX model resolution"
+        );
         return None;
     }
 
     // Prefer int8-quantized model (~120MB) over fp32 (~448MB) for faster CPU inference.
     let home_dir = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-    let int8_exists = home_dir.join(".doxus/models/multilingual-e5-small-int8.onnx").exists();
-    
+    let int8_exists = home_dir
+        .join(".doxus/models/multilingual-e5-small-int8.onnx")
+        .exists();
+
     let model_name = if int8_exists {
         "multilingual-e5-small-int8.onnx"
     } else {
@@ -475,24 +487,20 @@ pub fn resolve_model_path() -> Option<std::path::PathBuf> {
 
     let candidates: Vec<std::path::PathBuf> = [
         // macOS bundle: {exe}/../Resources/models/
-        std::env::current_exe()
-            .ok()
-            .and_then(|exe| {
-                exe.parent()?
-                    .parent()
-                    .map(|p| p.join("Resources/models").join(model_name))
-            }),
+        std::env::current_exe().ok().and_then(|exe| {
+            exe.parent()?
+                .parent()
+                .map(|p| p.join("Resources/models").join(model_name))
+        }),
         // Shared install path (MCP + CLI share this)
         Some(home.join(".doxus/models").join(model_name)),
         // Dev: exe is in target/{debug,release}/, go up 3 levels to workspace root
-        std::env::current_exe()
-            .ok()
-            .and_then(|exe| {
-                exe.parent()?
-                    .parent()?
-                    .parent()
-                    .map(|root| root.join("crates/core/models").join(model_name))
-            }),
+        std::env::current_exe().ok().and_then(|exe| {
+            exe.parent()?
+                .parent()?
+                .parent()
+                .map(|root| root.join("crates/core/models").join(model_name))
+        }),
         // Dev: relative to cwd
         Some(std::path::PathBuf::from("crates/core/models").join(model_name)),
     ]
@@ -569,10 +577,15 @@ impl EmbeddingProvider for NoOpEmbedder {
     async fn embed(&self, _texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
         Ok(vec![])
     }
-    fn dimension(&self) -> usize { 0 }
+    fn dimension(&self) -> usize {
+        0
+    }
     fn model_info(&self) -> &ModelInfo {
-        static INFO: std::sync::LazyLock<ModelInfo> = std::sync::LazyLock::new(|| {
-            ModelInfo { name: "noop".into(), dimension: 0, max_tokens: 0, path: None }
+        static INFO: std::sync::LazyLock<ModelInfo> = std::sync::LazyLock::new(|| ModelInfo {
+            name: "noop".into(),
+            dimension: 0,
+            max_tokens: 0,
+            path: None,
         });
         &INFO
     }
@@ -619,10 +632,12 @@ impl EmbeddingProvider for MockEmbedder {
 /// Create an embedding provider based on environment config with fallback options.
 pub fn get_default_embedder() -> Arc<dyn EmbeddingProvider + Send + Sync> {
     let provider_env = std::env::var("DOXUS_EMBEDDING_PROVIDER").unwrap_or_default();
-    
+
     if provider_env == "ollama" {
-        let url = std::env::var("DOXUS_OLLAMA_URL").unwrap_or_else(|_| "http://localhost:11434".to_string());
-        let model = std::env::var("DOXUS_OLLAMA_MODEL").unwrap_or_else(|_| "nomic-embed-text".to_string());
+        let url = std::env::var("DOXUS_OLLAMA_URL")
+            .unwrap_or_else(|_| "http://localhost:11434".to_string());
+        let model =
+            std::env::var("DOXUS_OLLAMA_MODEL").unwrap_or_else(|_| "nomic-embed-text".to_string());
         let dim = std::env::var("DOXUS_OLLAMA_DIM")
             .ok()
             .and_then(|d| d.parse::<usize>().ok())
@@ -636,7 +651,10 @@ pub fn get_default_embedder() -> Arc<dyn EmbeddingProvider + Send + Sync> {
         match OnnxEmbedder::from_default_path() {
             Ok(e) => return Arc::new(e),
             Err(err) => {
-                tracing::error!("ONNX embedder explicitly requested but failed to load: {}", err);
+                tracing::error!(
+                    "ONNX embedder explicitly requested but failed to load: {}",
+                    err
+                );
                 return Arc::new(NoOpEmbedder);
             }
         }
@@ -646,8 +664,10 @@ pub fn get_default_embedder() -> Arc<dyn EmbeddingProvider + Send + Sync> {
     let skip_onnx = std::env::var("DOXUS_SKIP_ONNX").unwrap_or_default();
     if skip_onnx == "1" || skip_onnx == "true" {
         tracing::info!("DOXUS_SKIP_ONNX is set. Skipping ONNX and falling back to Ollama.");
-        let url = std::env::var("DOXUS_OLLAMA_URL").unwrap_or_else(|_| "http://localhost:11434".to_string());
-        let model = std::env::var("DOXUS_OLLAMA_MODEL").unwrap_or_else(|_| "nomic-embed-text".to_string());
+        let url = std::env::var("DOXUS_OLLAMA_URL")
+            .unwrap_or_else(|_| "http://localhost:11434".to_string());
+        let model =
+            std::env::var("DOXUS_OLLAMA_MODEL").unwrap_or_else(|_| "nomic-embed-text".to_string());
         let dim = std::env::var("DOXUS_OLLAMA_DIM")
             .ok()
             .and_then(|d| d.parse::<usize>().ok())
@@ -659,8 +679,10 @@ pub fn get_default_embedder() -> Arc<dyn EmbeddingProvider + Send + Sync> {
         Ok(e) => Arc::new(e),
         Err(err) => {
             tracing::warn!("ONNX load failed: {}. Falling back to Ollama.", err);
-            let url = std::env::var("DOXUS_OLLAMA_URL").unwrap_or_else(|_| "http://localhost:11434".to_string());
-            let model = std::env::var("DOXUS_OLLAMA_MODEL").unwrap_or_else(|_| "nomic-embed-text".to_string());
+            let url = std::env::var("DOXUS_OLLAMA_URL")
+                .unwrap_or_else(|_| "http://localhost:11434".to_string());
+            let model = std::env::var("DOXUS_OLLAMA_MODEL")
+                .unwrap_or_else(|_| "nomic-embed-text".to_string());
             let dim = std::env::var("DOXUS_OLLAMA_DIM")
                 .ok()
                 .and_then(|d| d.parse::<usize>().ok())
@@ -880,7 +902,10 @@ mod tests {
         // If a real model happens to be installed on this machine it returns Ok, that's fine.
         // We only verify: no panic, and if Err then it's ModelLoad variant.
         if let Err(e) = result {
-            assert!(matches!(e, EmbeddingError::ModelLoad(_)), "unexpected error: {e}");
+            assert!(
+                matches!(e, EmbeddingError::ModelLoad(_)),
+                "unexpected error: {e}"
+            );
         }
     }
 
@@ -946,7 +971,10 @@ mod tests {
         // 생성 직후에는 세션이 None이어야 함 (실패 지점 1)
         {
             let session_guard = embedder.session.lock().unwrap();
-            assert!(session_guard.is_none(), "Session should be None initially (Lazy Loading)");
+            assert!(
+                session_guard.is_none(),
+                "Session should be None initially (Lazy Loading)"
+            );
         }
 
         // 2. embed 호출 시점 검증 (On-demand loading)
@@ -956,7 +984,10 @@ mod tests {
         // 호출 직후에는 세션이 Some이어야 함
         {
             let session_guard = embedder.session.lock().unwrap();
-            assert!(session_guard.is_some(), "Session should be loaded (Some) after embed call");
+            assert!(
+                session_guard.is_some(),
+                "Session should be loaded (Some) after embed call"
+            );
         }
 
         // 3. TTL 이후 드롭 검증 (자동 드롭)
@@ -966,7 +997,10 @@ mod tests {
         // 세션이 None으로 드롭되어 있어야 함 (실패 지점 2)
         {
             let session_guard = embedder.session.lock().unwrap();
-            assert!(session_guard.is_none(), "Session should be dropped (None) after inactivity TTL");
+            assert!(
+                session_guard.is_none(),
+                "Session should be dropped (None) after inactivity TTL"
+            );
         }
     }
 
@@ -1009,7 +1043,11 @@ mod tests {
         assert!(result.is_ok(), "Bulk embedding should succeed");
 
         let rss_loaded = get_current_rss_kb().unwrap_or(0);
-        println!("RSS Loaded: {} KB (Diff: {} KB)", rss_loaded, rss_loaded.saturating_sub(rss_start));
+        println!(
+            "RSS Loaded: {} KB (Diff: {} KB)",
+            rss_loaded,
+            rss_loaded.saturating_sub(rss_start)
+        );
 
         // 3. TTL 만료 및 드롭 대기 (200ms)
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -1017,11 +1055,18 @@ mod tests {
         // 세션이 드롭되어 있어야 함
         {
             let session_guard = embedder.session.lock().unwrap();
-            assert!(session_guard.is_none(), "Session should be dropped after TTL");
+            assert!(
+                session_guard.is_none(),
+                "Session should be dropped after TTL"
+            );
         }
 
         let rss_dropped = get_current_rss_kb().unwrap_or(0);
-        println!("RSS Dropped: {} KB (Diff from Loaded: {} KB)", rss_dropped, (rss_dropped as i64) - (rss_loaded as i64));
+        println!(
+            "RSS Dropped: {} KB (Diff from Loaded: {} KB)",
+            rss_dropped,
+            (rss_dropped as i64) - (rss_loaded as i64)
+        );
     }
 
     #[test]
@@ -1031,7 +1076,11 @@ mod tests {
         std::env::set_var("DOXUS_EMBEDDING_PROVIDER", "noop");
         let embedder = get_default_embedder();
         std::env::remove_var("DOXUS_EMBEDDING_PROVIDER");
-        assert_eq!(embedder.dimension(), 0, "NoOpEmbedder should have 0 dimension");
+        assert_eq!(
+            embedder.dimension(),
+            0,
+            "NoOpEmbedder should have 0 dimension"
+        );
 
         // 2. DOXUS_SKIP_ONNX=1 인 경우 OllamaEmbedder로 폴백하는지 검증
         std::env::set_var("DOXUS_SKIP_ONNX", "1");
@@ -1039,6 +1088,10 @@ mod tests {
         let embedder = get_default_embedder();
         std::env::remove_var("DOXUS_SKIP_ONNX");
         std::env::remove_var("DOXUS_OLLAMA_DIM");
-        assert_eq!(embedder.dimension(), 768, "Ollama fallback should return 768 dimension");
+        assert_eq!(
+            embedder.dimension(),
+            768,
+            "Ollama fallback should return 768 dimension"
+        );
     }
 }

@@ -1,10 +1,10 @@
 use async_trait::async_trait;
+use base64::prelude::*;
 use doxus_plugin_sdk::{
     validate_base_url, Capabilities, ChangeSet, ContentType, DocSource, DocumentStream,
     FetchAllOpts, FetchChangesOpts, HealthStatus, PluginConfig, PluginError, PluginKind,
     PluginMetadata, PluginSecrets, RawDocument, SecretValue, SourceDocId,
 };
-use base64::prelude::*;
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -139,7 +139,8 @@ impl GitHubPlugin {
         let updated_at = chrono_parse_unix(&issue.updated_at);
         let mut metadata = HashMap::new();
         if let Some(cfg) = self.config.as_ref() {
-            let rel_path = format!("{}/{}/Issues/{}_{}.md",
+            let rel_path = format!(
+                "{}/{}/Issues/{}_{}.md",
                 sanitize_filename(&cfg.owner),
                 sanitize_filename(&cfg.repo),
                 issue.number,
@@ -148,7 +149,10 @@ impl GitHubPlugin {
             metadata.insert("relative_path".to_string(), serde_json::json!(rel_path));
         }
 
-        let rel_path = metadata.get("relative_path").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let rel_path = metadata
+            .get("relative_path")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         RawDocument {
             id: SourceDocId(format!("issue:{}", issue.number)),
             title: Some(issue.title),
@@ -174,7 +178,8 @@ impl GitHubPlugin {
             .to_string();
         let mut metadata = HashMap::new();
         if let Some(cfg) = self.config.as_ref() {
-            let rel_path = format!("{}/{}/Wiki/{}.md",
+            let rel_path = format!(
+                "{}/{}/Wiki/{}.md",
                 sanitize_filename(&cfg.owner),
                 sanitize_filename(&cfg.repo),
                 sanitize_filename(&page.title)
@@ -182,7 +187,10 @@ impl GitHubPlugin {
             metadata.insert("relative_path".to_string(), serde_json::json!(rel_path));
         }
 
-        let rel_path = metadata.get("relative_path").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let rel_path = metadata
+            .get("relative_path")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         RawDocument {
             id: SourceDocId(format!("wiki:{slug}")),
             title: Some(page.title),
@@ -203,7 +211,8 @@ impl GitHubPlugin {
         let updated_at = chrono_parse_unix(&d.updated_at);
         let mut metadata = HashMap::new();
         if let Some(cfg) = self.config.as_ref() {
-            let rel_path = format!("{}/{}/Discussions/{}_{}.md",
+            let rel_path = format!(
+                "{}/{}/Discussions/{}_{}.md",
                 sanitize_filename(&cfg.owner),
                 sanitize_filename(&cfg.repo),
                 d.number,
@@ -212,7 +221,10 @@ impl GitHubPlugin {
             metadata.insert("relative_path".to_string(), serde_json::json!(rel_path));
         }
 
-        let rel_path = metadata.get("relative_path").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let rel_path = metadata
+            .get("relative_path")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         RawDocument {
             id: SourceDocId(format!("discussion:{}", d.number)),
             title: Some(d.title),
@@ -249,18 +261,12 @@ impl GitHubPlugin {
         page_size: usize,
     ) -> Result<(Vec<RawDocument>, bool), PluginError> {
         let state = if cfg.include_closed { "all" } else { "open" };
-        let url = format!(
-            "{}/repos/{}/{}/issues",
-            cfg.base_url, cfg.owner, cfg.repo
-        );
-        let req = self
-            .client
-            .get(&url)
-            .query(&[
-                ("state", state),
-                ("page", &page.to_string()),
-                ("per_page", &page_size.to_string()),
-            ]);
+        let url = format!("{}/repos/{}/{}/issues", cfg.base_url, cfg.owner, cfg.repo);
+        let req = self.client.get(&url).query(&[
+            ("state", state),
+            ("page", &page.to_string()),
+            ("per_page", &page_size.to_string()),
+        ]);
         let req = self.add_auth(req, cfg.token.as_deref());
         let resp = req
             .send()
@@ -273,7 +279,9 @@ impl GitHubPlugin {
                 return Err(PluginError::PermissionDenied("GitHub API".into()))
             }
             s if s == reqwest::StatusCode::TOO_MANY_REQUESTS => {
-                return Err(PluginError::RateLimited { retry_after_secs: 60 })
+                return Err(PluginError::RateLimited {
+                    retry_after_secs: 60,
+                })
             }
             s => return Err(PluginError::NetworkError(format!("HTTP {s}"))),
         }
@@ -302,13 +310,10 @@ impl GitHubPlugin {
             "{}/repos/{}/{}/wiki/pages",
             cfg.base_url, cfg.owner, cfg.repo
         );
-        let req = self
-            .client
-            .get(&url)
-            .query(&[
-                ("page", page.to_string().as_str()),
-                ("per_page", page_size.to_string().as_str()),
-            ]);
+        let req = self.client.get(&url).query(&[
+            ("page", page.to_string().as_str()),
+            ("per_page", page_size.to_string().as_str()),
+        ]);
         let req = self.add_auth(req, cfg.token.as_deref());
         let resp = req
             .send()
@@ -341,13 +346,10 @@ impl GitHubPlugin {
             "{}/repos/{}/{}/discussions",
             cfg.base_url, cfg.owner, cfg.repo
         );
-        let req = self
-            .client
-            .get(&url)
-            .query(&[
-                ("page", page.to_string().as_str()),
-                ("per_page", page_size.to_string().as_str()),
-            ]);
+        let req = self.client.get(&url).query(&[
+            ("page", page.to_string().as_str()),
+            ("per_page", page_size.to_string().as_str()),
+        ]);
         let req = self.add_auth(req, cfg.token.as_deref());
         let resp = req
             .send()
@@ -384,19 +386,13 @@ impl GitHubPlugin {
         // Convert unix ts → RFC3339 for the `since` query param
         let since_str = unix_to_rfc3339(since_unix);
         let state = if cfg.include_closed { "all" } else { "open" };
-        let url = format!(
-            "{}/repos/{}/{}/issues",
-            cfg.base_url, cfg.owner, cfg.repo
-        );
-        let mut req = self
-            .client
-            .get(&url)
-            .query(&[
-                ("state", state),
-                ("since", since_str.as_str()),
-                ("page", page.to_string().as_str()),
-                ("per_page", page_size.to_string().as_str()),
-            ]);
+        let url = format!("{}/repos/{}/{}/issues", cfg.base_url, cfg.owner, cfg.repo);
+        let mut req = self.client.get(&url).query(&[
+            ("state", state),
+            ("since", since_str.as_str()),
+            ("page", page.to_string().as_str()),
+            ("per_page", page_size.to_string().as_str()),
+        ]);
         req = self.add_auth(req, cfg.token.as_deref());
         // Attach ETag from cursor for conditional GET (304 = no changes)
         if let Some(ref etag) = cursor_etag {
@@ -481,12 +477,12 @@ impl DocSource for GitHubPlugin {
         // 1. Standardize hierarchical path using SDK utility
         let segments = doxus_plugin_sdk::path_utils::parse_hierarchical_path(folder, title)?;
         let folder_part = if segments.len() > 1 {
-            segments[..segments.len()-1].join("/")
+            segments[..segments.len() - 1].join("/")
         } else {
             "".to_string()
         };
         let base_title = segments.last().unwrap();
-        
+
         let mut attempts = 0;
         let final_path;
         let mut current_title = base_title.clone();
@@ -495,7 +491,10 @@ impl DocSource for GitHubPlugin {
         loop {
             attempts += 1;
             if attempts > 10 {
-                return Err(PluginError::Internal(format!("Failed to find unique path for '{}' after 10 attempts", title)));
+                return Err(PluginError::Internal(format!(
+                    "Failed to find unique path for '{}' after 10 attempts",
+                    title
+                )));
             }
 
             let path = if folder_part.is_empty() {
@@ -505,10 +504,16 @@ impl DocSource for GitHubPlugin {
             };
 
             // Check if exists
-            let url = format!("{}/repos/{}/{}/contents/{}", cfg.base_url, cfg.owner, cfg.repo, path);
+            let url = format!(
+                "{}/repos/{}/{}/contents/{}",
+                cfg.base_url, cfg.owner, cfg.repo, path
+            );
             let req = self.client.get(&url);
             let req = self.add_auth(req, cfg.token.as_deref());
-            let resp = req.send().await.map_err(|e| PluginError::NetworkError(e.to_string()))?;
+            let resp = req
+                .send()
+                .await
+                .map_err(|e| PluginError::NetworkError(e.to_string()))?;
 
             if resp.status().is_success() {
                 // Already exists -> suffix and retry (Option B)
@@ -520,32 +525,42 @@ impl DocSource for GitHubPlugin {
                 break;
             } else {
                 let status = resp.status();
-                return Err(PluginError::NetworkError(format!("Unexpected status checking existence: HTTP {}", status)));
+                return Err(PluginError::NetworkError(format!(
+                    "Unexpected status checking existence: HTTP {}",
+                    status
+                )));
             }
         }
 
         // 3. Create Final Page
-        let url = format!("{}/repos/{}/{}/contents/{}", cfg.base_url, cfg.owner, cfg.repo, final_path);
+        let url = format!(
+            "{}/repos/{}/{}/contents/{}",
+            cfg.base_url, cfg.owner, cfg.repo, final_path
+        );
         let encoded_content = BASE64_STANDARD.encode(content);
-        
+
         let body = serde_json::json!({
             "message": format!("Create document: {}", title),
             "content": encoded_content,
         });
 
-        let req = self.client.put(&url)
-            .json(&body);
+        let req = self.client.put(&url).json(&body);
         let req = self.add_auth(req, cfg.token.as_deref());
-        
-        let resp = req.send().await
+
+        let resp = req
+            .send()
+            .await
             .map_err(|e| PluginError::NetworkError(e.to_string()))?;
-            
+
         if !resp.status().is_success() {
             let status = resp.status();
             let error_text = resp.text().await.unwrap_or_default();
-            return Err(PluginError::NetworkError(format!("HTTP {}: {}", status, error_text)));
+            return Err(PluginError::NetworkError(format!(
+                "HTTP {}: {}",
+                status, error_text
+            )));
         }
-        
+
         Ok(SourceDocId(final_path))
     }
 
@@ -657,8 +672,7 @@ impl DocSource for GitHubPlugin {
 
         match cursor {
             FetchCursor::Issues(page) => {
-                let (docs, has_more) =
-                    self.fetch_issues_page(cfg, page, opts.page_size).await?;
+                let (docs, has_more) = self.fetch_issues_page(cfg, page, opts.page_size).await?;
                 let next_cursor = if has_more {
                     Some(FetchCursor::Issues(page + 1).to_string())
                 } else if cfg.include_wiki {
@@ -676,8 +690,7 @@ impl DocSource for GitHubPlugin {
                 })
             }
             FetchCursor::Wiki(page) => {
-                let (docs, has_more) =
-                    self.fetch_wiki_page(cfg, page, opts.page_size).await?;
+                let (docs, has_more) = self.fetch_wiki_page(cfg, page, opts.page_size).await?;
                 let next_cursor = if has_more {
                     Some(FetchCursor::Wiki(page + 1).to_string())
                 } else if cfg.include_discussions {
@@ -693,8 +706,9 @@ impl DocSource for GitHubPlugin {
                 })
             }
             FetchCursor::Discussions(page) => {
-                let (docs, has_more) =
-                    self.fetch_discussions_page(cfg, page, opts.page_size).await?;
+                let (docs, has_more) = self
+                    .fetch_discussions_page(cfg, page, opts.page_size)
+                    .await?;
                 let next_cursor = if has_more {
                     Some(FetchCursor::Discussions(page + 1).to_string())
                 } else {
@@ -777,10 +791,7 @@ impl DocSource for GitHubPlugin {
                 return Err(PluginError::NotFound(id.0.clone()));
             }
             if !resp.status().is_success() {
-                return Err(PluginError::NetworkError(format!(
-                    "HTTP {}",
-                    resp.status()
-                )));
+                return Err(PluginError::NetworkError(format!("HTTP {}", resp.status())));
             }
             let issue: GitHubIssue = resp
                 .json()
@@ -810,10 +821,7 @@ impl DocSource for GitHubPlugin {
                 return Err(PluginError::NotFound(id.0.clone()));
             }
             if !resp.status().is_success() {
-                return Err(PluginError::NetworkError(format!(
-                    "HTTP {}",
-                    resp.status()
-                )));
+                return Err(PluginError::NetworkError(format!("HTTP {}", resp.status())));
             }
             let page: GitHubWikiPage = resp
                 .json()
@@ -839,10 +847,7 @@ impl DocSource for GitHubPlugin {
                 return Err(PluginError::NotFound(id.0.clone()));
             }
             if !resp.status().is_success() {
-                return Err(PluginError::NetworkError(format!(
-                    "HTTP {}",
-                    resp.status()
-                )));
+                return Err(PluginError::NetworkError(format!("HTTP {}", resp.status())));
             }
             let d: GitHubDiscussion = resp
                 .json()
@@ -866,10 +871,7 @@ impl DocSource for GitHubPlugin {
                 return Err(PluginError::NotFound(id.0.clone()));
             }
             if !resp.status().is_success() {
-                return Err(PluginError::NetworkError(format!(
-                    "HTTP {}",
-                    resp.status()
-                )));
+                return Err(PluginError::NetworkError(format!("HTTP {}", resp.status())));
             }
             let issue: GitHubIssue = resp
                 .json()
@@ -925,7 +927,11 @@ fn parse_changes_cursor(cursor: &str) -> (u64, Option<String>) {
     };
     if let Some((page_str, etag)) = rest.split_once('|') {
         let page = page_str.parse().unwrap_or(1);
-        let etag = if etag.is_empty() { None } else { Some(etag.to_string()) };
+        let etag = if etag.is_empty() {
+            None
+        } else {
+            Some(etag.to_string())
+        };
         (page, etag)
     } else {
         (rest.parse().unwrap_or(1), None)
@@ -962,7 +968,6 @@ fn unix_to_rfc3339(ts: i64) -> String {
         .map(|dt| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
         .unwrap_or_else(|| "1970-01-01T00:00:00Z".to_string())
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1394,10 +1399,7 @@ mod tests {
     #[tokio::test]
     async fn fetch_all_discussions_pagination() {
         let server = MockServer::start().await;
-        let page1 = serde_json::json!([
-            make_discussion(1, "Alpha"),
-            make_discussion(2, "Beta")
-        ]);
+        let page1 = serde_json::json!([make_discussion(1, "Alpha"), make_discussion(2, "Beta")]);
         let page2 = serde_json::json!([make_discussion(3, "Gamma")]);
         let page3 = serde_json::json!([]);
 
@@ -1564,7 +1566,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(c1.updated.len(), 1);
-        assert!(c1.next_cursor.as_deref().map(|s| s.starts_with("changes:2|")).unwrap_or(false));
+        assert!(c1
+            .next_cursor
+            .as_deref()
+            .map(|s| s.starts_with("changes:2|"))
+            .unwrap_or(false));
 
         let c2 = plugin
             .fetch_changes(FetchChangesOpts {
@@ -1744,7 +1750,10 @@ mod tests {
         let doc = plugin.issue_to_doc(issue);
         let rel_path = doc.metadata.get("relative_path").and_then(|v| v.as_str());
         // Expected: owner/repo/Issues/123_Test Issue_ Hello_World.md
-        assert_eq!(rel_path, Some("owner/repo/Issues/123_Test Issue_ Hello_World.md"));
+        assert_eq!(
+            rel_path,
+            Some("owner/repo/Issues/123_Test Issue_ Hello_World.md")
+        );
     }
 
     #[test]
@@ -1792,6 +1801,9 @@ mod tests {
         let doc = plugin.discussion_to_doc(discussion);
         let rel_path = doc.metadata.get("relative_path").and_then(|v| v.as_str());
         // Expected: owner/repo/Discussions/456_Discussion _Title_ _ Rules.md
-        assert_eq!(rel_path, Some("owner/repo/Discussions/456_Discussion _Title_ _ Rules.md"));
+        assert_eq!(
+            rel_path,
+            Some("owner/repo/Discussions/456_Discussion _Title_ _ Rules.md")
+        );
     }
 }

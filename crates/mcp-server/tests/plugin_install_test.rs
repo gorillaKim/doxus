@@ -51,13 +51,19 @@ async fn test_plugin_install_without_url_registers_in_db() {
     let (conn, tmp) = setup_db();
     let server = make_server(conn, tmp.path().to_path_buf());
 
-    let resp = server.dispatch_tool(
-        "doxus_plugin_install",
-        json!(1),
-        &json!({ "id": "com.test.plugin", "version": "1.0.0" }),
-    ).await;
+    let resp = server
+        .dispatch_tool(
+            "doxus_plugin_install",
+            json!(1),
+            &json!({ "id": "com.test.plugin", "version": "1.0.0" }),
+        )
+        .await;
 
-    assert!(resp.error.is_none(), "url is optional; DB-only install should succeed, got: {:?}", resp.error);
+    assert!(
+        resp.error.is_none(),
+        "url is optional; DB-only install should succeed, got: {:?}",
+        resp.error
+    );
 }
 
 // --- test 2: url 있으면 파일이 plugins_dir에 저장됨 ---
@@ -77,11 +83,13 @@ async fn test_plugin_install_with_local_file_url_saves_wasm() {
     let url = format!("file://{}", wasm_src.display());
 
     let server = make_server_with_file_scheme(conn, plugins_dir.clone());
-    let resp = server.dispatch_tool(
-        "doxus_plugin_install",
-        json!(1),
-        &json!({ "id": "com.test.plugin", "version": "1.0.0", "url": url }),
-    ).await;
+    let resp = server
+        .dispatch_tool(
+            "doxus_plugin_install",
+            json!(1),
+            &json!({ "id": "com.test.plugin", "version": "1.0.0", "url": url }),
+        )
+        .await;
 
     assert!(resp.error.is_none(), "unexpected error: {:?}", resp.error);
     assert!(
@@ -106,8 +114,9 @@ async fn test_plugin_install_db_record_created() {
     let pool2 = doxus_core::db::create_pool(&db_path).unwrap();
     {
         let conn2 = pool2.get().unwrap();
-        conn2.execute_batch(
-            "CREATE TABLE IF NOT EXISTS plugins (
+        conn2
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS plugins (
                  id            TEXT PRIMARY KEY,
                  name          TEXT NOT NULL,
                  version       TEXT NOT NULL,
@@ -119,16 +128,18 @@ async fn test_plugin_install_db_record_created() {
                  enabled       INTEGER NOT NULL DEFAULT 1,
                  installed_at  INTEGER NOT NULL
              );",
-        )
-        .unwrap();
+            )
+            .unwrap();
     }
 
     let server = make_server_with_file_scheme(pool2, plugins_dir);
-    let resp = server.dispatch_tool(
-        "doxus_plugin_install",
-        json!(1),
-        &json!({ "id": "com.test.plugin", "version": "2.0.0", "url": url }),
-    ).await;
+    let resp = server
+        .dispatch_tool(
+            "doxus_plugin_install",
+            json!(1),
+            &json!({ "id": "com.test.plugin", "version": "2.0.0", "url": url }),
+        )
+        .await;
     assert!(resp.error.is_none(), "unexpected error: {:?}", resp.error);
 
     // Re-open and check
@@ -159,10 +170,10 @@ async fn test_plugin_install_db_record_created() {
 async fn test_plugin_install_from_registry_fetches_checksum() {
     let wasm_bytes = b"\x00asm\x01\x00\x00\x00";
     let hash = sha256_of(wasm_bytes);
- 
+
     let mut server = mockito::Server::new_async().await;
     let server_url = server.url();
- 
+
     let registry_json = format!(
         r#"[{{"plugin_id":"com.test.registry","version":"1.0.0","display_name":"Test","download_url":"{url}/plugin.wasm","checksum_sha256":"{hash}","public_key_hex":"deadbeef"}}]"#,
         url = server_url,
@@ -179,18 +190,24 @@ async fn test_plugin_install_from_registry_fetches_checksum() {
         .with_status(200)
         .with_body(wasm_bytes.as_ref())
         .create();
- 
+
     let (conn, tmp) = setup_db();
     let plugins_dir = tmp.path().join("plugins");
- 
+
     let mcp = make_server_with_file_scheme(conn, plugins_dir.clone());
-    let resp = mcp.dispatch_tool(
-        "doxus_plugin_install",
-        serde_json::json!(1),
-        &serde_json::json!({ "id": "com.test.registry", "registry_url": server_url }),
-    ).await;
- 
-    assert!(resp.error.is_none(), "registry install should succeed: {:?}", resp.error);
+    let resp = mcp
+        .dispatch_tool(
+            "doxus_plugin_install",
+            serde_json::json!(1),
+            &serde_json::json!({ "id": "com.test.registry", "registry_url": server_url }),
+        )
+        .await;
+
+    assert!(
+        resp.error.is_none(),
+        "registry install should succeed: {:?}",
+        resp.error
+    );
     assert!(
         plugins_dir.join("com.test.registry.wasm").exists(),
         "wasm file should be saved in plugins_dir"
@@ -208,16 +225,21 @@ async fn test_plugin_install_from_registry_rejects_missing_plugin() {
         .with_header("content-type", "application/json")
         .with_body(registry_json)
         .create();
- 
+
     let (conn, tmp) = setup_db();
     let mcp = make_server(conn, tmp.path().join("plugins"));
-    let resp = mcp.dispatch_tool(
-        "doxus_plugin_install",
-        serde_json::json!(1),
-        &serde_json::json!({ "id": "com.test.plugin", "registry_url": server_url }),
-    ).await;
- 
-    assert!(resp.error.is_some(), "missing plugin in registry should return error");
+    let resp = mcp
+        .dispatch_tool(
+            "doxus_plugin_install",
+            serde_json::json!(1),
+            &serde_json::json!({ "id": "com.test.plugin", "registry_url": server_url }),
+        )
+        .await;
+
+    assert!(
+        resp.error.is_some(),
+        "missing plugin in registry should return error"
+    );
 }
 
 fn sha256_of(data: &[u8]) -> String {
@@ -236,16 +258,20 @@ async fn test_plugin_install_rejects_non_http_scheme() {
 
     // ftp:// should be rejected (SSRF hardening: only http/https allowed in production)
     // file:// is allowed only in tests — we test invalid scheme here
-    let resp = server.dispatch_tool(
-        "doxus_plugin_install",
-        json!(1),
-        &json!({ "id": "com.test.plugin", "version": "1.0.0", "url": "ftp://evil.com/x.wasm" }),
-    ).await;
+    let resp = server
+        .dispatch_tool(
+            "doxus_plugin_install",
+            json!(1),
+            &json!({ "id": "com.test.plugin", "version": "1.0.0", "url": "ftp://evil.com/x.wasm" }),
+        )
+        .await;
 
     assert!(resp.error.is_some(), "ftp:// should be rejected");
     let err = resp.error.unwrap();
     assert!(
-        err.message.contains("scheme") || err.message.contains("url") || err.message.contains("invalid"),
+        err.message.contains("scheme")
+            || err.message.contains("url")
+            || err.message.contains("invalid"),
         "error should indicate invalid url/scheme, got: {}",
         err.message
     );

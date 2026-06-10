@@ -63,19 +63,20 @@ pub struct ToolBridge {
 
 impl ToolBridge {
     /// Create a new bridge with an explicit allow-list and dispatcher.
-    pub fn new(
-        allowed: Vec<String>,
-        dispatcher: ToolDispatcher,
-    ) -> Self {
-        Self { allowed, dispatcher }
+    pub fn new(allowed: Vec<String>, dispatcher: ToolDispatcher) -> Self {
+        Self {
+            allowed,
+            dispatcher,
+        }
     }
 
     /// Create a bridge using the default allowed tool list.
-    pub fn with_default_tools(
-        dispatcher: ToolDispatcher,
-    ) -> Self {
+    pub fn with_default_tools(dispatcher: ToolDispatcher) -> Self {
         Self::new(
-            DEFAULT_ALLOWED_TOOLS.iter().map(|s| s.to_string()).collect(),
+            DEFAULT_ALLOWED_TOOLS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             dispatcher,
         )
     }
@@ -113,13 +114,16 @@ impl ToolBridge {
                 name: name.to_string(),
                 error: format!("tool '{name}' is not in the allowed list"),
             };
-            return serde_json::to_string(&msg)
-                .map_err(|e| BridgeError::Serialize(e.to_string()));
+            return serde_json::to_string(&msg).map_err(|e| BridgeError::Serialize(e.to_string()));
         }
 
         let result = (self.dispatcher)(name, input);
 
-        let msg = ToolResultMessage { kind: "tool_result", name: name.to_string(), result };
+        let msg = ToolResultMessage {
+            kind: "tool_result",
+            name: name.to_string(),
+            result,
+        };
         serde_json::to_string(&msg).map_err(|e| BridgeError::Serialize(e.to_string()))
     }
 }
@@ -145,9 +149,9 @@ mod tests {
 
     /// Returns a bridge backed by a simple echo dispatcher.
     fn echo_bridge() -> ToolBridge {
-        ToolBridge::with_default_tools(Arc::new(|name, input| {
-            json!({ "echo": name, "input": input })
-        }))
+        ToolBridge::with_default_tools(Arc::new(
+            |name, input| json!({ "echo": name, "input": input }),
+        ))
     }
 
     // ── Allowlist tests ────────────────────────────────────────────────────
@@ -155,8 +159,7 @@ mod tests {
     #[test]
     fn allowed_tool_returns_tool_result() {
         let bridge = echo_bridge();
-        let line =
-            r#"{"type":"tool_use","name":"doxus_search","input":{"query":"rust","project":"vault"}}"#;
+        let line = r#"{"type":"tool_use","name":"doxus_search","input":{"query":"rust","project":"vault"}}"#;
         let out = bridge.handle_line(line).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["type"], "tool_result");
@@ -172,7 +175,10 @@ mod tests {
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["type"], "tool_error");
         assert_eq!(v["name"], "doxus_add_project");
-        assert!(v["error"].as_str().unwrap().contains("not in the allowed list"));
+        assert!(v["error"]
+            .as_str()
+            .unwrap()
+            .contains("not in the allowed list"));
     }
 
     #[test]
@@ -250,10 +256,7 @@ mod tests {
 
     #[test]
     fn custom_allowlist_overrides_default() {
-        let bridge = ToolBridge::new(
-            vec!["doxus_search".to_string()],
-            Arc::new(|_, _| json!({})),
-        );
+        let bridge = ToolBridge::new(vec!["doxus_search".to_string()], Arc::new(|_, _| json!({})));
         // doxus_list_projects is in default but NOT in custom list
         let line = r#"{"type":"tool_use","name":"doxus_list_projects","input":{}}"#;
         let out = bridge.handle_line(line).unwrap();

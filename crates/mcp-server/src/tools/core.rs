@@ -10,10 +10,18 @@ pub fn status(server: &McpServer, id: Value) -> McpResponse {
         Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
     let projects: i64 = conn_lock
-        .query_row("SELECT COUNT(*) FROM projects WHERE source_type != 'workspace'", [], |r: &rusqlite::Row<'_>| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM projects WHERE source_type != 'workspace'",
+            [],
+            |r: &rusqlite::Row<'_>| r.get(0),
+        )
         .unwrap_or(0);
     let documents: i64 = conn_lock
-        .query_row("SELECT COUNT(*) FROM documents", [], |r: &rusqlite::Row<'_>| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM documents",
+            [],
+            |r: &rusqlite::Row<'_>| r.get(0),
+        )
         .unwrap_or(0);
     McpResponse::text(
         id,
@@ -30,13 +38,25 @@ pub fn diagnose(server: &McpServer, id: Value) -> McpResponse {
         Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
     let projects: i64 = conn_lock
-        .query_row("SELECT COUNT(*) FROM projects", [], |r: &rusqlite::Row<'_>| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM projects",
+            [],
+            |r: &rusqlite::Row<'_>| r.get(0),
+        )
         .unwrap_or(0);
     let documents: i64 = conn_lock
-        .query_row("SELECT COUNT(*) FROM documents", [], |r: &rusqlite::Row<'_>| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM documents",
+            [],
+            |r: &rusqlite::Row<'_>| r.get(0),
+        )
         .unwrap_or(0);
     let chunks: i64 = conn_lock
-        .query_row("SELECT COUNT(*) FROM chunks", [], |r: &rusqlite::Row<'_>| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM chunks",
+            [],
+            |r: &rusqlite::Row<'_>| r.get(0),
+        )
         .unwrap_or(0);
 
     let diag = json!({
@@ -55,7 +75,10 @@ pub fn diagnose(server: &McpServer, id: Value) -> McpResponse {
     if documents == 0 && projects > 0 {
         lines.push("\nNo documents indexed yet. Run doxus_index_project.".to_string());
     }
-    lines.push(format!("\nRaw: {}", serde_json::to_string(&diag).unwrap_or_default()));
+    lines.push(format!(
+        "\nRaw: {}",
+        serde_json::to_string(&diag).unwrap_or_default()
+    ));
 
     McpResponse::text(id, lines.join("\n"))
 }
@@ -67,7 +90,11 @@ pub fn system_report(server: &McpServer, id: Value) -> McpResponse {
         Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
     let projects: i64 = conn_lock
-        .query_row("SELECT COUNT(*) FROM projects", [], |r: &rusqlite::Row<'_>| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM projects",
+            [],
+            |r: &rusqlite::Row<'_>| r.get(0),
+        )
         .unwrap_or(0);
     let active_projects: i64 = conn_lock
         .query_row(
@@ -77,10 +104,18 @@ pub fn system_report(server: &McpServer, id: Value) -> McpResponse {
         )
         .unwrap_or(0);
     let documents: i64 = conn_lock
-        .query_row("SELECT COUNT(*) FROM documents", [], |r: &rusqlite::Row<'_>| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM documents",
+            [],
+            |r: &rusqlite::Row<'_>| r.get(0),
+        )
         .unwrap_or(0);
     let chunks: i64 = conn_lock
-        .query_row("SELECT COUNT(*) FROM chunks", [], |r: &rusqlite::Row<'_>| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM chunks",
+            [],
+            |r: &rusqlite::Row<'_>| r.get(0),
+        )
         .unwrap_or(0);
     let plugins: i64 = conn_lock
         .query_row(
@@ -139,11 +174,14 @@ pub fn explain_search(server: &McpServer, id: Value, args: &Value) -> McpRespons
         Ok((title, content)) => {
             let query_terms: Vec<&str> = query.split_whitespace().collect();
             let content_lower = content.to_lowercase();
-            let matches: Vec<Value> = query_terms.iter().map(|term| {
-                let term_lower = term.to_lowercase();
-                let count = content_lower.matches(&term_lower).count();
-                json!({ "term": term, "occurrences": count })
-            }).collect();
+            let matches: Vec<Value> = query_terms
+                .iter()
+                .map(|term| {
+                    let term_lower = term.to_lowercase();
+                    let count = content_lower.matches(&term_lower).count();
+                    json!({ "term": term, "occurrences": count })
+                })
+                .collect();
 
             let explanation = json!({
                 "query": query,
@@ -153,9 +191,12 @@ pub fn explain_search(server: &McpServer, id: Value, args: &Value) -> McpRespons
                 "explanation": "FTS5 ranked by BM25; higher occurrence = higher relevance",
             });
 
-            McpResponse::ok(id, json!({
-                "content": [{ "type": "text", "text": serde_json::to_string_pretty(&explanation).unwrap_or_default() }]
-            }))
+            McpResponse::ok(
+                id,
+                json!({
+                    "content": [{ "type": "text", "text": serde_json::to_string_pretty(&explanation).unwrap_or_default() }]
+                }),
+            )
         }
     }
 }
@@ -168,10 +209,18 @@ pub fn agent_summary(server: &McpServer, id: Value) -> McpResponse {
     };
 
     let total_projects: i64 = conn_lock
-        .query_row("SELECT COUNT(*) FROM projects", [], |r: &rusqlite::Row<'_>| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM projects",
+            [],
+            |r: &rusqlite::Row<'_>| r.get(0),
+        )
         .unwrap_or(0);
     let total_docs: i64 = conn_lock
-        .query_row("SELECT COUNT(*) FROM documents", [], |r: &rusqlite::Row<'_>| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM documents",
+            [],
+            |r: &rusqlite::Row<'_>| r.get(0),
+        )
         .unwrap_or(0);
 
     let mut projects = Vec::new();
@@ -180,7 +229,7 @@ pub fn agent_summary(server: &McpServer, id: Value) -> McpResponse {
                 (SELECT COUNT(*) FROM documents d WHERE d.project_id = p.id) as doc_count,
                 p.last_synced
          FROM projects p
-         ORDER BY p.updated_at DESC"
+         ORDER BY p.updated_at DESC",
     );
 
     if let Ok(mut stmt) = stmt_result {
@@ -214,7 +263,7 @@ pub fn agent_summary(server: &McpServer, id: Value) -> McpResponse {
          FROM documents d
          JOIN projects p ON d.project_id = p.id
          ORDER BY d.last_indexed DESC
-         LIMIT 5"
+         LIMIT 5",
     );
     if let Ok(mut stmt) = recent_stmt_result {
         let rows = stmt.query_map([], |r: &rusqlite::Row<'_>| {
@@ -244,7 +293,10 @@ pub fn agent_summary(server: &McpServer, id: Value) -> McpResponse {
         "agent_orientation": "You are connected to Doxus Knowledge Base. Use 'doxus_search' for deep queries or 'doxus_get_document' for full content. If a project indicates it is out of sync, recommend 'doxus_sync_project'."
     });
 
-    McpResponse::ok(id, json!({
-        "content": [{ "type": "text", "text": serde_json::to_string_pretty(&summary).unwrap_or_default() }]
-    }))
+    McpResponse::ok(
+        id,
+        json!({
+            "content": [{ "type": "text", "text": serde_json::to_string_pretty(&summary).unwrap_or_default() }]
+        }),
+    )
 }

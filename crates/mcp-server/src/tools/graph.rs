@@ -1,4 +1,3 @@
-
 use crate::server::McpServer;
 use crate::tools::{resolve_doc_id, resolve_doc_id_optional_project};
 use crate::types::McpResponse;
@@ -22,7 +21,8 @@ fn links(server: &McpServer, id: Value, args: &Value, outgoing: bool) -> McpResp
         Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
 
-    let (db_id, _, _) = match resolve_doc_id_optional_project(&conn_lock, project_opt, &args["id"]) {
+    let (db_id, _, _) = match resolve_doc_id_optional_project(&conn_lock, project_opt, &args["id"])
+    {
         Ok(res) => res,
         Err(e) => return McpResponse::err(id, -32602, e),
     };
@@ -68,8 +68,10 @@ fn links(server: &McpServer, id: Value, args: &Value, outgoing: bool) -> McpResp
     match rows {
         Err(e) => McpResponse::err(id, -32603, e.to_string()),
         Ok(rows) => {
-            let items: Vec<Value> =
-                rows.iter().map(|(d, t)| json!({ "id": d, "title": t })).collect();
+            let items: Vec<Value> = rows
+                .iter()
+                .map(|(d, t)| json!({ "id": d, "title": t }))
+                .collect();
             McpResponse::ok(
                 id,
                 json!({
@@ -83,7 +85,6 @@ fn links(server: &McpServer, id: Value, args: &Value, outgoing: bool) -> McpResp
     }
 }
 
-
 pub fn find_path(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     let project_opt = args["project"].as_str();
     let from = &args["from"];
@@ -96,12 +97,14 @@ pub fn find_path(server: &McpServer, id: Value, args: &Value) -> McpResponse {
         Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
 
-    let (from_db_id, _, from_proj) = match resolve_doc_id_optional_project(&conn_lock, project_opt, from) {
-        Ok(res) => res,
-        Err(e) => return McpResponse::err(id, -32602, format!("'from' error: {e}")),
-    };
+    let (from_db_id, _, from_proj) =
+        match resolve_doc_id_optional_project(&conn_lock, project_opt, from) {
+            Ok(res) => res,
+            Err(e) => return McpResponse::err(id, -32602, format!("'from' error: {e}")),
+        };
 
-    let (to_db_id, _, to_proj) = match resolve_doc_id_optional_project(&conn_lock, project_opt, to) {
+    let (to_db_id, _, to_proj) = match resolve_doc_id_optional_project(&conn_lock, project_opt, to)
+    {
         Ok(res) => res,
         Err(e) => return McpResponse::err(id, -32602, format!("'to' error: {e}")),
     };
@@ -116,7 +119,8 @@ pub fn find_path(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     let table_exists: bool = conn_lock
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='document_links'",
-            [], |r: &rusqlite::Row<'_>| r.get::<_, i64>(0),
+            [],
+            |r: &rusqlite::Row<'_>| r.get::<_, i64>(0),
         )
         .map(|c| c > 0)
         .unwrap_or(false);
@@ -139,7 +143,9 @@ pub fn find_path(server: &McpServer, id: Value, args: &Value) -> McpResponse {
          ORDER BY depth LIMIT 1";
 
     let result: Result<(String, i64), _> = conn_lock.query_row(
-        sql, params![from_db_id, to_db_id, max_hops as i64], |r: &rusqlite::Row<'_>| Ok((r.get(0)?, r.get(1)?))
+        sql,
+        params![from_db_id, to_db_id, max_hops as i64],
+        |r: &rusqlite::Row<'_>| Ok((r.get(0)?, r.get(1)?)),
     );
 
     match result {
@@ -176,7 +182,8 @@ pub fn get_cluster(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     let table_exists: bool = conn_lock
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='document_links'",
-            [], |r: &rusqlite::Row<'_>| r.get::<_, i64>(0),
+            [],
+            |r: &rusqlite::Row<'_>| r.get::<_, i64>(0),
         )
         .map(|c| c > 0)
         .unwrap_or(false);
@@ -205,18 +212,26 @@ pub fn get_cluster(server: &McpServer, id: Value, args: &Value) -> McpResponse {
 
     let rows: Result<Vec<_>, _> = stmt
         .query_map(params![start_db_id, depth], |r: &rusqlite::Row<'_>| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, i64>(2)?))
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
         })
         .and_then(|it| it.collect());
 
-    let items: Vec<Value> = rows.unwrap_or_default()
+    let items: Vec<Value> = rows
+        .unwrap_or_default()
         .iter()
         .map(|(d, t, lvl)| json!({ "id": d, "title": t, "depth": lvl }))
         .collect();
 
-    McpResponse::ok(id, json!({
-        "content": [{ "type": "text", "text": serde_json::to_string_pretty(&items).unwrap_or_default() }]
-    }))
+    McpResponse::ok(
+        id,
+        json!({
+            "content": [{ "type": "text", "text": serde_json::to_string_pretty(&items).unwrap_or_default() }]
+        }),
+    )
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -224,9 +239,9 @@ pub fn get_cluster(server: &McpServer, id: Value, args: &Value) -> McpResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::server::McpServer;
     use serde_json::json;
     use std::sync::Arc;
-    use crate::server::McpServer;
 
     struct TestServer {
         _temp_dir: tempfile::TempDir,
@@ -242,7 +257,7 @@ mod tests {
             conn.execute_batch("
                 CREATE TABLE IF NOT EXISTS document_links (source_id INTEGER, target_id INTEGER, target_raw TEXT, link_type TEXT);
             ").unwrap();
-            
+
             // Add a test project
             conn.execute(
                 "INSERT INTO projects (name, display_name, path, source_project_id, source_type, config_json, status, created_at, updated_at) 
@@ -264,9 +279,20 @@ mod tests {
             ).unwrap();
         }
 
-        let pm = Arc::new(doxus_core::plugin::PluginManager::new(std::path::PathBuf::from("/tmp/doxus-pm-test")));
-        let server = McpServer::new(pool, db_path, None, pm, std::path::PathBuf::from("/tmp/doxus-plugins-test"));
-        TestServer { _temp_dir: temp_dir, server }
+        let pm = Arc::new(doxus_core::plugin::PluginManager::new(
+            std::path::PathBuf::from("/tmp/doxus-pm-test"),
+        ));
+        let server = McpServer::new(
+            pool,
+            db_path,
+            None,
+            pm,
+            std::path::PathBuf::from("/tmp/doxus-plugins-test"),
+        );
+        TestServer {
+            _temp_dir: temp_dir,
+            server,
+        }
     }
 
     #[test]
@@ -288,7 +314,6 @@ mod tests {
         let (id3, _sid3) = resolve_doc_id(&cl, "Brain", &json!(id1.to_string())).unwrap();
         assert_eq!(id1, id3);
     }
-
 
     #[test]
     fn test_links_standardization() {

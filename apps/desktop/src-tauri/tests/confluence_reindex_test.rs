@@ -26,7 +26,13 @@ fn insert_project(conn: &Connection, name: &str) -> i64 {
     conn.last_insert_rowid()
 }
 
-fn insert_document(conn: &Connection, project_id: i64, source_doc_id: &str, title: &str, content: &str) {
+fn insert_document(
+    conn: &Connection,
+    project_id: i64,
+    source_doc_id: &str,
+    title: &str,
+    content: &str,
+) {
     use sha2::{Digest, Sha256};
     let hash = format!("{:x}", Sha256::digest(content.as_bytes()));
     let now = 1_700_000_000i64;
@@ -47,7 +53,14 @@ fn reindex_if_stale_skips_when_hash_same() {
     insert_document(&conn, pid, "page/123", "My Page", "Hello World");
 
     // 동일 content → reindex 불필요
-    let reindexed = reindex_if_stale(&conn, "confluence-space", "page/123", "My Page", "Hello World").unwrap();
+    let reindexed = reindex_if_stale(
+        &conn,
+        "confluence-space",
+        "page/123",
+        "My Page",
+        "Hello World",
+    )
+    .unwrap();
     assert!(!reindexed, "hash identical — should skip reindex");
 }
 
@@ -60,7 +73,14 @@ fn reindex_if_stale_updates_when_hash_differs() {
     insert_document(&conn, pid, "page/123", "My Page", "old content");
 
     // 새 content → hash 달라야 함
-    let reindexed = reindex_if_stale(&conn, "confluence-space", "page/123", "My Page Updated", "new content").unwrap();
+    let reindexed = reindex_if_stale(
+        &conn,
+        "confluence-space",
+        "page/123",
+        "My Page Updated",
+        "new content",
+    )
+    .unwrap();
     assert!(reindexed, "hash differs — should trigger reindex");
 
     // DB content_hash가 갱신됐는지 확인
@@ -71,7 +91,10 @@ fn reindex_if_stale_updates_when_hash_differs() {
         rusqlite::params![pid],
         |r| r.get(0),
     ).unwrap();
-    assert_eq!(stored_hash, new_hash, "content_hash should be updated after reindex");
+    assert_eq!(
+        stored_hash, new_hash,
+        "content_hash should be updated after reindex"
+    );
 }
 
 // ── 3. DB에 없는 신규 문서 → false 반환 (reindex 불필요, 별도 인덱싱 경로) ───
@@ -81,6 +104,16 @@ fn reindex_if_stale_returns_false_when_doc_not_in_db() {
     let conn = make_conn();
     insert_project(&conn, "confluence-space");
 
-    let reindexed = reindex_if_stale(&conn, "confluence-space", "page/999", "New Page", "brand new").unwrap();
-    assert!(!reindexed, "doc not in DB — nothing to compare, skip reindex");
+    let reindexed = reindex_if_stale(
+        &conn,
+        "confluence-space",
+        "page/999",
+        "New Page",
+        "brand new",
+    )
+    .unwrap();
+    assert!(
+        !reindexed,
+        "doc not in DB — nothing to compare, skip reindex"
+    );
 }

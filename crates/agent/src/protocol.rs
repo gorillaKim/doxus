@@ -16,12 +16,26 @@ pub enum HostMessage {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentMessage {
-    Init { model: String },
-    Thought { content: String },
-    ToolUse { id: String, name: String, input: serde_json::Value },
-    Text { content: String },
-    Result { content: String },
-    Error { message: String },
+    Init {
+        model: String,
+    },
+    Thought {
+        content: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    Text {
+        content: String,
+    },
+    Result {
+        content: String,
+    },
+    Error {
+        message: String,
+    },
     Cancelled,
 }
 

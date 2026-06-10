@@ -36,7 +36,7 @@ fn build_host_functions(
     plugin_id: String,
     secrets_manifest: Vec<String>,
 ) -> [extism::Function; 3] {
-    use extism::{Function, ValType, CurrentPlugin, Val, UserData};
+    use extism::{CurrentPlugin, Function, UserData, Val, ValType};
 
     let secret_backend_inner_set = secret_store.clone();
     let plugin_id_inner_set = plugin_id.clone();
@@ -47,19 +47,27 @@ fn build_host_functions(
         [ValType::I64, ValType::I64],
         [],
         UserData::new(()),
-        move |plugin: &mut CurrentPlugin, inputs: &[Val], _outputs: &mut [Val], _user_data: UserData<()>| {
-            let key_h = plugin.memory_from_val(&inputs[0]).ok_or_else(|| extism::Error::msg("invalid key handle"))?;
-            let val_h = plugin.memory_from_val(&inputs[1]).ok_or_else(|| extism::Error::msg("invalid val handle"))?;
+        move |plugin: &mut CurrentPlugin,
+              inputs: &[Val],
+              _outputs: &mut [Val],
+              _user_data: UserData<()>| {
+            let key_h = plugin
+                .memory_from_val(&inputs[0])
+                .ok_or_else(|| extism::Error::msg("invalid key handle"))?;
+            let val_h = plugin
+                .memory_from_val(&inputs[1])
+                .ok_or_else(|| extism::Error::msg("invalid val handle"))?;
             let key = plugin.memory_str(key_h).unwrap_or_default().to_string();
             let value = plugin.memory_str(val_h).unwrap_or_default().to_string();
-            
+
             if secrets_manifest_set.contains(&key) {
                 let service = plugin_id_inner_set.clone();
-                secret_backend_inner_set.set(&service, &key, &value)
+                secret_backend_inner_set
+                    .set(&service, &key, &value)
                     .map_err(|e| extism::Error::msg(e.to_string()))?;
             }
             Ok(())
-        }
+        },
     );
 
     let secret_backend_inner_get = secret_store.clone();
@@ -71,10 +79,15 @@ fn build_host_functions(
         [ValType::I64],
         [ValType::I64],
         UserData::new(()),
-        move |plugin: &mut CurrentPlugin, inputs: &[Val], outputs: &mut [Val], _user_data: UserData<()>| {
-            let key_h = plugin.memory_from_val(&inputs[0]).ok_or_else(|| extism::Error::msg("invalid key handle"))?;
+        move |plugin: &mut CurrentPlugin,
+              inputs: &[Val],
+              outputs: &mut [Val],
+              _user_data: UserData<()>| {
+            let key_h = plugin
+                .memory_from_val(&inputs[0])
+                .ok_or_else(|| extism::Error::msg("invalid key handle"))?;
             let key = plugin.memory_str(key_h).unwrap_or_default().to_string();
-            
+
             if !secrets_manifest_get.contains(&key) {
                 outputs[0] = Val::I64(0);
                 return Ok(());
@@ -91,7 +104,7 @@ fn build_host_functions(
                 }
             }
             Ok(())
-        }
+        },
     );
 
     let get_time_fn = Function::new(
@@ -99,14 +112,17 @@ fn build_host_functions(
         [],
         [ValType::I64],
         UserData::new(()),
-        move |_plugin: &mut CurrentPlugin, _inputs: &[Val], outputs: &mut [Val], _user_data: UserData<()>| {
+        move |_plugin: &mut CurrentPlugin,
+              _inputs: &[Val],
+              outputs: &mut [Val],
+              _user_data: UserData<()>| {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs() as i64;
             outputs[0] = Val::I64(now);
             Ok(())
-        }
+        },
     );
 
     [set_secret_fn, get_secret_fn, get_time_fn]
@@ -141,7 +157,7 @@ impl WasmDocSourceAdapter {
 
         let bytes = wasm_bytes.into();
         let wasm = Wasm::data(bytes.clone());
-        
+
         // Extism PDK의 http::request()가 사용하는 built-in HTTP는
         // Manifest의 allowed_hosts를 통해 도메인을 검증함.
         let mut extism_manifest = Manifest::new([wasm]);
@@ -169,7 +185,7 @@ impl WasmDocSourceAdapter {
         );
         let temp_plugin = Plugin::new(&extism_manifest, host_fns, true)
             .map_err(|e| PluginError::Internal(format!("wasm load failed: {e}")))?;
-        
+
         let incremental_sync_cached = temp_plugin.function_exists("fetch_changes");
         let supports_write_cached = temp_plugin.function_exists("create_document");
         drop(temp_plugin);
@@ -184,8 +200,7 @@ impl WasmDocSourceAdapter {
         kv_store
             .init_table()
             .map_err(|e| PluginError::Internal(format!("kv table init: {e}")))?;
-        let secret_store: Arc<dyn crate::secrets::SecretStore> =
-            secret_store_inner.clone();
+        let secret_store: Arc<dyn crate::secrets::SecretStore> = secret_store_inner.clone();
         Ok(Self {
             meta: PluginMetadata {
                 id: manifest.plugin_id.clone(),
@@ -227,19 +242,27 @@ impl WasmDocSourceAdapter {
             }
         };
 
-        Self::from_bytes(bytes, manifest, None, None)
-            .map_err(|e| WasmError::HostFn(e.to_string()))
+        Self::from_bytes(bytes, manifest, None, None).map_err(|e| WasmError::HostFn(e.to_string()))
     }
 
     /// Get a value from the plugin KV store (namespace-isolated).
     /// Returns `None` if not found, or `Err` if namespace is not in manifest.
-    pub fn kv_get(&self, namespace: &str, key: &str) -> Result<Option<Vec<u8>>, super::kv_store::KvError> {
+    pub fn kv_get(
+        &self,
+        namespace: &str,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>, super::kv_store::KvError> {
         self.kv_store.get(namespace, key)
     }
 
     /// Set a value in the plugin KV store (namespace-isolated).
     /// Returns `Err` if namespace is not in manifest.
-    pub fn kv_set(&self, namespace: &str, key: &str, value: Vec<u8>) -> Result<(), super::kv_store::KvError> {
+    pub fn kv_set(
+        &self,
+        namespace: &str,
+        key: &str,
+        value: Vec<u8>,
+    ) -> Result<(), super::kv_store::KvError> {
         self.kv_store.set(namespace, key, value)
     }
 
@@ -311,7 +334,12 @@ impl WasmDocSourceAdapter {
         self.call_wasm_internal(func, input, true).await
     }
 
-    async fn call_wasm_internal<I, O>(&self, func: &str, input: &I, auto_init: bool) -> Result<O, PluginError>
+    async fn call_wasm_internal<I, O>(
+        &self,
+        func: &str,
+        input: &I,
+        auto_init: bool,
+    ) -> Result<O, PluginError>
     where
         I: Serialize + Send + Sync,
         O: for<'de> Deserialize<'de> + Send + 'static,
@@ -359,7 +387,9 @@ impl WasmDocSourceAdapter {
                             if let Some((_, v)) = secrets.fields.iter().next() {
                                 let val_str = match v {
                                     doxus_plugin_sdk::SecretValue::Text(t) => t.clone(),
-                                    doxus_plugin_sdk::SecretValue::Token { value, .. } => value.clone(),
+                                    doxus_plugin_sdk::SecretValue::Token { value, .. } => {
+                                        value.clone()
+                                    }
                                 };
                                 wasm_secrets.insert(key.clone(), val_str);
                             }
@@ -390,7 +420,8 @@ impl WasmDocSourceAdapter {
                 let init_bytes = serde_json::to_vec(&init_opts)
                     .map_err(|e| PluginError::Internal(format!("serialize init: {e}")))?;
 
-                plugin.call::<&[u8], &[u8]>("initialize", &init_bytes)
+                plugin
+                    .call::<&[u8], &[u8]>("initialize", &init_bytes)
                     .map_err(|e| PluginError::Internal(format!("auto-initialize failed: {e}")))?;
             }
 
@@ -405,7 +436,8 @@ impl WasmDocSourceAdapter {
                 let raw_json = String::from_utf8_lossy(output);
                 tracing::debug!("Host function trace: {}: {}", func, raw_json);
                 serde_json::from_slice::<O>(output)
-            }.map_err(|e| PluginError::Internal(format!("deserialize: {e}")))?;
+            }
+            .map_err(|e| PluginError::Internal(format!("deserialize: {e}")))?;
 
             drop(plugin); // Explicitly drop to ensure cleanup
 
@@ -424,7 +456,11 @@ fn raw_doc_from_wasm(d: doxus_plugin_sdk::wasm_types::RawDocumentWasm) -> RawDoc
         "html" => ContentType::Html,
         _ => ContentType::Markdown,
     };
-    tracing::debug!("Mapping doc id: {}, metadata keys: {:?}", d.id, d.metadata.keys().collect::<Vec<_>>());
+    tracing::debug!(
+        "Mapping doc id: {}, metadata keys: {:?}",
+        d.id,
+        d.metadata.keys().collect::<Vec<_>>()
+    );
     RawDocument {
         id: SourceDocId(d.id),
         title: d.title,
@@ -479,8 +515,11 @@ impl DocSource for WasmDocSourceAdapter {
         }
 
         let mut wasm_secrets = HashMap::new();
-        tracing::debug!("Initialize secrets fields available: {:?}", secrets.fields.keys());
-        
+        tracing::debug!(
+            "Initialize secrets fields available: {:?}",
+            secrets.fields.keys()
+        );
+
         for key in &self.manifest.secrets {
             if let Some(v) = secrets.fields.get(key) {
                 let val_str = match v {
@@ -494,7 +533,11 @@ impl DocSource for WasmDocSourceAdapter {
                 // Fallback: 만약 'confluence_api_token'이 없고 다른 토큰이 있다면 하나라도 할당 시도
                 if key == "confluence_api_token" && !secrets.fields.is_empty() {
                     if let Some((k, v)) = secrets.fields.iter().next() {
-                        tracing::debug!("Attempting autoconnect fallback: mapping {} to {}", k, key);
+                        tracing::debug!(
+                            "Attempting autoconnect fallback: mapping {} to {}",
+                            k,
+                            key
+                        );
                         let val_str = match v {
                             doxus_plugin_sdk::SecretValue::Text(t) => t.clone(),
                             doxus_plugin_sdk::SecretValue::Token { value, .. } => value.clone(),
@@ -519,7 +562,8 @@ impl DocSource for WasmDocSourceAdapter {
         };
 
         // auto_init를 false로 주어 initialize 시에 auto-init이 재차 일어나 무한루프 도는 걸 방지
-        self.call_wasm_internal::<InitOpts, ()>("initialize", &opts, false).await
+        self.call_wasm_internal::<InitOpts, ()>("initialize", &opts, false)
+            .await
     }
 
     async fn fetch_all(&self, opts: FetchAllOpts) -> Result<DocumentStream, PluginError> {
@@ -531,7 +575,11 @@ impl DocSource for WasmDocSourceAdapter {
         };
         let result: DocumentStreamWasm = self.call_wasm("fetch_all", &wasm_opts).await?;
         Ok(DocumentStream {
-            documents: result.documents.into_iter().map(raw_doc_from_wasm).collect(),
+            documents: result
+                .documents
+                .into_iter()
+                .map(raw_doc_from_wasm)
+                .collect(),
             next_cursor: result.next_cursor,
             estimated_total: result.estimated_total,
         })
@@ -611,14 +659,16 @@ impl DocSource for WasmDocSourceAdapter {
             content: content.map(|s| s.to_string()),
             metadata: metadata.cloned(),
         };
-        self.call_wasm::<UpdateDocumentOptsWasm, ()>("update_document", &opts).await
+        self.call_wasm::<UpdateDocumentOptsWasm, ()>("update_document", &opts)
+            .await
     }
 
     async fn delete_document(&self, id: &SourceDocId) -> Result<(), PluginError> {
         use doxus_plugin_sdk::wasm_types::DeleteDocumentOptsWasm;
 
         let opts = DeleteDocumentOptsWasm { id: id.0.clone() };
-        self.call_wasm::<DeleteDocumentOptsWasm, ()>("delete_document", &opts).await
+        self.call_wasm::<DeleteDocumentOptsWasm, ()>("delete_document", &opts)
+            .await
     }
 }
 
@@ -649,32 +699,39 @@ mod tests {
 
     #[test]
     fn wasm_adapter_can_be_created() {
-        let adapter = WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None);
+        let adapter =
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None);
         assert!(adapter.is_ok());
     }
 
     #[test]
     fn metadata_returns_correct_plugin_id() {
         let adapter =
-            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None).unwrap();
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None)
+                .unwrap();
         assert_eq!(adapter.metadata().id, "com.test.plugin");
     }
 
     #[test]
     fn capabilities_returns_struct() {
         let adapter =
-            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None).unwrap();
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None)
+                .unwrap();
         let caps = adapter.capabilities();
         assert!(!caps.incremental_sync);
         assert!(!caps.oauth);
         assert!(!caps.native_search);
-        assert!(matches!(caps.sync_policy, doxus_plugin_sdk::SyncPolicy::Interval { .. }));
+        assert!(matches!(
+            caps.sync_policy,
+            doxus_plugin_sdk::SyncPolicy::Interval { .. }
+        ));
     }
 
     #[test]
     fn capabilities_is_consistent() {
         let adapter =
-            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None).unwrap();
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None)
+                .unwrap();
         let c1 = adapter.capabilities();
         let c2 = adapter.capabilities();
         assert_eq!(c1.incremental_sync, c2.incremental_sync);
@@ -685,7 +742,8 @@ mod tests {
     #[tokio::test]
     async fn fetch_all_errors_for_minimal_wasm_without_export() {
         let adapter =
-            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None).unwrap();
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None)
+                .unwrap();
         let opts = FetchAllOpts {
             cursor: None,
             page_size: 10,
@@ -697,7 +755,8 @@ mod tests {
     #[tokio::test]
     async fn fetch_changes_errors_for_minimal_wasm_without_export() {
         let adapter =
-            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None).unwrap();
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None)
+                .unwrap();
         let opts = doxus_plugin_sdk::FetchChangesOpts {
             since: 0,
             cursor: None,
@@ -711,7 +770,8 @@ mod tests {
     #[tokio::test]
     async fn fetch_document_errors_for_minimal_wasm_without_export() {
         let adapter =
-            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None).unwrap();
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None)
+                .unwrap();
         let result = adapter.fetch_document(&SourceDocId("doc1".into())).await;
         assert!(result.is_err(), "minimal wasm has no fetch_document export");
     }
@@ -719,7 +779,8 @@ mod tests {
     #[tokio::test]
     async fn health_check_returns_unhealthy_for_minimal_wasm() {
         let adapter =
-            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None).unwrap();
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None)
+                .unwrap();
         let status = adapter.health_check().await;
         assert!(!status.healthy, "minimal wasm has no health_check export");
         assert!(status.message.is_some());
@@ -730,7 +791,8 @@ mod tests {
     async fn fetch_all_calls_wasm_export() {
         let wasm_bytes = include_bytes!("../../../core/tests/fixtures/test_plugin.wasm");
         let adapter =
-            WasmDocSourceAdapter::from_bytes(wasm_bytes.to_vec(), test_manifest(), None, None).unwrap();
+            WasmDocSourceAdapter::from_bytes(wasm_bytes.to_vec(), test_manifest(), None, None)
+                .unwrap();
         let opts = FetchAllOpts {
             cursor: None,
             page_size: 10,
@@ -766,16 +828,23 @@ mod tests {
             WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), manifest, None, None).unwrap();
         assert!(adapter.kv_get("default", "x").unwrap().is_none());
         adapter.kv_set("default", "x", b"hello".to_vec()).unwrap();
-        assert_eq!(adapter.kv_get("default", "x").unwrap(), Some(b"hello".to_vec()));
+        assert_eq!(
+            adapter.kv_get("default", "x").unwrap(),
+            Some(b"hello".to_vec())
+        );
     }
 
     #[test]
     fn kv_store_rejects_undeclared_namespace() {
         let adapter =
-            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None).unwrap();
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None)
+                .unwrap();
         // test_manifest has kv_namespaces: vec![]
         let err = adapter.kv_set("forbidden", "k", b"v".to_vec()).unwrap_err();
-        assert!(matches!(err, crate::plugin::kv_store::KvError::NamespaceNotAllowed(_)));
+        assert!(matches!(
+            err,
+            crate::plugin::kv_store::KvError::NamespaceNotAllowed(_)
+        ));
     }
 
     #[test]
@@ -818,7 +887,8 @@ mod tests {
     #[test]
     fn progress_noop_without_sender() {
         let adapter =
-            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None).unwrap();
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None)
+                .unwrap();
         // Should not panic
         adapter.send_progress(1, 10);
     }
@@ -833,7 +903,8 @@ mod tests {
     #[test]
     fn secrets_get_returns_none_for_unknown_key() {
         let adapter =
-            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None).unwrap();
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None)
+                .unwrap();
         let result = adapter.secrets_get("nonexistent_key_12345");
         assert!(result.is_none());
     }
@@ -857,7 +928,10 @@ mod tests {
         let adapter =
             WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), manifest, None, None).unwrap();
         std::env::set_var("DOXUS_SECRET_other_key", "value");
-        assert!(adapter.secrets_get("other_key").is_none(), "undeclared key should be rejected");
+        assert!(
+            adapter.secrets_get("other_key").is_none(),
+            "undeclared key should be rejected"
+        );
         std::env::remove_var("DOXUS_SECRET_other_key");
     }
 
@@ -866,7 +940,10 @@ mod tests {
         let manifest = manifest_with_secrets(vec!["../etc/passwd"]);
         let adapter =
             WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), manifest, None, None).unwrap();
-        assert!(adapter.secrets_get("../etc/passwd").is_none(), "special chars should be rejected");
+        assert!(
+            adapter.secrets_get("../etc/passwd").is_none(),
+            "special chars should be rejected"
+        );
     }
 
     #[test]
@@ -876,7 +953,10 @@ mod tests {
         let adapter =
             WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), manifest, None, None).unwrap();
         std::env::set_var("DOXUS_SECRET_api_token", "secret123");
-        assert_eq!(adapter.secrets_get("api_token"), Some("secret123".to_string()));
+        assert_eq!(
+            adapter.secrets_get("api_token"),
+            Some("secret123".to_string())
+        );
         std::env::remove_var("DOXUS_SECRET_api_token");
     }
 
@@ -960,7 +1040,11 @@ mod tests {
     #[test]
     fn content_transform_preserves_literal_gt() {
         let result = WasmDocSourceAdapter::content_transform("a > b");
-        assert!(result.contains("a > b"), "literal > should be preserved, got: {}", result);
+        assert!(
+            result.contains("a > b"),
+            "literal > should be preserved, got: {}",
+            result
+        );
     }
 
     #[test]
@@ -985,35 +1069,36 @@ mod tests {
             Some(Arc::new(store)),
         )
         .unwrap();
-        assert_eq!(adapter.secrets_get("api_token"), Some("secret123".to_string()));
+        assert_eq!(
+            adapter.secrets_get("api_token"),
+            Some("secret123".to_string())
+        );
     }
 
     #[tokio::test]
     async fn supports_write_false_for_minimal_wasm() {
-        let adapter = WasmDocSourceAdapter::from_bytes(
-            minimal_wasm_bytes(),
-            test_manifest(),
-            None,
-            None,
-        ).unwrap();
+        let adapter =
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None)
+                .unwrap();
         assert!(!adapter.supports_write());
     }
 
     #[tokio::test]
     async fn write_methods_fail_if_function_missing() {
-        let adapter = WasmDocSourceAdapter::from_bytes(
-            minimal_wasm_bytes(),
-            test_manifest(),
-            None,
-            None,
-        ).unwrap();
+        let adapter =
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None)
+                .unwrap();
 
-        let res = adapter.create_document("title", "content", None, None).await;
+        let res = adapter
+            .create_document("title", "content", None, None)
+            .await;
         assert!(res.is_err());
         let err = res.unwrap_err().to_string();
         assert!(err.contains("wasm call 'create_document' failed"));
 
-        let res = adapter.update_document(&SourceDocId("id".into()), None, None).await;
+        let res = adapter
+            .update_document(&SourceDocId("id".into()), None, None)
+            .await;
         assert!(res.is_err());
         let err = res.unwrap_err().to_string();
         assert!(err.contains("wasm call 'update_document' failed"));
@@ -1027,7 +1112,8 @@ mod tests {
     #[tokio::test]
     async fn wasm_adapter_is_stateless_and_supports_concurrent_calls() {
         let adapter = Arc::new(
-            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None).unwrap()
+            WasmDocSourceAdapter::from_bytes(minimal_wasm_bytes(), test_manifest(), None, None)
+                .unwrap(),
         );
 
         let mut handles = vec![];

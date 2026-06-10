@@ -2,12 +2,12 @@
 //!
 //! Exposes doxus_* tools for AI agent integration.
 
-pub mod sync_loop;
-pub mod retry_tracker;
 pub mod http_server;
+pub mod retry_tracker;
+pub mod sync_loop;
 
 pub mod types;
-pub use types::{McpRequest, McpResponse, McpError};
+pub use types::{McpError, McpRequest, McpResponse};
 
 pub mod server;
 pub use server::McpServer;
@@ -42,8 +42,16 @@ mod tests {
         let db_path = dir.path().join("test.db");
         let pool = doxus_core::db::create_pool(&db_path).unwrap();
         Box::leak(Box::new(dir));
-        let pm = Arc::new(doxus_core::plugin::PluginManager::new(std::path::PathBuf::from("/tmp/doxus-pm")));
-        McpServer::new(pool, db_path, None, pm, std::path::PathBuf::from("/tmp/doxus-test-plugins"))
+        let pm = Arc::new(doxus_core::plugin::PluginManager::new(
+            std::path::PathBuf::from("/tmp/doxus-pm"),
+        ));
+        McpServer::new(
+            pool,
+            db_path,
+            None,
+            pm,
+            std::path::PathBuf::from("/tmp/doxus-test-plugins"),
+        )
     }
 
     fn insert_project(server: &McpServer, name: &str, path: &str) {
@@ -76,7 +84,9 @@ mod tests {
     #[tokio::test]
     async fn test_list_projects_empty() {
         let server = test_server();
-        let resp = server.dispatch_tool("doxus_list_projects", json!(1), &json!({})).await;
+        let resp = server
+            .dispatch_tool("doxus_list_projects", json!(1), &json!({}))
+            .await;
         assert!(resp.error.is_none());
         let text = &resp.result.unwrap()["content"][0]["text"];
         assert!(text.as_str().unwrap().contains("No projects"));
@@ -85,20 +95,31 @@ mod tests {
     #[tokio::test]
     async fn test_add_and_list_projects() {
         let server = test_server();
-        let resp =
-            server.dispatch_tool("doxus_add_project", json!(1), &json!({"name": "vault", "path": "/tmp/vault"})).await;
+        let resp = server
+            .dispatch_tool(
+                "doxus_add_project",
+                json!(1),
+                &json!({"name": "vault", "path": "/tmp/vault"}),
+            )
+            .await;
         assert!(resp.error.is_none());
 
-        let resp = server.dispatch_tool("doxus_list_projects", json!(2), &json!({})).await;
-        let text = resp.result.unwrap()["content"][0]["text"].as_str().unwrap().to_string();
+        let resp = server
+            .dispatch_tool("doxus_list_projects", json!(2), &json!({}))
+            .await;
+        let text = resp.result.unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
         assert!(text.contains("vault"));
     }
 
     #[tokio::test]
     async fn test_add_project_missing_name() {
         let server = test_server();
-        let resp =
-            server.dispatch_tool("doxus_add_project", json!(1), &json!({"path": "/tmp"})).await;
+        let resp = server
+            .dispatch_tool("doxus_add_project", json!(1), &json!({"path": "/tmp"}))
+            .await;
         assert!(resp.error.is_some());
     }
 
@@ -106,13 +127,18 @@ mod tests {
     async fn test_remove_project() {
         let server = test_server();
         insert_project(&server, "todel", "/tmp");
-        let resp =
-            server.dispatch_tool("doxus_remove_project", json!(1), &json!({"name": "todel"})).await;
+        let resp = server
+            .dispatch_tool("doxus_remove_project", json!(1), &json!({"name": "todel"}))
+            .await;
         assert!(resp.error.is_none());
         let conn = server.conn();
         let c = conn.get().unwrap();
         let count: i64 = c
-            .query_row("SELECT COUNT(*) FROM projects WHERE name='todel'", [], |r: &rusqlite::Row<'_>| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM projects WHERE name='todel'",
+                [],
+                |r: &rusqlite::Row<'_>| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 0);
     }
@@ -120,8 +146,9 @@ mod tests {
     #[tokio::test]
     async fn test_remove_project_not_found() {
         let server = test_server();
-        let resp =
-            server.dispatch_tool("doxus_remove_project", json!(1), &json!({"name": "ghost"})).await;
+        let resp = server
+            .dispatch_tool("doxus_remove_project", json!(1), &json!({"name": "ghost"}))
+            .await;
         assert!(resp.error.is_some());
     }
 
@@ -129,29 +156,35 @@ mod tests {
     async fn test_search_no_results() {
         let server = test_server();
         insert_project(&server, "proj", "/tmp");
-        let resp = server.dispatch_tool("doxus_search", json!(1), &json!({"query": "zzznoresults"})).await;
+        let resp = server
+            .dispatch_tool("doxus_search", json!(1), &json!({"query": "zzznoresults"}))
+            .await;
         assert!(resp.error.is_none());
     }
 
     #[tokio::test]
     async fn test_search_project_not_found() {
         let server = test_server();
-        let resp = server.dispatch_tool(
-            "doxus_search",
-            json!(1),
-            &json!({"query": "test", "project": "ghost"}),
-        ).await;
+        let resp = server
+            .dispatch_tool(
+                "doxus_search",
+                json!(1),
+                &json!({"query": "test", "project": "ghost"}),
+            )
+            .await;
         assert!(resp.error.is_some());
     }
 
     #[tokio::test]
     async fn test_create_document_external_project_failed_if_not_exists() {
         let server = test_server();
-        let resp = server.dispatch_tool(
-            "doxus_create_document",
-            json!(1),
-            &json!({"title": "Test", "project": "ghost"}),
-        ).await;
+        let resp = server
+            .dispatch_tool(
+                "doxus_create_document",
+                json!(1),
+                &json!({"title": "Test", "project": "ghost"}),
+            )
+            .await;
         // Should fail because project ghost doesn't exist in DB
         assert!(resp.error.is_some());
     }
@@ -162,11 +195,13 @@ mod tests {
         insert_project(&server, "ext-proj", "/tmp/ext");
         // By default, PluginManager has no factories, so loading source for project will fail or return None.
         // Wait, if source loading fails, tool should return error.
-        let resp = server.dispatch_tool(
-            "doxus_create_document",
-            json!(1),
-            &json!({"title": "Test", "project": "ext-proj"}),
-        ).await;
+        let resp = server
+            .dispatch_tool(
+                "doxus_create_document",
+                json!(1),
+                &json!({"title": "Test", "project": "ext-proj"}),
+            )
+            .await;
         assert!(resp.error.is_some());
     }
 }

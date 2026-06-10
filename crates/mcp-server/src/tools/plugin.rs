@@ -20,14 +20,14 @@ pub fn list(server: &McpServer, id: Value) -> McpResponse {
     };
 
     let rows: Result<Vec<_>, _> = stmt
-        .query_map([], |r: &rusqlite::Row<'_>| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+        .query_map([], |r: &rusqlite::Row<'_>| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })
         .and_then(|it| it.collect());
 
     match rows {
         Err(e) => McpResponse::err(id, -32603, e.to_string()),
-        Ok(rows) if rows.is_empty() => {
-            McpResponse::text(id, "No plugins installed.")
-        }
+        Ok(rows) if rows.is_empty() => McpResponse::text(id, "No plugins installed."),
         Ok(rows) => {
             let items: Vec<Value> = rows
                 .iter()
@@ -65,11 +65,20 @@ pub async fn install(server: &McpServer, id: Value, args: &Value) -> McpResponse
         };
         let entry = match client.fetch_entry(plugin_id).await {
             Ok(Some(e)) => e,
-            Ok(None) => return McpResponse::err(id, -32603, format!("plugin '{plugin_id}' not found in registry")),
+            Ok(None) => {
+                return McpResponse::err(
+                    id,
+                    -32603,
+                    format!("plugin '{plugin_id}' not found in registry"),
+                )
+            }
             Err(e) => return McpResponse::err(id, -32603, e.to_string()),
         };
-        let installer = doxus_core::marketplace::installer::PluginInstaller::new(server.plugins_dir.clone());
-        if let Err(e) = installer.install_from_url(plugin_id, &entry.download_url, Some(&entry.checksum_sha256)) {
+        let installer =
+            doxus_core::marketplace::installer::PluginInstaller::new(server.plugins_dir.clone());
+        if let Err(e) =
+            installer.install_from_url(plugin_id, &entry.download_url, Some(&entry.checksum_sha256))
+        {
             return McpResponse::err(id, -32603, e.to_string());
         }
     } else if let Some(url) = args["url"].as_str() {
@@ -78,9 +87,7 @@ pub async fn install(server: &McpServer, id: Value, args: &Value) -> McpResponse
                 server.plugins_dir.clone(),
             )
         } else {
-            doxus_core::marketplace::installer::PluginInstaller::new(
-                server.plugins_dir.clone(),
-            )
+            doxus_core::marketplace::installer::PluginInstaller::new(server.plugins_dir.clone())
         };
         let expected_sha256 = args["sha256"].as_str();
         if let Err(e) = installer.install_from_url(plugin_id, url, expected_sha256) {
@@ -111,15 +118,23 @@ pub fn remove(server: &McpServer, id: Value, args: &Value) -> McpResponse {
         None => return McpResponse::err(id, -32602, "missing required arg: id"),
     };
 
-    if !plugin_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_') {
-        return McpResponse::err(id, -32602, "invalid plugin_id: only alphanumeric, '.', '-', '_' allowed");
+    if !plugin_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+    {
+        return McpResponse::err(
+            id,
+            -32602,
+            "invalid plugin_id: only alphanumeric, '.', '-', '_' allowed",
+        );
     }
 
     {
         let plugins_dir = server.plugins_dir.clone();
         let wasm_path = plugins_dir.join(format!("{plugin_id}.wasm"));
         if let Ok(canonical) = wasm_path.canonicalize().or_else(|_| {
-            plugins_dir.canonicalize()
+            plugins_dir
+                .canonicalize()
                 .map(|p| p.join(format!("{plugin_id}.wasm")))
         }) {
             let safe_prefix = plugins_dir.canonicalize().unwrap_or(plugins_dir.clone());
@@ -200,10 +215,15 @@ pub fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse {
 
     match rows {
         Err(e) => McpResponse::err(id, -32603, e.to_string()),
-        Ok(items) if items.is_empty() => McpResponse::text(id, format!("No plugins matching '{query}'.")),
-        Ok(items) => McpResponse::ok(id, json!({
-            "content": [{ "type": "text", "text": serde_json::to_string_pretty(&items).unwrap_or_default() }]
-        })),
+        Ok(items) if items.is_empty() => {
+            McpResponse::text(id, format!("No plugins matching '{query}'."))
+        }
+        Ok(items) => McpResponse::ok(
+            id,
+            json!({
+                "content": [{ "type": "text", "text": serde_json::to_string_pretty(&items).unwrap_or_default() }]
+            }),
+        ),
     }
 }
 
@@ -228,7 +248,11 @@ pub fn status(server: &McpServer, id: Value, args: &Value) -> McpResponse {
         Err(_) => McpResponse::err(id, -32602, format!("plugin '{plugin_id}' not found")),
         Ok((version, trust, enabled)) => {
             let instances: i64 = conn_lock
-                .query_row("SELECT COUNT(*) FROM source_instances WHERE plugin_id=?1", params![plugin_id], |r: &rusqlite::Row<'_>| r.get(0))
+                .query_row(
+                    "SELECT COUNT(*) FROM source_instances WHERE plugin_id=?1",
+                    params![plugin_id],
+                    |r: &rusqlite::Row<'_>| r.get(0),
+                )
                 .unwrap_or(0);
             let status = json!({
                 "id": plugin_id,
@@ -237,9 +261,12 @@ pub fn status(server: &McpServer, id: Value, args: &Value) -> McpResponse {
                 "enabled": enabled != 0,
                 "instances": instances,
             });
-            McpResponse::ok(id, json!({
-                "content": [{ "type": "text", "text": serde_json::to_string_pretty(&status).unwrap_or_default() }]
-            }))
+            McpResponse::ok(
+                id,
+                json!({
+                    "content": [{ "type": "text", "text": serde_json::to_string_pretty(&status).unwrap_or_default() }]
+                }),
+            )
         }
     }
 }
@@ -259,7 +286,12 @@ pub fn logs(server: &McpServer, id: Value, args: &Value) -> McpResponse {
         "debug" => vec!["error", "warn", "info", "debug"],
         _ => vec!["error", "warn", "info", "debug", "trace"],
     };
-    let placeholders = levels.iter().enumerate().map(|(i, _)| format!("?{}", i + 2)).collect::<Vec<_>>().join(", ");
+    let placeholders = levels
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("?{}", i + 2))
+        .collect::<Vec<_>>()
+        .join(", ");
     let sql = format!(
         "SELECT level, message, occurred_at FROM plugin_logs
          WHERE plugin_id = ?1 AND level IN ({placeholders})
@@ -273,7 +305,9 @@ pub fn logs(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     };
 
     let mut all_params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(plugin_id.to_string())];
-    for l in &levels { all_params.push(Box::new(l.to_string())); }
+    for l in &levels {
+        all_params.push(Box::new(l.to_string()));
+    }
     all_params.push(Box::new(limit));
 
     let mut stmt = match conn_lock.prepare(&sql) {
@@ -294,10 +328,15 @@ pub fn logs(server: &McpServer, id: Value, args: &Value) -> McpResponse {
 
     match rows {
         Err(e) => McpResponse::err(id, -32603, e.to_string()),
-        Ok(items) if items.is_empty() => McpResponse::text(id, format!("No logs for plugin '{plugin_id}'.")),
-        Ok(items) => McpResponse::ok(id, json!({
-            "content": [{ "type": "text", "text": serde_json::to_string_pretty(&items).unwrap_or_default() }]
-        })),
+        Ok(items) if items.is_empty() => {
+            McpResponse::text(id, format!("No logs for plugin '{plugin_id}'."))
+        }
+        Ok(items) => McpResponse::ok(
+            id,
+            json!({
+                "content": [{ "type": "text", "text": serde_json::to_string_pretty(&items).unwrap_or_default() }]
+            }),
+        ),
     }
 }
 
@@ -331,9 +370,12 @@ pub fn info(server: &McpServer, id: Value, args: &Value) -> McpResponse {
                 "installed_at": installed_at,
                 "manifest": manifest_val,
             });
-            McpResponse::ok(id, json!({
-                "content": [{ "type": "text", "text": serde_json::to_string_pretty(&info).unwrap_or_default() }]
-            }))
+            McpResponse::ok(
+                id,
+                json!({
+                    "content": [{ "type": "text", "text": serde_json::to_string_pretty(&info).unwrap_or_default() }]
+                }),
+            )
         }
     }
 }

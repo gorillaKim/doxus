@@ -15,7 +15,12 @@ pub fn sanitize_name(name: &str) -> String {
 /// Generate a relative path from a root name and ancestors.
 /// If `is_parent` is true, the title itself becomes a directory and the file is placed inside it.
 /// e.g. "Space/Parent/Parent.md" instead of "Space/Parent.md"
-pub fn build_relative_path(root_name: &str, ancestors: &[String], title: &str, is_parent: bool) -> String {
+pub fn build_relative_path(
+    root_name: &str,
+    ancestors: &[String],
+    title: &str,
+    is_parent: bool,
+) -> String {
     let mut path = PathBuf::new();
     if !root_name.is_empty() {
         path.push(sanitize_name(root_name));
@@ -29,7 +34,7 @@ pub fn build_relative_path(root_name: &str, ancestors: &[String], title: &str, i
         // 부모 페이지인 경우 제목으로 폴더를 하나 더 만들고 그 안에 파일을 둠
         path.push(&sanitized_title);
     }
-    
+
     path.push(format!("{}.md", sanitized_title));
     path.to_string_lossy().to_string()
 }
@@ -50,7 +55,7 @@ mod tests {
         let space = "ENG";
         let ancestors = vec!["Project A".to_string(), "Design".to_string()];
         let title = "Architecture";
-        
+
         // Not a parent
         let path = build_relative_path(space, &ancestors, title, false);
         assert_eq!(path, "ENG/Project A/Design/Architecture.md");
@@ -58,10 +63,10 @@ mod tests {
 
     #[test]
     fn test_build_relative_path_for_parent() {
-        let root = "테크스펙"; 
+        let root = "테크스펙";
         let ancestors = vec![];
         let title = "v3.1-MAD 최종 스펙";
-        
+
         // Is a parent
         let path = build_relative_path(root, &ancestors, title, true);
         assert_eq!(path, "테크스펙/v3.1-MAD 최종 스펙/v3.1-MAD 최종 스펙.md");
@@ -69,10 +74,10 @@ mod tests {
 
     #[test]
     fn test_build_relative_path_nested_hierarchy() {
-        let root = "테크스펙"; 
+        let root = "테크스펙";
         let ancestors = vec!["규칙 생성_수정 모달".to_string()];
         let title = "상세 로직";
-        
+
         let path = build_relative_path(root, &ancestors, title, false);
         assert_eq!(path, "테크스펙/규칙 생성_수정 모달/상세 로직.md");
     }
@@ -82,7 +87,7 @@ mod tests {
         let root = "";
         let ancestors = vec!["Folder A".to_string(), "Folder B".to_string()];
         let title = "Page";
-        
+
         let path = build_relative_path(root, &ancestors, title, false);
         assert_eq!(path, "Folder A/Folder B/Page.md");
     }

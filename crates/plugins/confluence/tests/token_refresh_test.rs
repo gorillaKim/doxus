@@ -103,7 +103,9 @@ async fn token_refreshed_before_fetch_all_when_expired() {
     // Refresh endpoint must be called exactly once
     Mock::given(method("POST"))
         .and(path("/oauth2/token"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(token_refresh_response("new-access")))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(token_refresh_response("new-access")),
+        )
         .expect(1)
         .mount(&server)
         .await;
@@ -113,7 +115,10 @@ async fn token_refreshed_before_fetch_all_when_expired() {
 
     let plugin = make_oauth_plugin(&server, "TEST");
     let res: Result<DocumentStream, PluginError> = plugin
-        .fetch_all(FetchAllOpts { cursor: None, page_size: 25 })
+        .fetch_all(FetchAllOpts {
+            cursor: None,
+            page_size: 25,
+        })
         .await;
 
     assert!(res.is_ok(), "expected ok, got: {:?}", res);
@@ -128,7 +133,9 @@ async fn fetch_changes_refreshes_expired_token() {
 
     Mock::given(method("POST"))
         .and(path("/oauth2/token"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(token_refresh_response("new-access")))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(token_refresh_response("new-access")),
+        )
         .expect(1)
         .mount(&server)
         .await;
@@ -171,7 +178,10 @@ async fn no_refresh_when_token_valid() {
     // Token endpoint must NOT be called
     Mock::given(method("POST"))
         .and(path("/oauth2/token"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(token_refresh_response("should-not-be-called")))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(token_refresh_response("should-not-be-called")),
+        )
         .expect(0)
         .mount(&server)
         .await;
@@ -193,7 +203,10 @@ async fn no_refresh_when_token_valid() {
     plugin.set_test_oauth_config(oauth_config, Some(valid_token()));
 
     let res: Result<DocumentStream, PluginError> = plugin
-        .fetch_all(FetchAllOpts { cursor: None, page_size: 25 })
+        .fetch_all(FetchAllOpts {
+            cursor: None,
+            page_size: 25,
+        })
         .await;
 
     assert!(res.is_ok(), "expected ok, got: {:?}", res);
@@ -213,7 +226,9 @@ async fn concurrent_fetch_does_not_double_refresh() {
     // expect 설정하지 않고 성공 여부만 확인합니다.
     Mock::given(method("POST"))
         .and(path("/oauth2/token"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(token_refresh_response("shared-new-access")))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(token_refresh_response("shared-new-access")),
+        )
         .mount(&server)
         .await;
 
@@ -225,9 +240,24 @@ async fn concurrent_fetch_does_not_double_refresh() {
     let p1: Arc<ConfluencePlugin> = Arc::clone(&plugin);
     let p2: Arc<ConfluencePlugin> = Arc::clone(&plugin);
 
-    let (r1, r2): (Result<DocumentStream, PluginError>, Result<DocumentStream, PluginError>) = tokio::join!(
-        async { p1.fetch_all(FetchAllOpts { cursor: None, page_size: 25 }).await },
-        async { p2.fetch_all(FetchAllOpts { cursor: None, page_size: 25 }).await },
+    let (r1, r2): (
+        Result<DocumentStream, PluginError>,
+        Result<DocumentStream, PluginError>,
+    ) = tokio::join!(
+        async {
+            p1.fetch_all(FetchAllOpts {
+                cursor: None,
+                page_size: 25,
+            })
+            .await
+        },
+        async {
+            p2.fetch_all(FetchAllOpts {
+                cursor: None,
+                page_size: 25,
+            })
+            .await
+        },
     );
 
     assert!(r1.is_ok(), "r1: {:?}", r1);
@@ -262,7 +292,10 @@ async fn refresh_fails_when_no_refresh_token() {
     plugin.set_test_oauth_config(oauth_config, Some(no_refresh));
 
     let res: Result<DocumentStream, PluginError> = plugin
-        .fetch_all(FetchAllOpts { cursor: None, page_size: 25 })
+        .fetch_all(FetchAllOpts {
+            cursor: None,
+            page_size: 25,
+        })
         .await;
 
     assert!(
@@ -281,7 +314,10 @@ async fn api_token_auth_unaffected() {
     // Token endpoint must NOT be called for Basic/api_token auth
     Mock::given(method("POST"))
         .and(path("/oauth2/token"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(token_refresh_response("should-not-be-called")))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(token_refresh_response("should-not-be-called")),
+        )
         .expect(0)
         .mount(&server)
         .await;
@@ -298,7 +334,10 @@ async fn api_token_auth_unaffected() {
     );
 
     let res: Result<DocumentStream, PluginError> = plugin
-        .fetch_all(FetchAllOpts { cursor: None, page_size: 25 })
+        .fetch_all(FetchAllOpts {
+            cursor: None,
+            page_size: 25,
+        })
         .await;
 
     assert!(res.is_ok(), "expected ok, got: {:?}", res);

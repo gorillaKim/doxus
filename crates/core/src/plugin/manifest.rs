@@ -23,8 +23,8 @@ pub struct PluginManifest {
 
 impl PluginManifest {
     pub fn from_file(path: &std::path::Path) -> Result<Self, ManifestError> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| ManifestError::Io(e.to_string()))?;
+        let content =
+            std::fs::read_to_string(path).map_err(|e| ManifestError::Io(e.to_string()))?;
         toml::from_str(&content).map_err(|e| ManifestError::Parse(e.to_string()))
     }
 

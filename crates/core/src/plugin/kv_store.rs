@@ -1,4 +1,4 @@
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
@@ -177,7 +177,10 @@ mod tests {
     fn set_then_get_returns_value() {
         let store = store_with_ns(&["default"]);
         store.set("default", "key", b"value".to_vec()).unwrap();
-        assert_eq!(store.get("default", "key").unwrap(), Some(b"value".to_vec()));
+        assert_eq!(
+            store.get("default", "key").unwrap(),
+            Some(b"value".to_vec())
+        );
     }
 
     #[test]

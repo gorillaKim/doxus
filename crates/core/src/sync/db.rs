@@ -37,10 +37,7 @@ impl<'a> SyncDb<'a> {
 
     /// Fetch instances due for sync: `last_synced IS NULL` or older than `interval_secs`.
     /// Only returns instances belonging to `active` projects.
-    pub fn due_instances(
-        &self,
-        interval_secs: i64,
-    ) -> Result<Vec<DueInstance>, rusqlite::Error> {
+    pub fn due_instances(&self, interval_secs: i64) -> Result<Vec<DueInstance>, rusqlite::Error> {
         let mut stmt = self.conn.prepare(
             "SELECT si.id, si.plugin_id, si.project_id, si.sync_cursor, si.last_synced, p.name, si.config_json
              FROM source_instances si

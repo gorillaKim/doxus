@@ -2,16 +2,18 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use doxus_desktop_lib::AppState;
-use tauri::{Emitter, Manager};
 use std::sync::Arc;
-
+use tauri::{Emitter, Manager};
 
 fn find_bundle_plugins_dir() -> Option<std::path::PathBuf> {
     // macOS 프로덕션 번들: MacOS/../Resources/
-    let base_res = std::env::current_exe().ok()
+    let base_res = std::env::current_exe()
+        .ok()
         .and_then(|exe| exe.parent()?.parent().map(|p| p.join("Resources")))?;
-    
-    if !base_res.exists() { return None; }
+
+    if !base_res.exists() {
+        return None;
+    }
 
     // Resources 폴더 내에서 'crates/plugins'가 포함된 경로를 검색합니다. (Tauri의 _up_ 핸들링 대응)
     fn find_recursive(dir: &std::path::Path) -> Option<std::path::PathBuf> {
@@ -38,8 +40,10 @@ fn ensure_plugins(target_dir: &std::path::Path) {
     std::fs::create_dir_all(target_dir).ok();
 
     if let Some(bundle_dir) = find_bundle_plugins_dir() {
-        if !bundle_dir.exists() { return; }
-        
+        if !bundle_dir.exists() {
+            return;
+        }
+
         // 재귀적으로 .wasm 및 .manifest.toml 파일을 찾습니다.
         fn visit_dirs(dir: &std::path::Path, target_dir: &std::path::Path) -> std::io::Result<()> {
             if dir.is_dir() {
@@ -58,20 +62,30 @@ fn ensure_plugins(target_dir: &std::path::Path) {
                                 let _ = std::fs::copy(&path, &target_wasm);
                                 eprintln!("[plugins] Installed WASM: {}", target_wasm.display());
                             }
-                            
+
                             // 2. 동반 매니페스트 확인 및 복사 (foo.wasm -> foo.manifest.toml)
                             let companion_manifest = path.with_extension("manifest.toml");
                             if companion_manifest.exists() {
-                                let target_manifest = target_dir.join(companion_manifest.file_name().unwrap());
+                                let target_manifest =
+                                    target_dir.join(companion_manifest.file_name().unwrap());
                                 let _ = std::fs::copy(&companion_manifest, &target_manifest);
-                                eprintln!("[plugins] Installed companion: {}", target_manifest.display());
+                                eprintln!(
+                                    "[plugins] Installed companion: {}",
+                                    target_manifest.display()
+                                );
                             } else {
                                 // 3. 폴더 내 generic manifest.toml이 있는지 확인 (하위 호환성)
                                 let generic_manifest = path.parent().unwrap().join("manifest.toml");
                                 if generic_manifest.exists() {
-                                    let target_manifest = target_dir.join(format!("{}.manifest.toml", path.file_stem().unwrap().to_str().unwrap()));
+                                    let target_manifest = target_dir.join(format!(
+                                        "{}.manifest.toml",
+                                        path.file_stem().unwrap().to_str().unwrap()
+                                    ));
                                     let _ = std::fs::copy(&generic_manifest, &target_manifest);
-                                    eprintln!("[plugins] Installed generic as companion: {}", target_manifest.display());
+                                    eprintln!(
+                                        "[plugins] Installed generic as companion: {}",
+                                        target_manifest.display()
+                                    );
                                 }
                             }
                         }
@@ -89,20 +103,28 @@ fn find_sidecar_script() -> std::path::PathBuf {
     // 1. 환경변수 오버라이드 (개발/테스트용)
     if let Ok(p) = std::env::var("DOXUS_SIDECAR_PATH") {
         let path = std::path::PathBuf::from(p);
-        if path.exists() { return path; }
+        if path.exists() {
+            return path;
+        }
     }
 
     let mut candidates = vec![
         // macOS 프로덕션 번들: MacOS/../Resources/sidecar/
-        std::env::current_exe().ok()
-            .and_then(|exe| exe.parent()?.parent().map(|p| p.join("Resources/sidecar/agent-bridge.mjs")))
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| {
+                exe.parent()?
+                    .parent()
+                    .map(|p| p.join("Resources/sidecar/agent-bridge.mjs"))
+            })
             .unwrap_or_default(),
         // dev: src-tauri 기준 상대 경로
         std::path::PathBuf::from("sidecar/agent-bridge.mjs"),
         // dev: workspace root 기준
         std::path::PathBuf::from("apps/desktop/src-tauri/sidecar/agent-bridge.mjs"),
         // Tauri dev cwd
-        std::env::current_dir().unwrap_or_default()
+        std::env::current_dir()
+            .unwrap_or_default()
             .join("apps/desktop/src-tauri/sidecar/agent-bridge.mjs"),
     ];
 
@@ -121,7 +143,7 @@ fn find_sidecar_script() -> std::path::PathBuf {
 fn ensure_bridge_token() -> String {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     let token_path = std::path::PathBuf::from(home).join(".doxus/.bridge_token");
-    
+
     if token_path.exists() {
         if let Ok(token) = std::fs::read_to_string(&token_path) {
             let token = token.trim();
@@ -138,7 +160,7 @@ fn ensure_bridge_token() -> String {
         .take(32)
         .map(char::from)
         .collect();
-    
+
     std::fs::create_dir_all(token_path.parent().unwrap()).ok();
     if let Err(e) = std::fs::write(&token_path, &token) {
         eprintln!("[bridge] Failed to save token: {}", e);
@@ -150,7 +172,7 @@ fn ensure_bridge_token() -> String {
         }
         eprintln!("[bridge] New token generated and saved to ~/.doxus/.bridge_token");
     }
-    
+
     token
 }
 
@@ -167,7 +189,9 @@ fn find_doxus_mcp_bin() -> Option<std::path::PathBuf> {
 fn find_doxus_mcp_bin_in(dir: &std::path::Path) -> Option<std::path::PathBuf> {
     // 정확한 이름 우선 (dev/local 빌드)
     let exact = dir.join("doxus-mcp");
-    if exact.is_file() { return Some(exact); }
+    if exact.is_file() {
+        return Some(exact);
+    }
 
     // Tauri 번들 바이너리: "doxus-mcp-<triple>" prefix 스캔
     if let Ok(entries) = std::fs::read_dir(dir) {
@@ -190,12 +214,19 @@ fn find_doxus_mcp_bin_in_target() -> Option<std::path::PathBuf> {
     loop {
         if dir.file_name().map(|n| n == "target").unwrap_or(false) {
             let d = dir.join("debug/doxus-mcp");
-            if d.exists() { return Some(d); }
+            if d.exists() {
+                return Some(d);
+            }
             let r = dir.join("release/doxus-mcp");
-            if r.exists() { return Some(r); }
+            if r.exists() {
+                return Some(r);
+            }
             break;
         }
-        match dir.parent() { Some(p) => dir = p, None => break }
+        match dir.parent() {
+            Some(p) => dir = p,
+            None => break,
+        }
     }
     None
 }
@@ -204,7 +235,11 @@ fn find_doxus_mcp_bin_in_path() -> Option<std::path::PathBuf> {
     std::env::var_os("PATH").and_then(|p| {
         std::env::split_paths(&p).find_map(|d| {
             let c = d.join("doxus-mcp");
-            if c.exists() { Some(c) } else { None }
+            if c.exists() {
+                Some(c)
+            } else {
+                None
+            }
         })
     })
 }
@@ -294,7 +329,9 @@ fn spawn_mcp_http_server(
         let mut reader = BufReader::new(stdout);
         let mut line = String::new();
         while let Ok(n) = reader.read_line(&mut line) {
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             if let Some(p) = line.trim().strip_prefix("PORT=") {
                 if let Ok(port) = p.parse::<u16>() {
                     let _ = tx.send(port);
@@ -361,7 +398,7 @@ fn main() {
         }
     }
     let plugins_dir = std::path::PathBuf::from(&home).join(".doxus/plugins");
-    
+
     // Ensure plugins are synced from bundle to plugins_dir
     ensure_plugins(&plugins_dir);
 
@@ -369,13 +406,22 @@ fn main() {
     let bridge_token = ensure_bridge_token();
     let embedder: std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync> =
         doxus_core::embedding::OnnxEmbedder::from_default_path()
-            .map(|e| std::sync::Arc::new(e) as std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>)
+            .map(|e| {
+                std::sync::Arc::new(e)
+                    as std::sync::Arc<dyn doxus_core::embedding::EmbeddingProvider + Send + Sync>
+            })
             .unwrap_or_else(|e| {
                 eprintln!("[embedding] ONNX load failed: {e}, falling back to no-op");
                 std::sync::Arc::new(doxus_core::embedding::NoOpEmbedder)
             });
-            
-    let (state_arc, rx) = AppState::new(conn, plugins_dir, sidecar_script, embedder, keychain_migrated_init);
+
+    let (state_arc, rx) = AppState::new(
+        conn,
+        plugins_dir,
+        sidecar_script,
+        embedder,
+        keychain_migrated_init,
+    );
     let state_arc = Arc::new(state_arc);
     let manager = state_arc.sync_manager.clone();
 
@@ -387,13 +433,16 @@ fn main() {
             manager_clone.set_event_sender(indexed_tx).await;
         });
     }
-    
+
     // If migration was triggered (flag was false), mark as done in config for next time
     if !keychain_migrated_init {
         settings.keychain_migrated = true;
-        let _ = doxus_desktop_lib::commands::settings::save_settings_to_path(&settings, &config_path);
+        let _ =
+            doxus_desktop_lib::commands::settings::save_settings_to_path(&settings, &config_path);
     }
-    state_arc.sidecar.set_debug(doxus_core::observability::is_debug_enabled("agent"));
+    state_arc
+        .sidecar
+        .set_debug(doxus_core::observability::is_debug_enabled("agent"));
 
     // doxus-mcp HTTP 서버 시작 — 포트 1421 고정, 이미 실행 중이면 재사용
     {
@@ -427,7 +476,7 @@ fn main() {
     let conn_arc = state_arc.conn.clone();
 
     let state_for_tauri = state_arc.clone();
-    
+
     tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -697,7 +746,10 @@ mod tests {
         let content = std::fs::read_to_string(&config_path).unwrap();
         let config: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(config["mcpServers"]["doxus"]["type"], "http");
-        assert_eq!(config["mcpServers"]["doxus"]["url"], "http://127.0.0.1:1421/mcp");
+        assert_eq!(
+            config["mcpServers"]["doxus"]["url"],
+            "http://127.0.0.1:1421/mcp"
+        );
         assert!(config["mcpServers"]["doxus"]["headers"].is_null());
         std::fs::remove_dir_all(&dir).ok();
     }

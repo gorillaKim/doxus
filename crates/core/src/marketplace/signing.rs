@@ -87,8 +87,8 @@ pub fn sha256_hex(data: &[u8]) -> String {
 }
 
 pub fn verify_plugin(plugin: &SignedPlugin) -> Result<(), SigningError> {
-    let verifying_key = VerifyingKey::from_bytes(&plugin.public_key)
-        .map_err(|_| SigningError::InvalidSignature)?;
+    let verifying_key =
+        VerifyingKey::from_bytes(&plugin.public_key).map_err(|_| SigningError::InvalidSignature)?;
     let signature = Signature::from_bytes(&plugin.signature);
     verifying_key
         .verify(&plugin.wasm_bytes, &signature)
@@ -150,7 +150,10 @@ mod tests {
         let (mut plugin, _) = make_signed_plugin(b"original bytes".to_vec());
         // Tamper with wasm_bytes after signing
         plugin.wasm_bytes = b"tampered bytes".to_vec();
-        assert!(matches!(verify_plugin(&plugin), Err(SigningError::InvalidSignature)));
+        assert!(matches!(
+            verify_plugin(&plugin),
+            Err(SigningError::InvalidSignature)
+        ));
     }
 
     #[test]

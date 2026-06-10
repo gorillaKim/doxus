@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::time::Duration;
-use tokio::net::TcpListener;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 use url::Url;
 
 pub struct OAuthCallbackServer {
@@ -30,7 +30,7 @@ impl OAuthCallbackServer {
         let result = tokio::time::timeout(timeout, async {
             // Explicitly type the socket to help compiler inference
             let (mut socket, _addr): (tokio::net::TcpStream, std::net::SocketAddr) = listener.accept().await?;
-            
+
             let mut buf = [0; 4096];
             // Help n's type inference
             let n: usize = socket.read(&mut buf).await?;

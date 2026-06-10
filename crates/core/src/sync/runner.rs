@@ -2,10 +2,10 @@ use rusqlite::{Connection, OptionalExtension};
 
 use doxus_plugin_sdk::{DocSource, FetchChangesOpts};
 
-use crate::conflict::{record_conflict, resolve_conflict, ConflictResolution};
-use crate::observability::{persist_audit, AuditEvent};
 use super::db::SyncDb;
 use super::scheduler::{SyncError, SyncScheduler};
+use crate::conflict::{record_conflict, resolve_conflict, ConflictResolution};
+use crate::observability::{persist_audit, AuditEvent};
 
 #[derive(Debug)]
 pub struct SyncResult {
@@ -50,14 +50,22 @@ impl<S: DocSource + Send + Sync> SyncRunner<S> {
         for instance in due {
             // incremental_sync를 지원하지 않는 플러그인은 건너뜀
             if !self.source.capabilities().incremental_sync {
-                persist_audit(conn, &AuditEvent::PluginError {
-                    plugin_id: instance.plugin_id.clone(),
-                    message: "skipped: plugin does not support incremental_sync".into(),
-                });
+                persist_audit(
+                    conn,
+                    &AuditEvent::PluginError {
+                        plugin_id: instance.plugin_id.clone(),
+                        message: "skipped: plugin does not support incremental_sync".into(),
+                    },
+                );
                 continue;
             }
 
-            persist_audit(conn, &AuditEvent::SyncStart { source_instance_id: instance.id });
+            persist_audit(
+                conn,
+                &AuditEvent::SyncStart {
+                    source_instance_id: instance.id,
+                },
+            );
 
             let mut applied = 0usize;
             let mut current_cursor = instance.sync_cursor.clone();
@@ -74,10 +82,13 @@ impl<S: DocSource + Send + Sync> SyncRunner<S> {
                 let changeset = match self.source.fetch_changes(opts).await {
                     Ok(cs) => cs,
                     Err(e) => {
-                        persist_audit(conn, &AuditEvent::PluginError {
-                            plugin_id: instance.plugin_id.clone(),
-                            message: format!("Sync fetch error: {}", e),
-                        });
+                        persist_audit(
+                            conn,
+                            &AuditEvent::PluginError {
+                                plugin_id: instance.plugin_id.clone(),
+                                message: format!("Sync fetch error: {}", e),
+                            },
+                        );
                         if is_transient_plugin_error(&e) {
                             // 일시적 오류(네트워크, 레이트 리밋)는 이 인스턴스만 건너뛰고 계속
                             sync_ok = false;
@@ -105,20 +116,23 @@ impl<S: DocSource + Send + Sync> SyncRunner<S> {
                         .map_err(SyncError::Db)?;
 
                     match existing_hash {
-                        Some(ref local_hash) => {
-                            match resolve_conflict(local_hash, &doc.content) {
-                                ConflictResolution::Skip => {}
-                                ConflictResolution::UseRemote => {
-                                    record_conflict(conn, instance.project_id, &doc.id.0)
-                                        .map_err(|e| match e {
-                                            crate::db::DbError::Sqlite(inner) => SyncError::Db(inner),
-                                            crate::db::DbError::Migration { reason, .. } => SyncError::Plugin(reason),
-                                            crate::db::DbError::Pool(inner) => SyncError::Plugin(inner.to_string()),
-                                        })?;
-                                    applied += 1;
-                                }
+                        Some(ref local_hash) => match resolve_conflict(local_hash, &doc.content) {
+                            ConflictResolution::Skip => {}
+                            ConflictResolution::UseRemote => {
+                                record_conflict(conn, instance.project_id, &doc.id.0).map_err(
+                                    |e| match e {
+                                        crate::db::DbError::Sqlite(inner) => SyncError::Db(inner),
+                                        crate::db::DbError::Migration { reason, .. } => {
+                                            SyncError::Plugin(reason)
+                                        }
+                                        crate::db::DbError::Pool(inner) => {
+                                            SyncError::Plugin(inner.to_string())
+                                        }
+                                    },
+                                )?;
+                                applied += 1;
                             }
-                        }
+                        },
                         None => {
                             applied += 1;
                         }
@@ -135,10 +149,13 @@ impl<S: DocSource + Send + Sync> SyncRunner<S> {
                 sync_db
                     .mark_synced(instance.id, current_cursor.as_deref())
                     .map_err(SyncError::Db)?;
-                persist_audit(conn, &AuditEvent::SyncComplete {
-                    source_instance_id: instance.id,
-                    docs_synced: applied,
-                });
+                persist_audit(
+                    conn,
+                    &AuditEvent::SyncComplete {
+                        source_instance_id: instance.id,
+                        docs_synced: applied,
+                    },
+                );
                 results.push(SyncResult {
                     instance_id: instance.id,
                     documents_updated: applied,
@@ -210,22 +227,46 @@ mod tests {
 
         /// 치명적 오류(AuthExpired)를 반환하는 소스
         fn failing_fatal() -> Self {
-            Self { call_count: Arc::new(AtomicUsize::new(0)), docs: vec![], next_cursor: None, fail_mode: FailMode::Fatal, incremental_sync: true }
+            Self {
+                call_count: Arc::new(AtomicUsize::new(0)),
+                docs: vec![],
+                next_cursor: None,
+                fail_mode: FailMode::Fatal,
+                incremental_sync: true,
+            }
         }
 
         /// 일시적 오류(NetworkError)를 반환하는 소스
         fn failing_transient() -> Self {
-            Self { call_count: Arc::new(AtomicUsize::new(0)), docs: vec![], next_cursor: None, fail_mode: FailMode::Transient, incremental_sync: true }
+            Self {
+                call_count: Arc::new(AtomicUsize::new(0)),
+                docs: vec![],
+                next_cursor: None,
+                fail_mode: FailMode::Transient,
+                incremental_sync: true,
+            }
         }
 
         /// 일시적 오류(RateLimited)를 반환하는 소스
         fn failing_rate_limited() -> Self {
-            Self { call_count: Arc::new(AtomicUsize::new(0)), docs: vec![], next_cursor: None, fail_mode: FailMode::RateLimited, incremental_sync: true }
+            Self {
+                call_count: Arc::new(AtomicUsize::new(0)),
+                docs: vec![],
+                next_cursor: None,
+                fail_mode: FailMode::RateLimited,
+                incremental_sync: true,
+            }
         }
 
         /// Internal 오류(WASM 호출 실패 시뮬레이션)를 반환하는 소스
         fn failing_internal() -> Self {
-            Self { call_count: Arc::new(AtomicUsize::new(0)), docs: vec![], next_cursor: None, fail_mode: FailMode::Internal, incremental_sync: true }
+            Self {
+                call_count: Arc::new(AtomicUsize::new(0)),
+                docs: vec![],
+                next_cursor: None,
+                fail_mode: FailMode::Internal,
+                incremental_sync: true,
+            }
         }
     }
 
@@ -253,7 +294,11 @@ mod tests {
             Ok(())
         }
 
-        async fn initialize(&mut self, _: PluginConfig, _: PluginSecrets) -> Result<(), PluginError> {
+        async fn initialize(
+            &mut self,
+            _: PluginConfig,
+            _: PluginSecrets,
+        ) -> Result<(), PluginError> {
             Ok(())
         }
 
@@ -269,9 +314,17 @@ mod tests {
             self.call_count.fetch_add(1, Ordering::SeqCst);
             match self.fail_mode {
                 FailMode::Fatal => return Err(PluginError::AuthExpired),
-                FailMode::Transient => return Err(PluginError::NetworkError("mock transient".into())),
-                FailMode::RateLimited => return Err(PluginError::RateLimited { retry_after_secs: 30 }),
-                FailMode::Internal => return Err(PluginError::Internal("mock wasm failure".into())),
+                FailMode::Transient => {
+                    return Err(PluginError::NetworkError("mock transient".into()))
+                }
+                FailMode::RateLimited => {
+                    return Err(PluginError::RateLimited {
+                        retry_after_secs: 30,
+                    })
+                }
+                FailMode::Internal => {
+                    return Err(PluginError::Internal("mock wasm failure".into()))
+                }
                 FailMode::None => {}
             }
 
@@ -295,7 +348,10 @@ mod tests {
         }
 
         async fn health_check(&self) -> HealthStatus {
-            HealthStatus { healthy: true, message: None }
+            HealthStatus {
+                healthy: true,
+                message: None,
+            }
         }
     }
 
@@ -415,7 +471,10 @@ mod tests {
         // NetworkError는 일시적 → Ok([]) 반환, 에러 전파 없음
         let runner = SyncRunner::new(SyncScheduler::new(3600), MockSource::failing_transient());
         let results = runner.run_once(&db.conn).await.unwrap();
-        assert!(results.is_empty(), "transient error should yield no results, not Err");
+        assert!(
+            results.is_empty(),
+            "transient error should yield no results, not Err"
+        );
     }
 
     #[tokio::test]
@@ -426,7 +485,10 @@ mod tests {
         // RateLimited도 일시적 → Ok([]) 반환
         let runner = SyncRunner::new(SyncScheduler::new(3600), MockSource::failing_rate_limited());
         let results = runner.run_once(&db.conn).await.unwrap();
-        assert!(results.is_empty(), "rate-limited error should yield no results, not Err");
+        assert!(
+            results.is_empty(),
+            "rate-limited error should yield no results, not Err"
+        );
     }
 
     #[tokio::test]
@@ -438,14 +500,30 @@ mod tests {
         runner.run_once(&db.conn).await.unwrap();
 
         // SyncStart 는 기록되지만 SyncComplete 는 기록되지 않아야 함
-        let start_count: i64 = db.conn
-            .query_row("SELECT COUNT(*) FROM audit_log WHERE event_type = 'sync_start'", [], |r| r.get(0))
+        let start_count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE event_type = 'sync_start'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        let complete_count: i64 = db.conn
-            .query_row("SELECT COUNT(*) FROM audit_log WHERE event_type = 'sync_complete'", [], |r| r.get(0))
+        let complete_count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE event_type = 'sync_complete'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(start_count, 1, "sync_start should still be recorded for transient failures");
-        assert_eq!(complete_count, 0, "sync_complete must NOT be recorded when sync was skipped due to transient error");
+        assert_eq!(
+            start_count, 1,
+            "sync_start should still be recorded for transient failures"
+        );
+        assert_eq!(
+            complete_count, 0,
+            "sync_complete must NOT be recorded when sync was skipped due to transient error"
+        );
     }
 
     #[tokio::test]
@@ -458,14 +536,18 @@ mod tests {
 
         // 일시적 오류 후에는 mark_synced가 호출되지 않아야 함
         // → 다음 사이클에서도 due로 남아야 함 (last_synced = NULL)
-        let last_synced: Option<i64> = db.conn
+        let last_synced: Option<i64> = db
+            .conn
             .query_row(
                 "SELECT last_synced FROM source_instances WHERE id = ?1",
                 rusqlite::params![id],
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(last_synced.is_none(), "instance should NOT be marked synced after transient error");
+        assert!(
+            last_synced.is_none(),
+            "instance should NOT be marked synced after transient error"
+        );
     }
 
     #[tokio::test]
@@ -510,8 +592,13 @@ mod tests {
         let runner = SyncRunner::new(SyncScheduler::new(3600), source);
         runner.run_once(&db.conn).await.unwrap();
 
-        let count: i64 = db.conn
-            .query_row("SELECT COUNT(*) FROM audit_log WHERE event_type = 'sync_start'", [], |r| r.get(0))
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE event_type = 'sync_start'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 1, "sync_start should be recorded in audit_log");
     }
@@ -524,8 +611,13 @@ mod tests {
         let runner = SyncRunner::new(SyncScheduler::new(3600), source);
         runner.run_once(&db.conn).await.unwrap();
 
-        let count: i64 = db.conn
-            .query_row("SELECT COUNT(*) FROM audit_log WHERE event_type = 'sync_complete'", [], |r| r.get(0))
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE event_type = 'sync_complete'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(count, 1, "sync_complete should be recorded in audit_log");
     }
@@ -538,10 +630,18 @@ mod tests {
         let runner = SyncRunner::new(SyncScheduler::new(3600), source);
         let _ = runner.run_once(&db.conn).await; // expected to fail
 
-        let count: i64 = db.conn
-            .query_row("SELECT COUNT(*) FROM audit_log WHERE event_type = 'plugin_error'", [], |r| r.get(0))
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE event_type = 'plugin_error'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(count, 1, "plugin_error should be recorded in audit_log on sync failure");
+        assert_eq!(
+            count, 1,
+            "plugin_error should be recorded in audit_log on sync failure"
+        );
     }
 
     // ── M2: incremental_sync=false 스킵 ────────────────────────────────────
@@ -557,8 +657,15 @@ mod tests {
         let runner = SyncRunner::new(SyncScheduler::new(3600), source);
         let results = runner.run_once(&db.conn).await.unwrap();
 
-        assert!(results.is_empty(), "non-incremental source should yield no results");
-        assert_eq!(call_count.load(Ordering::SeqCst), 0, "fetch_changes must NOT be called when incremental_sync=false");
+        assert!(
+            results.is_empty(),
+            "non-incremental source should yield no results"
+        );
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            0,
+            "fetch_changes must NOT be called when incremental_sync=false"
+        );
     }
 
     #[tokio::test]
@@ -566,13 +673,24 @@ mod tests {
         let db = TestDb::new();
         insert_instance(&db.conn);
 
-        let runner = SyncRunner::new(SyncScheduler::new(3600), MockSource::without_incremental_sync());
+        let runner = SyncRunner::new(
+            SyncScheduler::new(3600),
+            MockSource::without_incremental_sync(),
+        );
         runner.run_once(&db.conn).await.unwrap();
 
-        let count: i64 = db.conn
-            .query_row("SELECT COUNT(*) FROM audit_log WHERE event_type = 'plugin_error'", [], |r| r.get(0))
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE event_type = 'plugin_error'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(count, 1, "skipped instance should be recorded in audit_log as plugin_error");
+        assert_eq!(
+            count, 1,
+            "skipped instance should be recorded in audit_log as plugin_error"
+        );
     }
 
     // ── M3: Internal 오류는 transient ──────────────────────────────────────
@@ -585,7 +703,10 @@ mod tests {
         // Internal(WASM 호출 실패)은 일시적 → Ok([]) 반환, 전파 없음
         let runner = SyncRunner::new(SyncScheduler::new(3600), MockSource::failing_internal());
         let results = runner.run_once(&db.conn).await.unwrap();
-        assert!(results.is_empty(), "Internal error should be transient — no Err propagation");
+        assert!(
+            results.is_empty(),
+            "Internal error should be transient — no Err propagation"
+        );
     }
 
     #[tokio::test]
@@ -596,9 +717,17 @@ mod tests {
         let runner = SyncRunner::new(SyncScheduler::new(3600), MockSource::failing_internal());
         runner.run_once(&db.conn).await.unwrap();
 
-        let last_synced: Option<i64> = db.conn
-            .query_row("SELECT last_synced FROM source_instances WHERE id = ?1", rusqlite::params![id], |r| r.get(0))
+        let last_synced: Option<i64> = db
+            .conn
+            .query_row(
+                "SELECT last_synced FROM source_instances WHERE id = ?1",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert!(last_synced.is_none(), "instance must NOT be marked synced after Internal (transient) error");
+        assert!(
+            last_synced.is_none(),
+            "instance must NOT be marked synced after Internal (transient) error"
+        );
     }
 }

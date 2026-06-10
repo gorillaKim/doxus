@@ -23,7 +23,10 @@ pub fn parse_frontmatter(content: &str) -> ParsedTemplate {
 
     // frontmatter 시작 확인
     if lines.first().map(|l| l.trim()) != Some("---") {
-        return ParsedTemplate { fields: vec![], body: content.to_string() };
+        return ParsedTemplate {
+            fields: vec![],
+            body: content.to_string(),
+        };
     }
 
     // 닫는 --- 찾기
@@ -36,14 +39,19 @@ pub fn parse_frontmatter(content: &str) -> ParsedTemplate {
     }
 
     if end_idx == 0 {
-        return ParsedTemplate { fields: vec![], body: content.to_string() };
+        return ParsedTemplate {
+            fields: vec![],
+            body: content.to_string(),
+        };
     }
 
     // frontmatter 라인 파싱 (간단한 key: value 파싱)
     let mut fields: FrontmatterFields = Vec::new();
     for line in &lines[1..end_idx] {
         let trimmed = line.trim();
-        if trimmed.is_empty() { continue; }
+        if trimmed.is_empty() {
+            continue;
+        }
         if let Some(colon_pos) = trimmed.find(':') {
             let key = trimmed[..colon_pos].trim().to_string();
             let value = trimmed[colon_pos + 1..].trim().to_string();
@@ -55,7 +63,10 @@ pub fn parse_frontmatter(content: &str) -> ParsedTemplate {
 
     // body: frontmatter 이후 (선행 빈 줄 제거)
     let body_lines = &lines[end_idx + 1..];
-    let body_start = body_lines.iter().position(|l| !l.trim().is_empty()).unwrap_or(0);
+    let body_start = body_lines
+        .iter()
+        .position(|l| !l.trim().is_empty())
+        .unwrap_or(0);
     let body = body_lines[body_start..].join("\n");
 
     ParsedTemplate { fields, body }
@@ -94,7 +105,8 @@ mod tests {
 
     #[test]
     fn parse_frontmatter_basic() {
-        let content = "---\ntitle: 회의록\ndate: 2026-04-13\ntags: meeting, weekly\n---\n\n# 회의록\n\n내용";
+        let content =
+            "---\ntitle: 회의록\ndate: 2026-04-13\ntags: meeting, weekly\n---\n\n# 회의록\n\n내용";
         let parsed = parse_frontmatter(content);
         assert_eq!(parsed.fields.len(), 3);
         assert_eq!(parsed.fields[0], ("title".into(), "회의록".into()));
@@ -159,7 +171,8 @@ mod tests {
 
     #[test]
     fn fill_placeholders_basic() {
-        let template = "---\ntitle: {{title}}\ndate: {{date}}\n---\n\n# {{title}}\n\n내용을 입력하세요.";
+        let template =
+            "---\ntitle: {{title}}\ndate: {{date}}\n---\n\n# {{title}}\n\n내용을 입력하세요.";
         let mut values = BTreeMap::new();
         values.insert("title".into(), "주간 회의록".into());
         values.insert("date".into(), "2026-04-13".into());
@@ -177,6 +190,9 @@ mod tests {
         values.insert("title".into(), "문서".into());
         let result = fill_placeholders(template, &values);
         assert!(result.contains("title: 문서"));
-        assert!(result.contains("{{author}}"), "미입력 필드는 플레이스홀더 유지");
+        assert!(
+            result.contains("{{author}}"),
+            "미입력 필드는 플레이스홀더 유지"
+        );
     }
 }

@@ -16,7 +16,9 @@ fn insert_project(db: &TestDb, name: &str) -> i64 {
         )
         .unwrap();
     db.conn
-        .query_row("SELECT id FROM projects WHERE name = ?1", [name], |r| r.get::<_, i64>(0))
+        .query_row("SELECT id FROM projects WHERE name = ?1", [name], |r| {
+            r.get::<_, i64>(0)
+        })
         .unwrap()
 }
 

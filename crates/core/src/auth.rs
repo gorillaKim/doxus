@@ -1,8 +1,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::secrets::SecretStore;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use crate::secrets::SecretStore;
 
 // ── Errors ────────────────────────────────────────────────────────────────────
 
@@ -56,18 +56,20 @@ impl Default for KeyringSecretStore {
 
 impl SecretStore for KeyringSecretStore {
     fn get(&self, service: &str, account: &str) -> Result<String, crate::secrets::SecretsError> {
-        self.inner
-            .get(service, account)
+        self.inner.get(service, account)
     }
 
-    fn set(&self, service: &str, account: &str, secret: &str) -> Result<(), crate::secrets::SecretsError> {
-        self.inner
-            .set(service, account, secret)
+    fn set(
+        &self,
+        service: &str,
+        account: &str,
+        secret: &str,
+    ) -> Result<(), crate::secrets::SecretsError> {
+        self.inner.set(service, account, secret)
     }
 
     fn delete(&self, service: &str, account: &str) -> Result<(), crate::secrets::SecretsError> {
-        self.inner
-            .delete(service, account)
+        self.inner.delete(service, account)
     }
 }
 
@@ -275,14 +277,17 @@ impl AuthBridge {
     /// 브릿지 서버에 특정 플러그인의 시크릿 정보를 요청합니다.
     pub async fn get_secret(&self, plugin_id: &str, key: &str) -> Option<String> {
         let token = self.load_token();
-        let url = format!("http://localhost:{}/secrets/{}/{}", self.port, plugin_id, key);
-        
+        let url = format!(
+            "http://localhost:{}/secrets/{}/{}",
+            self.port, plugin_id, key
+        );
+
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
             .build()
             .unwrap_or_default();
         let mut rb = client.get(&url);
-        
+
         if let Some(t) = token {
             rb = rb.header("Authorization", format!("Bearer {}", t));
         }
@@ -290,8 +295,10 @@ impl AuthBridge {
         match rb.send().await {
             Ok(resp) if resp.status().is_success() => {
                 #[derive(serde::Deserialize)]
-                struct SecretResponse { value: String }
-                
+                struct SecretResponse {
+                    value: String,
+                }
+
                 resp.json::<SecretResponse>().await.ok().map(|r| r.value)
             }
             Ok(resp) => {
@@ -310,7 +317,9 @@ impl AuthBridge {
             path.push(".doxus");
             path.push(".bridge_token");
             if path.exists() {
-                return std::fs::read_to_string(path).ok().map(|s| s.trim().to_string());
+                return std::fs::read_to_string(path)
+                    .ok()
+                    .map(|s| s.trim().to_string());
             }
         }
         None
@@ -322,9 +331,9 @@ impl AuthBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::secrets::MemorySecretStore;
     use serial_test::serial;
     use std::time::{SystemTime, UNIX_EPOCH};
-    use crate::secrets::MemorySecretStore;
 
     fn make_flow(token_url: &str) -> OAuthFlow {
         OAuthFlow::new(OAuthConfig {
@@ -351,7 +360,10 @@ mod tests {
     fn memory_store_not_found() {
         let store = MemorySecretStore::new();
         let result = store.get("svc", "missing");
-        assert!(matches!(result, Err(crate::secrets::SecretsError::NotFound(_))));
+        assert!(matches!(
+            result,
+            Err(crate::secrets::SecretsError::NotFound(_))
+        ));
     }
 
     #[test]
@@ -360,7 +372,10 @@ mod tests {
         store.set("svc", "acct", "val").unwrap();
         store.delete("svc", "acct").unwrap();
         let result = store.get("svc", "acct");
-        assert!(matches!(result, Err(crate::secrets::SecretsError::NotFound(_))));
+        assert!(matches!(
+            result,
+            Err(crate::secrets::SecretsError::NotFound(_))
+        ));
     }
 
     #[test]
@@ -466,17 +481,37 @@ mod tests {
         let test_token = "env_token_123";
         std::env::set_var("DOXUS_CONFLUENCE_EMAIL", test_email);
         std::env::set_var("DOXUS_CONFLUENCE_API_TOKEN", test_token);
-        
-        let mut config = PluginConfig { fields: HashMap::new() };
-        let mut secrets = PluginSecrets { fields: HashMap::new() };
+
+        let mut config = PluginConfig {
+            fields: HashMap::new(),
+        };
+        let mut secrets = PluginSecrets {
+            fields: HashMap::new(),
+        };
         let store = MemorySecretStore::new(); // 실제 키체인이 아닌 메모리 스토어 사용
-        
+
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             inject_auth_impl("com.doxus.confluence", &mut config, &mut secrets, &store).await;
         });
 
-        assert_eq!(config.fields.get("email").expect("email field should exist").as_str().unwrap(), test_email);
-        assert_eq!(config.fields.get("api_token").expect("api_token field should exist").as_str().unwrap(), test_token);
+        assert_eq!(
+            config
+                .fields
+                .get("email")
+                .expect("email field should exist")
+                .as_str()
+                .unwrap(),
+            test_email
+        );
+        assert_eq!(
+            config
+                .fields
+                .get("api_token")
+                .expect("api_token field should exist")
+                .as_str()
+                .unwrap(),
+            test_token
+        );
         std::env::remove_var("DOXUS_CONFLUENCE_EMAIL");
         std::env::remove_var("DOXUS_CONFLUENCE_API_TOKEN");
     }
@@ -484,10 +519,10 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn test_inject_auth_falls_back_to_bridge() {
-        use wiremock::matchers::{method, path, header};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
         use doxus_plugin_sdk::{PluginConfig, PluginSecrets};
         use std::collections::HashMap;
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
 
         // 1. 가상 브릿지 서버 시작
         let server = MockServer::start().await;
@@ -511,14 +546,21 @@ mod tests {
         std::fs::write(&token_path, test_token).unwrap();
 
         // 4. 주입 실행
-        let mut _config = PluginConfig { fields: HashMap::new() };
-        let mut _secrets = PluginSecrets { fields: HashMap::new() };
+        let mut _config = PluginConfig {
+            fields: HashMap::new(),
+        };
+        let mut _secrets = PluginSecrets {
+            fields: HashMap::new(),
+        };
         let _store = MemorySecretStore::new();
 
         // 브릿지 포트 오버라이드를 위해 직접 injection 호출 (테스트 환경)
-        let bridge = AuthBridge { port: server.address().port(), token: None };
+        let bridge = AuthBridge {
+            port: server.address().port(),
+            token: None,
+        };
         let token = bridge.get_secret("com.doxus.confluence", "api_token").await;
-        
+
         // 결과 확인
         assert_eq!(token.unwrap(), test_secret);
 
@@ -545,7 +587,7 @@ pub async fn inject_keychain_auth(
 
     let store = crate::secrets::UnifiedKeychainStore::new("doxus", "com.doxus.secrets.v1");
     let _ = store.load_from_keychain();
-    
+
     inject_auth_impl(plugin_id, config, secrets, &store).await;
 }
 
@@ -562,7 +604,7 @@ async fn inject_auth_impl(
         "com.doxus.confluence" => {
             // 1. API Token 로드 (환경 변수 > 브릿지 > 키체인 순)
             let mut token = std::env::var("DOXUS_CONFLUENCE_API_TOKEN").ok();
-            
+
             if token.is_none() {
                 token = bridge.get_secret(plugin_id, "api_token").await;
             }
@@ -570,11 +612,18 @@ async fn inject_auth_impl(
                 token = store.get(plugin_id, "api_token").ok();
             }
 
-            if let Some(token) = token.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
-                tracing::info!("[Auth] Loaded api_token for {} (Env/Bridge/Keychain)", plugin_id);
-                secrets
-                    .fields
-                    .insert("api_token".to_string(), doxus_plugin_sdk::SecretValue::Text(token.clone()));
+            if let Some(token) = token
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+            {
+                tracing::info!(
+                    "[Auth] Loaded api_token for {} (Env/Bridge/Keychain)",
+                    plugin_id
+                );
+                secrets.fields.insert(
+                    "api_token".to_string(),
+                    doxus_plugin_sdk::SecretValue::Text(token.clone()),
+                );
                 config
                     .fields
                     .insert("api_token".to_string(), serde_json::json!(token));
@@ -589,8 +638,14 @@ async fn inject_auth_impl(
                 email = store.get(plugin_id, "email").ok();
             }
 
-            if let Some(email) = email.map(|e| e.trim().to_string()).filter(|e| !e.is_empty()) {
-                tracing::info!("[Auth] Loaded email for {} (Env/Bridge/Keychain)", plugin_id);
+            if let Some(email) = email
+                .map(|e| e.trim().to_string())
+                .filter(|e| !e.is_empty())
+            {
+                tracing::info!(
+                    "[Auth] Loaded email for {} (Env/Bridge/Keychain)",
+                    plugin_id
+                );
                 config
                     .fields
                     .insert("email".to_string(), serde_json::json!(email));
@@ -605,11 +660,18 @@ async fn inject_auth_impl(
                 token = store.get(plugin_id, "token").ok();
             }
 
-            if let Some(token) = token.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) {
-                tracing::info!("[Auth] Loaded token for {} (Env/Bridge/Keychain)", plugin_id);
-                secrets
-                    .fields
-                    .insert("token".to_string(), doxus_plugin_sdk::SecretValue::Text(token));
+            if let Some(token) = token
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+            {
+                tracing::info!(
+                    "[Auth] Loaded token for {} (Env/Bridge/Keychain)",
+                    plugin_id
+                );
+                secrets.fields.insert(
+                    "token".to_string(),
+                    doxus_plugin_sdk::SecretValue::Text(token),
+                );
             }
         }
         _ => {}

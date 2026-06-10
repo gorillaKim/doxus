@@ -31,8 +31,14 @@ impl PluginRegistry {
         let http = reqwest::ClientBuilder::new()
             .user_agent("doxus-plugin-registry/0.1.0")
             .build()
-            .map_err(|e| PluginRegistryError::Network(format!("failed to build HTTP client: {e}")))?;
-        Ok(Self { client, installer, http })
+            .map_err(|e| {
+                PluginRegistryError::Network(format!("failed to build HTTP client: {e}"))
+            })?;
+        Ok(Self {
+            client,
+            installer,
+            http,
+        })
     }
 
     /// Fetch the list of available plugins from the registry.
@@ -177,7 +183,10 @@ mod tests {
         );
         // File must not be present after mismatch
         let dest = tmp.path().join("com.doxus.confluence.wasm");
-        assert!(!dest.exists(), "partially-written file should be removed on mismatch");
+        assert!(
+            !dest.exists(),
+            "partially-written file should be removed on mismatch"
+        );
     }
 
     #[tokio::test]

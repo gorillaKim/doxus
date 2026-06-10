@@ -1,9 +1,9 @@
-use std::sync::Arc;
+use crate::indexing::IndexingService;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{Duration, Instant};
-use crate::indexing::IndexingService;
- 
+
 type ProgressCallback = Box<dyn Fn(String, usize, usize) + Send + Sync>;
 type EventSender = mpsc::Sender<(String, usize)>;
 
@@ -20,7 +20,10 @@ pub enum SyncTrigger {
     /// 특정 프로젝트 강제 전체 재인덱싱 (Full)
     FullReindex { project_name: String },
     /// 파일 시스템 감시자에 의한 이벤트 (Push)
-    FileEvent { project_name: String, path: std::path::PathBuf },
+    FileEvent {
+        project_name: String,
+        path: std::path::PathBuf,
+    },
 }
 
 use std::collections::VecDeque;
@@ -84,7 +87,12 @@ impl SyncManager {
         let _ = self.tx.send(trigger).await;
     }
 
-    pub async fn record_external_trigger(&self, t_type: &str, project_name: Option<String>, details: Option<String>) {
+    pub async fn record_external_trigger(
+        &self,
+        t_type: &str,
+        project_name: Option<String>,
+        details: Option<String>,
+    ) {
         let mut recent = self.recent_triggers.lock().await;
         if recent.len() >= 10 {
             recent.pop_back();
@@ -93,13 +101,26 @@ impl SyncManager {
             trigger_type: t_type.to_string(),
             project_name,
             details,
-            timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().unwrap_or_default().as_secs() as i64,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .unwrap_or_default()
+                .as_secs() as i64,
         });
     }
 
-    pub async fn trigger_full_indexing_by_name(&self, name: &str, full: bool) -> Result<(), String> {
+    pub async fn trigger_full_indexing_by_name(
+        &self,
+        name: &str,
+        full: bool,
+    ) -> Result<(), String> {
         if full {
-            let _ = self.tx.send(SyncTrigger::FullReindex { project_name: name.to_string() }).await;
+            let _ = self
+                .tx
+                .send(SyncTrigger::FullReindex {
+                    project_name: name.to_string(),
+                })
+                .await;
         } else {
             let _ = self.tx.send(SyncTrigger::Manual(name.to_string())).await;
         }
@@ -143,7 +164,10 @@ impl SyncManager {
         *guard = Some(tx);
     }
 
-    pub async fn set_progress_callback(&self, cb: impl Fn(String, usize, usize) + Send + Sync + 'static) {
+    pub async fn set_progress_callback(
+        &self,
+        cb: impl Fn(String, usize, usize) + Send + Sync + 'static,
+    ) {
         let mut guard = self.progress_callback.lock().await;
         *guard = Some(Box::new(cb));
     }
@@ -151,7 +175,11 @@ impl SyncManager {
     pub async fn init_watchers(&self) {
         let active_projects = self.get_active_projects().unwrap_or_default();
         for project_name in active_projects {
-            crate::log_d!("sync", "[SyncManager] Running initial Catch-up scan for {}", project_name);
+            crate::log_d!(
+                "sync",
+                "[SyncManager] Running initial Catch-up scan for {}",
+                project_name
+            );
             self.run_task(&project_name, false).await;
         }
 
@@ -166,37 +194,71 @@ impl SyncManager {
 
     pub async fn start_loop(self: Arc<Self>, mut rx: mpsc::Receiver<SyncTrigger>) {
         crate::log_d!("sync", "[SyncManager] Background loop started");
-        
+
         while let Some(trigger) = rx.recv().await {
             crate::log_d!("sync", "[SyncManager] Received trigger: {:?}", trigger);
-            
+
             // Record trigger to recent list
             {
                 let mut recent = self.recent_triggers.lock().await;
                 if recent.len() >= 10 {
                     recent.pop_back();
                 }
-                
+
                 let (t_type, p_name, details) = match &trigger {
-                    SyncTrigger::Focus => ("Focus", None, Some("Window focused - checking projects".to_string())),
-                    SyncTrigger::Periodic => ("Periodic", None, Some("Scheduled periodic check".to_string())),
-                    SyncTrigger::Idle => ("Idle", None, Some("System idle - background maintenance".to_string())),
-                    SyncTrigger::Manual(name) => ("Manual", Some(name.clone()), Some(format!("User requested sync for {}", name))),
-                    SyncTrigger::FullReindex { project_name } => ("FullReindex", Some(project_name.clone()), Some(format!("User requested FORCE FULL re-index for {}", project_name))),
+                    SyncTrigger::Focus => (
+                        "Focus",
+                        None,
+                        Some("Window focused - checking projects".to_string()),
+                    ),
+                    SyncTrigger::Periodic => (
+                        "Periodic",
+                        None,
+                        Some("Scheduled periodic check".to_string()),
+                    ),
+                    SyncTrigger::Idle => (
+                        "Idle",
+                        None,
+                        Some("System idle - background maintenance".to_string()),
+                    ),
+                    SyncTrigger::Manual(name) => (
+                        "Manual",
+                        Some(name.clone()),
+                        Some(format!("User requested sync for {}", name)),
+                    ),
+                    SyncTrigger::FullReindex { project_name } => (
+                        "FullReindex",
+                        Some(project_name.clone()),
+                        Some(format!(
+                            "User requested FORCE FULL re-index for {}",
+                            project_name
+                        )),
+                    ),
                     SyncTrigger::FileEvent { project_name, path } => {
-                        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown file");
-                        ("FileEvent", Some(project_name.clone()), Some(format!("Changed: {}", filename)))
+                        let filename = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("unknown file");
+                        (
+                            "FileEvent",
+                            Some(project_name.clone()),
+                            Some(format!("Changed: {}", filename)),
+                        )
                     }
                 };
-                
+
                 recent.push_front(SyncTriggerSummary {
                     trigger_type: t_type.to_string(),
                     project_name: p_name,
                     details,
-                    timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().unwrap_or_default().as_secs() as i64,
+                    timestamp: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .ok()
+                        .unwrap_or_default()
+                        .as_secs() as i64,
                 });
             }
-            
+
             match trigger {
                 SyncTrigger::Manual(project_name) => {
                     self.run_task(&project_name, false).await;
@@ -216,7 +278,11 @@ impl SyncManager {
                     };
 
                     if should_skip {
-                        crate::log_d!("sync", "[SyncManager] Skipping FileEvent for {} (cooldown)", project_name);
+                        crate::log_d!(
+                            "sync",
+                            "[SyncManager] Skipping FileEvent for {} (cooldown)",
+                            project_name
+                        );
                         continue;
                     }
 
@@ -230,7 +296,11 @@ impl SyncManager {
     }
 
     async fn run_task(&self, project_name: &str, full: bool) {
-        tracing::info!("[SyncManager][run_task] 시작: project={} full={}", project_name, full);
+        tracing::info!(
+            "[SyncManager][run_task] 시작: project={} full={}",
+            project_name,
+            full
+        );
         // force_mark_task_started: trigger_reindex may have pre-registered the task for UI visibility;
         // always update the start time and proceed rather than skipping.
         self.force_mark_task_started(project_name).await;
@@ -245,27 +315,45 @@ impl SyncManager {
                     let n = name.clone();
                     tokio::spawn(async move {
                         let guard = cb_clone.lock().await;
-                        if let Some(f) = guard.as_ref() { f(n, done, total); }
+                        if let Some(f) = guard.as_ref() {
+                            f(n, done, total);
+                        }
                     });
                 }
             })
         };
         let result = if full {
             if let Some(on_progress) = cb {
-                self.indexing_service.index_project_with_progress(project_name, true, on_progress).await
+                self.indexing_service
+                    .index_project_with_progress(project_name, true, on_progress)
+                    .await
             } else {
-                self.indexing_service.index_project(project_name, true).await
+                self.indexing_service
+                    .index_project(project_name, true)
+                    .await
             }
         } else if let Some(on_progress) = cb {
-            self.indexing_service.index_project_changes(project_name, on_progress).await
+            self.indexing_service
+                .index_project_changes(project_name, on_progress)
+                .await
         } else {
-            self.indexing_service.index_project_changes(project_name, |_, _| {}).await
+            self.indexing_service
+                .index_project_changes(project_name, |_, _| {})
+                .await
         };
         self.update_last_sync(project_name).await;
 
         match &result {
-            Ok(count) => tracing::info!("[SyncManager][run_task] 완료: project={} indexed={}", project_name, count),
-            Err(e)    => tracing::info!("[SyncManager][run_task] 실패: project={} err={}", project_name, e),
+            Ok(count) => tracing::info!(
+                "[SyncManager][run_task] 완료: project={} indexed={}",
+                project_name,
+                count
+            ),
+            Err(e) => tracing::info!(
+                "[SyncManager][run_task] 실패: project={} err={}",
+                project_name,
+                e
+            ),
         }
 
         if let Ok(count) = result {
@@ -289,7 +377,12 @@ impl SyncManager {
 
         for project_name in active_projects {
             if self.should_sync(&project_name, &trigger).await {
-                crate::log_d!("sync", "[SyncManager] Syncing project: {} (Trigger: {:?})", project_name, trigger);
+                crate::log_d!(
+                    "sync",
+                    "[SyncManager] Syncing project: {} (Trigger: {:?})",
+                    project_name,
+                    trigger
+                );
                 self.run_task(&project_name, false).await;
             }
         }
@@ -299,10 +392,13 @@ impl SyncManager {
         let active = self.active_tasks.lock().await;
         let recent = self.recent_triggers.lock().await;
         SyncStatus {
-            active_tasks: active.iter().map(|(name, started_at)| ActiveTaskSummary {
-                project_name: name.clone(),
-                started_at: *started_at,
-            }).collect(),
+            active_tasks: active
+                .iter()
+                .map(|(name, started_at)| ActiveTaskSummary {
+                    project_name: name.clone(),
+                    started_at: *started_at,
+                })
+                .collect(),
             recent_triggers: recent.iter().cloned().collect(),
         }
     }
@@ -334,11 +430,18 @@ impl SyncManager {
                         Err(_) => "com.doxus.obsidian".to_string(), // 기본값
                     };
 
-                    let is_external = plugin_id.contains("confluence") || plugin_id.contains("github") || !plugin_id.starts_with("com.doxus");
+                    let is_external = plugin_id.contains("confluence")
+                        || plugin_id.contains("github")
+                        || !plugin_id.starts_with("com.doxus");
                     let cooldown_secs = if is_external { 15 * 60 } else { 60 };
 
                     if last.elapsed() < Duration::from_secs(cooldown_secs) {
-                        crate::log_d!("sync", "[SyncManager] Skipping Focus trigger for {} (cooldown {}s)", project_name, cooldown_secs);
+                        crate::log_d!(
+                            "sync",
+                            "[SyncManager] Skipping Focus trigger for {} (cooldown {}s)",
+                            project_name,
+                            cooldown_secs
+                        );
                         return false;
                     }
                     true
@@ -363,11 +466,13 @@ impl SyncManager {
 
     async fn get_jitter(&self, project_name: &str) -> f64 {
         let mut jitter_map = self.jitter_map.lock().await;
-        *jitter_map.entry(project_name.to_string()).or_insert_with(|| {
-            use rand::Rng;
-            let mut rng = rand::thread_rng();
-            rng.gen_range(-0.1..0.1) // ±10% jitter
-        })
+        *jitter_map
+            .entry(project_name.to_string())
+            .or_insert_with(|| {
+                use rand::Rng;
+                let mut rng = rand::thread_rng();
+                rng.gen_range(-0.1..0.1) // ±10% jitter
+            })
     }
 
     async fn update_last_sync(&self, project_name: &str) {
@@ -381,15 +486,17 @@ impl SyncManager {
     async fn get_project_plugin_id(&self, project_name: &str) -> Result<String, String> {
         let conn = self.indexing_service.conn();
         let conn = conn.get().map_err(|e| e.to_string())?;
-        
-        let plugin_id: String = conn.query_row(
-            "SELECT COALESCE(si.plugin_id, p.source_type) 
+
+        let plugin_id: String = conn
+            .query_row(
+                "SELECT COALESCE(si.plugin_id, p.source_type) 
              FROM projects p 
              LEFT JOIN source_instances si ON p.id = si.project_id 
              WHERE p.name = ?1",
-            rusqlite::params![project_name],
-            |row: &rusqlite::Row<'_>| row.get(0)
-        ).map_err(|e| e.to_string())?;
+                rusqlite::params![project_name],
+                |row: &rusqlite::Row<'_>| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
 
         Ok(plugin_id)
     }
@@ -407,7 +514,11 @@ mod tests {
         let db_path = temp_dir.path().join("test.db");
         let pool = crate::db::create_pool(&db_path).unwrap();
         let pm = Arc::new(PluginManager::new(std::path::PathBuf::from("/tmp")));
-        let engine = Arc::new(SearchEngine::with_embedder(pool.clone(), Arc::new(crate::embedding::NoOpEmbedder) as Arc<dyn crate::embedding::EmbeddingProvider + Send + Sync>));
+        let engine = Arc::new(SearchEngine::with_embedder(
+            pool.clone(),
+            Arc::new(crate::embedding::NoOpEmbedder)
+                as Arc<dyn crate::embedding::EmbeddingProvider + Send + Sync>,
+        ));
         let indexer = Arc::new(IndexingService::new(pool.clone(), pm, engine));
         let (mgr, _) = SyncManager::new(indexer);
         (Arc::new(mgr), pool, temp_dir)
@@ -417,7 +528,7 @@ mod tests {
     async fn test_should_sync_on_focus() {
         let (mgr, pool, _temp) = setup_manager().await;
         let conn = pool.get().unwrap();
-        
+
         conn.execute(
             "INSERT INTO projects (name, display_name, path, sync_policy_json, created_at, updated_at)
              VALUES ('proj1', 'P1', '', '{\"type\":\"on_focus\"}', 0, 0)",
@@ -436,7 +547,7 @@ mod tests {
     async fn test_should_sync_interval() {
         let (mgr, pool, _temp) = setup_manager().await;
         let conn = pool.get().unwrap();
-        
+
         conn.execute(
             "INSERT INTO projects (name, display_name, path, sync_policy_json, created_at, updated_at)
              VALUES ('proj1', 'P1', '', '{\"type\":\"interval\",\"seconds\":60}', 0, 0)",

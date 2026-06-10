@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tokio::io::AsyncWriteExt;
 
-
 /// HuggingFace URL for the int8-quantized ONNX model (primary — 4x smaller, 2-4x faster on CPU).
 pub const DEFAULT_MODEL_URL: &str =
     "https://huggingface.co/Xenova/multilingual-e5-small/resolve/main/onnx/model_quantized.onnx";
@@ -87,10 +86,7 @@ impl Default for ModelDownloadOptions {
 /// Download the ONNX model + tokenizer into `target_dir`, reporting progress via `on_progress`.
 ///
 /// On any failure (HTTP, I/O, checksum) the partially written files are removed.
-pub async fn download_model<F>(
-    target_dir: &Path,
-    on_progress: F,
-) -> Result<(), ModelDownloadError>
+pub async fn download_model<F>(target_dir: &Path, on_progress: F) -> Result<(), ModelDownloadError>
 where
     F: Fn(ModelDownloadProgress) + Send + Sync + 'static,
 {
@@ -289,9 +285,18 @@ mod downloader_tests {
         tok_mock.assert_async().await;
 
         let updates = updates.lock().unwrap();
-        assert!(!updates.is_empty(), "expected at least one progress callback");
-        assert!(updates.iter().any(|p| p.file == "model"), "expected model progress");
-        assert!(updates.iter().any(|p| p.file == "tokenizer"), "expected tokenizer progress");
+        assert!(
+            !updates.is_empty(),
+            "expected at least one progress callback"
+        );
+        assert!(
+            updates.iter().any(|p| p.file == "model"),
+            "expected model progress"
+        );
+        assert!(
+            updates.iter().any(|p| p.file == "tokenizer"),
+            "expected tokenizer progress"
+        );
         // At least one update hit 100%.
         assert!(
             updates.iter().any(|p| (p.percent - 100.0).abs() < 0.01),
@@ -330,7 +335,10 @@ mod downloader_tests {
         };
 
         let result = download_model_with_options(target.path(), opts, |_| {}).await;
-        assert!(matches!(result, Err(ModelDownloadError::ChecksumMismatch { .. })));
+        assert!(matches!(
+            result,
+            Err(ModelDownloadError::ChecksumMismatch { .. })
+        ));
         // Partial file should be cleaned up.
         assert!(
             !target.path().join(MODEL_FILE_NAME).exists(),

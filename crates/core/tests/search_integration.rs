@@ -41,7 +41,13 @@ fn register_project_index_document_and_search() {
 
     // 2. 문서 등록 (인덱싱)
     engine
-        .index_document(pid, "doc-rust", "Rust 언어 소개", "Rust 는 메모리 안전성을 보장하는 시스템 프로그래밍 언어입니다.", "full")
+        .index_document(
+            pid,
+            "doc-rust",
+            "Rust 언어 소개",
+            "Rust 는 메모리 안전성을 보장하는 시스템 프로그래밍 언어입니다.",
+            "full",
+        )
         .expect("index_document should succeed");
 
     // 3. 검색 (FTS5 unicode61은 공백 기준 토큰화 — 단어 경계에 공백이 있어야 매칭됨)
@@ -66,10 +72,22 @@ fn search_scoped_to_single_project() {
     let p_personal = add_project(&db, "personal", "Personal", "/personal");
 
     engine
-        .index_document(p_work, "arch", "Architecture Decision", "microservice 아키텍처 결정 기록", "full")
+        .index_document(
+            p_work,
+            "arch",
+            "Architecture Decision",
+            "microservice 아키텍처 결정 기록",
+            "full",
+        )
         .unwrap();
     engine
-        .index_document(p_personal, "diary", "오늘의 일기", "microservice 관련 공부를 했다", "full")
+        .index_document(
+            p_personal,
+            "diary",
+            "오늘의 일기",
+            "microservice 관련 공부를 했다",
+            "full",
+        )
         .unwrap();
 
     // work-wiki 프로젝트만 검색
@@ -93,13 +111,31 @@ fn multiple_documents_ranked_by_relevance() {
     let pid = add_project(&db, "kb", "Knowledge Base", "/kb");
 
     engine
-        .index_document(pid, "d1", "Rust 완전 정복", "Rust 소유권, Rust 빌림, Rust 라이프타임 — Rust의 핵심 개념", "full")
+        .index_document(
+            pid,
+            "d1",
+            "Rust 완전 정복",
+            "Rust 소유권, Rust 빌림, Rust 라이프타임 — Rust의 핵심 개념",
+            "full",
+        )
         .unwrap();
     engine
-        .index_document(pid, "d2", "Python 입문", "Python은 배우기 쉬운 프로그래밍 언어입니다", "full")
+        .index_document(
+            pid,
+            "d2",
+            "Python 입문",
+            "Python은 배우기 쉬운 프로그래밍 언어입니다",
+            "full",
+        )
         .unwrap();
     engine
-        .index_document(pid, "d3", "시스템 프로그래밍", "C와 Rust로 OS 커널 구현하기", "full")
+        .index_document(
+            pid,
+            "d3",
+            "시스템 프로그래밍",
+            "C와 Rust로 OS 커널 구현하기",
+            "full",
+        )
         .unwrap();
 
     let hits = engine
@@ -108,10 +144,16 @@ fn multiple_documents_ranked_by_relevance() {
 
     assert!(!hits.is_empty());
     // "Rust" 가 가장 많이 등장하는 d1이 상위에 있어야 함
-    assert_eq!(hits[0].source_doc_id, "d1", "가장 관련성 높은 문서가 첫 번째여야 합니다");
+    assert_eq!(
+        hits[0].source_doc_id, "d1",
+        "가장 관련성 높은 문서가 첫 번째여야 합니다"
+    );
     // Python 문서는 결과에 없거나 하위에 위치
     let python_pos = hits.iter().position(|h| h.source_doc_id == "d2");
-    assert!(python_pos.is_none(), "관련 없는 Python 문서는 결과에 없어야 합니다");
+    assert!(
+        python_pos.is_none(),
+        "관련 없는 Python 문서는 결과에 없어야 합니다"
+    );
 }
 
 // ── 테스트 4: 문서 재등록 (upsert) ───────────────────────────────────────────
@@ -130,13 +172,17 @@ fn reindex_document_updates_content() {
 
     // 내용 변경 후 재등록
     engine
-        .index_document(pid, "post-1", "첫 번째 포스트 (개정판)", "Rust로 WebAssembly 컴파일하기", "full")
+        .index_document(
+            pid,
+            "post-1",
+            "첫 번째 포스트 (개정판)",
+            "Rust로 WebAssembly 컴파일하기",
+            "full",
+        )
         .unwrap();
 
     // 업데이트된 내용으로 검색
-    let hits = engine
-        .search(&SearchQuery::new("WebAssembly"))
-        .unwrap();
+    let hits = engine.search(&SearchQuery::new("WebAssembly")).unwrap();
     assert!(!hits.is_empty(), "업데이트된 내용으로 검색되어야 합니다");
     assert_eq!(hits[0].source_doc_id, "post-1");
     assert_eq!(hits[0].title.as_deref(), Some("첫 번째 포스트 (개정판)"));
@@ -163,7 +209,13 @@ fn disabled_project_excluded_from_search() {
     let pid = add_project(&db, "archived", "Archived", "/archived");
 
     engine
-        .index_document(pid, "old-doc", "오래된 문서", "검색에서 제외되어야 할 고유한 내용 xyzzy42", "full")
+        .index_document(
+            pid,
+            "old-doc",
+            "오래된 문서",
+            "검색에서 제외되어야 할 고유한 내용 xyzzy42",
+            "full",
+        )
         .unwrap();
 
     // 프로젝트를 disabled 로 변경
@@ -174,10 +226,11 @@ fn disabled_project_excluded_from_search() {
         )
         .unwrap();
 
-    let hits = engine
-        .search(&SearchQuery::new("xyzzy42"))
-        .unwrap();
-    assert!(hits.is_empty(), "disabled 프로젝트 문서는 검색되지 않아야 합니다");
+    let hits = engine.search(&SearchQuery::new("xyzzy42")).unwrap();
+    assert!(
+        hits.is_empty(),
+        "disabled 프로젝트 문서는 검색되지 않아야 합니다"
+    );
 }
 
 // ── 테스트 6: 존재하지 않는 쿼리 → 빈 결과 ────────────────────────────────
@@ -229,13 +282,18 @@ fn search_query_api_finds_indexed_document() {
         .unwrap();
 
     let engine = SearchEngine::sync(&db.conn);
-    let query = SearchQuery::new("REST API").with_projects(vec![pid]).with_limit(5);
+    let query = SearchQuery::new("REST API")
+        .with_projects(vec![pid])
+        .with_limit(5);
     let hits = engine.search(&query).unwrap();
 
     assert!(!hits.is_empty());
     assert_eq!(hits[0].title.as_deref(), Some("API 가이드"));
     // Verify metadata presence
-    assert!(hits[0].metadata_json.is_some(), "Metadata should be retrieved");
+    assert!(
+        hits[0].metadata_json.is_some(),
+        "Metadata should be retrieved"
+    );
 }
 
 // ── 테스트 8: 피드백 반영 후 검색 순위 변동 ────────────────────────────────
@@ -259,33 +317,50 @@ async fn test_search_async_feedback_ranking_booster() {
         conn.query_row(
             "SELECT id FROM projects WHERE name = 'feedback-test'",
             [],
-            |r| r.get::<_, i64>(0)
-        ).unwrap()
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
     };
 
     // 두 개의 유사한 문서 등록
     engine
-        .index_document_async(pid, "d1", "Rust 소유권 공부하기", "Rust 소유권은 안전성을 보장합니다.", "full")
+        .index_document_async(
+            pid,
+            "d1",
+            "Rust 소유권 공부하기",
+            "Rust 소유권은 안전성을 보장합니다.",
+            "full",
+        )
         .await
         .unwrap();
     engine
-        .index_document_async(pid, "d2", "Rust 빌림과 소유권", "Rust 소유권과 빌림 개념입니다.", "full")
+        .index_document_async(
+            pid,
+            "d2",
+            "Rust 빌림과 소유권",
+            "Rust 소유권과 빌림 개념입니다.",
+            "full",
+        )
         .await
         .unwrap();
 
     // 두 문서의 db_id 조회
     let (d1_id, d2_id) = {
         let conn = pool.get().unwrap();
-        let d1: i64 = conn.query_row(
-            "SELECT id FROM documents WHERE source_doc_id = 'd1'",
-            [],
-            |r| r.get(0)
-        ).unwrap();
-        let d2: i64 = conn.query_row(
-            "SELECT id FROM documents WHERE source_doc_id = 'd2'",
-            [],
-            |r| r.get(0)
-        ).unwrap();
+        let d1: i64 = conn
+            .query_row(
+                "SELECT id FROM documents WHERE source_doc_id = 'd1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let d2: i64 = conn
+            .query_row(
+                "SELECT id FROM documents WHERE source_doc_id = 'd2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         (d1, d2)
     };
 
@@ -303,8 +378,9 @@ async fn test_search_async_feedback_ranking_booster() {
             conn.execute(
                 "INSERT INTO document_feedbacks (document_id, agent_id, score, session_id)
                  VALUES (?1, ?2, 1.0, ?3)",
-                rusqlite::params![d2_id, format!("agent-{}", i), format!("sess-{}", i)]
-            ).unwrap();
+                rusqlite::params![d2_id, format!("agent-{}", i), format!("sess-{}", i)],
+            )
+            .unwrap();
         }
 
         // d1에는 부정적인 피드백 점수(-1.0)를 대량으로 준다.
@@ -312,8 +388,9 @@ async fn test_search_async_feedback_ranking_booster() {
             conn.execute(
                 "INSERT INTO document_feedbacks (document_id, agent_id, score, session_id)
                  VALUES (?1, ?2, -1.0, ?3)",
-                rusqlite::params![d1_id, format!("agent-{}", i), format!("sess-{}", i)]
-            ).unwrap();
+                rusqlite::params![d1_id, format!("agent-{}", i), format!("sess-{}", i)],
+            )
+            .unwrap();
         }
     }
 
@@ -323,9 +400,14 @@ async fn test_search_async_feedback_ranking_booster() {
 
     // 순위가 역전되었는지 확인
     if first_before == "d1" {
-        assert_eq!(hits_after[0].source_doc_id, "d2", "피드백 적용 후 d2가 d1을 제치고 1위가 되어야 합니다");
+        assert_eq!(
+            hits_after[0].source_doc_id, "d2",
+            "피드백 적용 후 d2가 d1을 제치고 1위가 되어야 합니다"
+        );
     } else {
-        assert_eq!(hits_after[0].source_doc_id, "d1", "피드백 적용 후 d1이 d2를 제치고 1위가 되어야 합니다");
+        assert_eq!(
+            hits_after[0].source_doc_id, "d1",
+            "피드백 적용 후 d1이 d2를 제치고 1위가 되어야 합니다"
+        );
     }
 }
-

@@ -5,7 +5,6 @@
 /// 2. Trust anchor verification: SignedPlugin.public_key must match RegistryEntry.public_key_hex
 /// 3. Untrusted key (not in registry) is rejected
 /// 4. Tampered WASM (bad signature) is rejected
-
 use doxus_core::marketplace::registry::{RegistryClient, RegistryEntry};
 use doxus_core::marketplace::signing::{
     generate_keypair, sha256_hex, sign_plugin, verify_plugin, SignedPlugin, SigningError,
@@ -40,10 +39,7 @@ fn make_registry_entry(plugin_id: &str, public_key_hex: &str) -> RegistryEntry {
 /// Verify that the public key embedded in a `SignedPlugin` matches the
 /// `public_key_hex` field of its corresponding `RegistryEntry`.
 /// Returns `Ok(())` when the trust anchor check passes.
-fn verify_trust_anchor(
-    signed: &SignedPlugin,
-    entry: &RegistryEntry,
-) -> Result<(), String> {
+fn verify_trust_anchor(signed: &SignedPlugin, entry: &RegistryEntry) -> Result<(), String> {
     let expected_bytes =
         hex::decode(&entry.public_key_hex).map_err(|e| format!("hex decode: {e}"))?;
     if expected_bytes.len() != 32 {

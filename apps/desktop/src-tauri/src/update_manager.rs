@@ -36,8 +36,7 @@ pub fn detect_and_migrate(
     let current = Version::parse(current_version)
         .map_err(|e| format!("invalid current_version '{}': {}", current_version, e))?;
 
-    let last_raw = db::get_system_config(conn, "last_run_version")
-        .map_err(|e| e.to_string())?;
+    let last_raw = db::get_system_config(conn, "last_run_version").map_err(|e| e.to_string())?;
 
     // Determine outcome
     let outcome = match &last_raw {
@@ -69,18 +68,28 @@ pub fn detect_and_migrate(
             // Nothing to do
         }
         MigrationOutcome::FirstRun => {
-            record_audit(conn, "migration_completed", None, &serde_json::json!({
-                "from_version": null,
-                "to_version": current_version,
-            }));
+            record_audit(
+                conn,
+                "migration_completed",
+                None,
+                &serde_json::json!({
+                    "from_version": null,
+                    "to_version": current_version,
+                }),
+            );
             db::set_system_config(conn, "last_run_version", current_version)
                 .map_err(|e| e.to_string())?;
         }
         MigrationOutcome::Upgraded { from, to } => {
-            record_audit(conn, "migration_started", None, &serde_json::json!({
-                "from_version": from,
-                "to_version": to,
-            }));
+            record_audit(
+                conn,
+                "migration_started",
+                None,
+                &serde_json::json!({
+                    "from_version": from,
+                    "to_version": to,
+                }),
+            );
 
             // Version-specific migration hooks
             let from_ver = Version::parse(from).unwrap();
@@ -89,11 +98,16 @@ pub fn detect_and_migrate(
             if current >= Version::new(0, 2, 0) && from_ver < Version::new(0, 2, 0) {
                 if let Some(hook) = indexing {
                     if let Err(e) = hook.force_reindex_all() {
-                        record_audit(conn, "migration_failed", None, &serde_json::json!({
-                            "from_version": from,
-                            "to_version": to,
-                            "error": e,
-                        }));
+                        record_audit(
+                            conn,
+                            "migration_failed",
+                            None,
+                            &serde_json::json!({
+                                "from_version": from,
+                                "to_version": to,
+                                "error": e,
+                            }),
+                        );
                         // Non-fatal: log and continue — user can reindex manually
                         tracing::error!(error = %e, "force_reindex_all failed during post-update migration");
                     } else {
@@ -102,28 +116,44 @@ pub fn detect_and_migrate(
                 }
             }
 
-            db::set_system_config(conn, "last_run_version", to)
-                .map_err(|e| e.to_string())?;
-            record_audit(conn, "migration_completed", None, &serde_json::json!({
-                "from_version": from,
-                "to_version": to,
-            }));
+            db::set_system_config(conn, "last_run_version", to).map_err(|e| e.to_string())?;
+            record_audit(
+                conn,
+                "migration_completed",
+                None,
+                &serde_json::json!({
+                    "from_version": from,
+                    "to_version": to,
+                }),
+            );
         }
         MigrationOutcome::Downgraded { from, to } => {
             tracing::warn!(from = %from, to = %to, "downgrade detected — skipping post-update migrations");
-            record_audit(conn, "downgrade_detected", None, &serde_json::json!({
-                "from_version": from,
-                "to_version": to,
-            }));
-            db::set_system_config(conn, "last_run_version", to)
-                .map_err(|e| e.to_string())?;
+            record_audit(
+                conn,
+                "downgrade_detected",
+                None,
+                &serde_json::json!({
+                    "from_version": from,
+                    "to_version": to,
+                }),
+            );
+            db::set_system_config(conn, "last_run_version", to).map_err(|e| e.to_string())?;
         }
     }
 
-    Ok(MigrationResult { outcome, reindex_triggered })
+    Ok(MigrationResult {
+        outcome,
+        reindex_triggered,
+    })
 }
 
-fn record_audit(conn: &rusqlite::Connection, event_type: &str, project_id: Option<i64>, payload: &serde_json::Value) {
+fn record_audit(
+    conn: &rusqlite::Connection,
+    event_type: &str,
+    project_id: Option<i64>,
+    payload: &serde_json::Value,
+) {
     let _ = conn.execute(
         "INSERT INTO audit_log(project_id, event_type, payload, occurred_at) VALUES (?1, ?2, ?3, unixepoch())",
         rusqlite::params![project_id, event_type, payload.to_string()],
@@ -148,7 +178,11 @@ impl TauriReindexHook {
         conn: doxus_core::db::DbPool,
         indexing: std::sync::Arc<doxus_core::indexing::IndexingService>,
     ) -> Self {
-        Self { handle, conn, indexing }
+        Self {
+            handle,
+            conn,
+            indexing,
+        }
     }
 }
 
@@ -156,7 +190,9 @@ impl PostUpdateHook for TauriReindexHook {
     fn force_reindex_all(&self) -> Result<(), String> {
         use tauri::Emitter;
         // Emit is best-effort — frontend may not be mounted yet at startup.
-        let _ = self.handle.emit("migration:reindex_started", serde_json::json!({}));
+        let _ = self
+            .handle
+            .emit("migration:reindex_started", serde_json::json!({}));
 
         let handle = self.handle.clone();
         let conn = self.conn.clone();
@@ -166,7 +202,10 @@ impl PostUpdateHook for TauriReindexHook {
             match doxus_core::reindex::force_reindex_all_projects(conn, indexing).await {
                 Ok(count) => {
                     handle
-                        .emit("migration:reindex_completed", serde_json::json!({ "count": count }))
+                        .emit(
+                            "migration:reindex_completed",
+                            serde_json::json!({ "count": count }),
+                        )
                         .ok();
                 }
                 Err(e) => {
@@ -196,7 +235,9 @@ mod tests {
 
     struct AlwaysOkReindex;
     impl PostUpdateHook for AlwaysOkReindex {
-        fn force_reindex_all(&self) -> Result<(), String> { Ok(()) }
+        fn force_reindex_all(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
 
     struct AlwaysFailReindex;
@@ -206,8 +247,12 @@ mod tests {
         }
     }
 
-    fn ok_hook() -> &'static dyn PostUpdateHook { &AlwaysOkReindex }
-    fn fail_hook() -> &'static dyn PostUpdateHook { &AlwaysFailReindex }
+    fn ok_hook() -> &'static dyn PostUpdateHook {
+        &AlwaysOkReindex
+    }
+    fn fail_hook() -> &'static dyn PostUpdateHook {
+        &AlwaysFailReindex
+    }
 
     // ── Happy path ────────────────────────────────────────────────────────────
 
@@ -276,7 +321,10 @@ mod tests {
         let db = TestDb::new();
         doxus_core::db::set_system_config(&db.conn, "last_run_version", "0.5.0").unwrap();
         let result = detect_and_migrate(&db.conn, Some(ok_hook()), "0.3.0").unwrap();
-        assert!(matches!(result.outcome, MigrationOutcome::Downgraded { .. }));
+        assert!(matches!(
+            result.outcome,
+            MigrationOutcome::Downgraded { .. }
+        ));
         assert!(!result.reindex_triggered);
         let stored = doxus_core::db::get_system_config(&db.conn, "last_run_version").unwrap();
         assert_eq!(stored.as_deref(), Some("0.3.0"));
@@ -288,7 +336,10 @@ mod tests {
         doxus_core::db::set_system_config(&db.conn, "last_run_version", "0.1.0").unwrap();
         let result = detect_and_migrate(&db.conn, Some(fail_hook()), "0.2.0").unwrap();
         assert!(matches!(result.outcome, MigrationOutcome::Upgraded { .. }));
-        assert!(!result.reindex_triggered, "failed reindex is not counted as triggered");
+        assert!(
+            !result.reindex_triggered,
+            "failed reindex is not counted as triggered"
+        );
         let stored = doxus_core::db::get_system_config(&db.conn, "last_run_version").unwrap();
         assert_eq!(stored.as_deref(), Some("0.2.0"));
     }
@@ -298,10 +349,14 @@ mod tests {
         let db = TestDb::new();
         doxus_core::db::set_system_config(&db.conn, "last_run_version", "0.1.0").unwrap();
         detect_and_migrate(&db.conn, None, "0.1.5").unwrap();
-        let count: i64 = db.conn.query_row(
-            "SELECT COUNT(*) FROM audit_log WHERE event_type = 'migration_completed'",
-            [], |r| r.get::<_, i64>(0),
-        ).unwrap();
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE event_type = 'migration_completed'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap();
         assert!(count >= 1, "audit_log should record migration_completed");
     }
 
@@ -310,10 +365,14 @@ mod tests {
         let db = TestDb::new();
         doxus_core::db::set_system_config(&db.conn, "last_run_version", "0.5.0").unwrap();
         detect_and_migrate(&db.conn, None, "0.3.0").unwrap();
-        let count: i64 = db.conn.query_row(
-            "SELECT COUNT(*) FROM audit_log WHERE event_type = 'downgrade_detected'",
-            [], |r| r.get::<_, i64>(0),
-        ).unwrap();
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_log WHERE event_type = 'downgrade_detected'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap();
         assert!(count >= 1, "audit_log should record downgrade_detected");
     }
 

@@ -4,9 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
 
-pub mod wasm_types;
-pub mod path_utils;
 pub mod links;
+pub mod path_utils;
+pub mod wasm_types;
 
 // ── Shared error type ─────────────────────────────────────────────────────────
 
@@ -288,7 +288,7 @@ pub trait DocSource: Send + Sync {
     fn capabilities(&self) -> Capabilities;
 
     async fn validate_config(&self, config: &PluginConfig) -> Result<(), PluginError>;
-    
+
     fn guide(&self) -> Option<&'static str> {
         None
     }
@@ -436,17 +436,27 @@ mod tests {
             "network error: timeout"
         );
         assert_eq!(
-            PluginError::RateLimited { retry_after_secs: 30 }.to_string(),
+            PluginError::RateLimited {
+                retry_after_secs: 30
+            }
+            .to_string(),
             "rate limited, retry after 30s"
         );
     }
 
     #[test]
     fn plugin_error_is_serializable() {
-        let e = PluginError::RateLimited { retry_after_secs: 60 };
+        let e = PluginError::RateLimited {
+            retry_after_secs: 60,
+        };
         let json = serde_json::to_string(&e).unwrap();
         let back: PluginError = serde_json::from_str(&json).unwrap();
-        assert!(matches!(back, PluginError::RateLimited { retry_after_secs: 60 }));
+        assert!(matches!(
+            back,
+            PluginError::RateLimited {
+                retry_after_secs: 60
+            }
+        ));
     }
 
     #[test]
@@ -645,7 +655,7 @@ mod tests {
         };
         let json = serde_json::to_string(&caps).unwrap();
         assert!(json.contains("\"sync_policy\":{\"type\":\"on_focus\"}"));
-        
+
         let back: Capabilities = serde_json::from_str(&json).unwrap();
         assert!(matches!(back.sync_policy, SyncPolicy::OnFocus));
     }

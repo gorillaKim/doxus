@@ -75,14 +75,14 @@ pub fn parse_sections(content: &str) -> Vec<Section> {
 
     for (j, &(start, level, ref title)) in headings.iter().enumerate() {
         let end = headings.get(j + 1).map(|&(s, _, _)| s).unwrap_or(total);
-        
+
         // Calculate byte offsets by finding the pointer distance
         let start_byte = if start < total {
             lines[start].as_ptr() as usize - original_ptr
         } else {
             content.len()
         };
-        
+
         let end_byte = if end < total {
             lines[end].as_ptr() as usize - original_ptr
         } else {
@@ -117,10 +117,12 @@ pub fn replace_section(
         .filter(|s| section_heading_matches(&s.heading, heading_text))
         .collect();
 
-    let target = matches.get(occurrence).ok_or_else(|| SectionError::NotFound {
-        heading: heading_text.to_string(),
-        occurrence,
-    })?;
+    let target = matches
+        .get(occurrence)
+        .ok_or_else(|| SectionError::NotFound {
+            heading: heading_text.to_string(),
+            occurrence,
+        })?;
 
     let lines: Vec<&str> = content.lines().collect();
     let mut result_lines: Vec<&str> = lines[..target.start_line].to_vec();
@@ -174,10 +176,12 @@ pub fn delete_section(
         .filter(|s| section_heading_matches(&s.heading, heading_text))
         .collect();
 
-    let target = matches.get(occurrence).ok_or_else(|| SectionError::NotFound {
-        heading: heading_text.to_string(),
-        occurrence,
-    })?;
+    let target = matches
+        .get(occurrence)
+        .ok_or_else(|| SectionError::NotFound {
+            heading: heading_text.to_string(),
+            occurrence,
+        })?;
 
     let lines: Vec<&str> = content.lines().collect();
     let mut result_lines: Vec<&str> = lines[..target.start_line].to_vec();
@@ -231,9 +235,7 @@ fn section_heading_matches(section_heading: &str, query: &str) -> bool {
         return true;
     }
     // 헤딩 기호 제거 후 비교
-    let section_title = section_heading
-        .trim_start_matches('#')
-        .trim();
+    let section_title = section_heading.trim_start_matches('#').trim();
     section_title == query_trimmed
 }
 
@@ -326,7 +328,8 @@ mod tests {
 
     #[test]
     fn insert_section_after_heading() {
-        let result = insert_section_after(SAMPLE, Some("## 배경"), "## 새 섹션\n\n새 내용.\n").unwrap();
+        let result =
+            insert_section_after(SAMPLE, Some("## 배경"), "## 새 섹션\n\n새 내용.\n").unwrap();
         // 새 섹션이 배경 바로 뒤에 삽입됨
         let bg_pos = result.find("배경 내용입니다.").unwrap();
         let new_pos = result.find("새 내용.").unwrap();

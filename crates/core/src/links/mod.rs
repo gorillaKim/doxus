@@ -1,4 +1,4 @@
-pub use doxus_plugin_sdk::links::{LinkExtractor, dx_uri_regex};
+pub use doxus_plugin_sdk::links::{dx_uri_regex, LinkExtractor};
 
 pub struct LinkResolver;
 
@@ -17,14 +17,16 @@ impl LinkResolver {
             let source_project_id = &caps[1];
             let source_doc_id = &caps[2];
 
-            let res: Option<i64> = conn.query_row(
-                "SELECT d.id FROM documents d 
+            let res: Option<i64> = conn
+                .query_row(
+                    "SELECT d.id FROM documents d 
                  JOIN projects p ON d.project_id = p.id 
                  WHERE p.source_project_id = ?1 AND d.source_doc_id = ?2",
-                rusqlite::params![source_project_id, source_doc_id],
-                |r| r.get(0)
-            ).ok();
-            
+                    rusqlite::params![source_project_id, source_doc_id],
+                    |r| r.get(0),
+                )
+                .ok();
+
             if res.is_some() {
                 return res;
             }
@@ -52,12 +54,14 @@ impl LinkResolver {
                         OR file_path LIKE '%' || ?3
                         OR file_path LIKE '%' || ?3 || '.md')
                    LIMIT 1";
-        
-        let res: Option<i64> = conn.query_row(
-            sql,
-            rusqlite::params![current_project_id, target, normalized],
-            |r| r.get(0)
-        ).ok();
+
+        let res: Option<i64> = conn
+            .query_row(
+                sql,
+                rusqlite::params![current_project_id, target, normalized],
+                |r| r.get(0),
+            )
+            .ok();
 
         if res.is_some() {
             return res;
@@ -71,38 +75,46 @@ impl LinkResolver {
                              OR file_path LIKE '%' || ?2
                              OR file_path LIKE '%' || ?2 || '.md'
                           LIMIT 1";
-        
-        let res: Option<i64> = conn.query_row(
-            sql_global,
-            rusqlite::params![target, normalized],
-            |r| r.get(0)
-        ).ok();
+
+        let res: Option<i64> = conn
+            .query_row(sql_global, rusqlite::params![target, normalized], |r| {
+                r.get(0)
+            })
+            .ok();
 
         if res.is_some() {
             return res;
         }
 
         // Alias search
-        let sql_alias = "SELECT document_id FROM document_aliases WHERE alias = ?1 OR alias = ?2 LIMIT 1";
-        let res: Option<i64> = conn.query_row(
-            sql_alias,
-            rusqlite::params![target, normalized],
-            |r| r.get(0)
-        ).ok();
+        let sql_alias =
+            "SELECT document_id FROM document_aliases WHERE alias = ?1 OR alias = ?2 LIMIT 1";
+        let res: Option<i64> = conn
+            .query_row(sql_alias, rusqlite::params![target, normalized], |r| {
+                r.get(0)
+            })
+            .ok();
 
         res
     }
 
     /// Resolves links only for a specific project to save time during indexing.
-    pub fn resolve_project_links(conn: &rusqlite::Connection, project_id: i64) -> Result<usize, String> {
+    pub fn resolve_project_links(
+        conn: &rusqlite::Connection,
+        project_id: i64,
+    ) -> Result<usize, String> {
         let mut stmt = conn
-            .prepare("SELECT dl.id, dl.target_raw FROM document_links dl 
+            .prepare(
+                "SELECT dl.id, dl.target_raw FROM document_links dl 
                       JOIN documents d ON dl.source_id = d.id 
-                      WHERE d.project_id = ?1 AND dl.target_id IS NULL")
+                      WHERE d.project_id = ?1 AND dl.target_id IS NULL",
+            )
             .map_err(|e| e.to_string())?;
 
         let rows = stmt
-            .query_map([project_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .query_map([project_id], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })
             .map_err(|e| e.to_string())?;
 
         let mut resolved_count = 0;
@@ -111,7 +123,7 @@ impl LinkResolver {
             if let Some(target_id) = Self::resolve_link(conn, project_id, &target_raw) {
                 let _ = conn.execute(
                     "UPDATE document_links SET target_id = ?1 WHERE id = ?2",
-                    rusqlite::params![target_id, link_id]
+                    rusqlite::params![target_id, link_id],
                 );
                 resolved_count += 1;
             }
@@ -133,13 +145,22 @@ impl LinkResolver {
     }
 
     /// Resolves unresolved links up to a limit (batch).
-    pub fn resolve_unresolved_links_batch(conn: &rusqlite::Connection, limit: usize) -> Result<usize, String> {
+    pub fn resolve_unresolved_links_batch(
+        conn: &rusqlite::Connection,
+        limit: usize,
+    ) -> Result<usize, String> {
         let mut stmt = conn
             .prepare("SELECT id, source_id, target_raw FROM document_links WHERE target_id IS NULL LIMIT ?1")
             .map_err(|e| e.to_string())?;
 
         let rows = stmt
-            .query_map([limit], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?)))
+            .query_map([limit], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
             .map_err(|e| e.to_string())?;
 
         let mut scanned_count = 0;
@@ -149,25 +170,25 @@ impl LinkResolver {
             let project_id: Result<i64, _> = conn.query_row(
                 "SELECT project_id FROM documents WHERE id = ?1",
                 [source_doc_id],
-                |r| r.get(0)
+                |r| r.get(0),
             );
 
             if let Ok(pid) = project_id {
                 if let Some(target_id) = Self::resolve_link(conn, pid, &target_raw) {
                     let _ = conn.execute(
                         "UPDATE document_links SET target_id = ?1 WHERE id = ?2",
-                        rusqlite::params![target_id, link_id]
+                        rusqlite::params![target_id, link_id],
                     );
                 } else {
                     let _ = conn.execute(
                         "UPDATE document_links SET target_id = -1 WHERE id = ?1",
-                        rusqlite::params![link_id]
+                        rusqlite::params![link_id],
                     );
                 }
             } else {
                 let _ = conn.execute(
                     "UPDATE document_links SET target_id = -1 WHERE id = ?1",
-                    rusqlite::params![link_id]
+                    rusqlite::params![link_id],
                 );
             }
         }
@@ -199,7 +220,8 @@ mod tests {
 
     #[test]
     fn test_extract_doxus_uris() {
-        let content = "Reference: doxus://my-project/source-123 and doxus://AI 리포트 V3/4756242498";
+        let content =
+            "Reference: doxus://my-project/source-123 and doxus://AI 리포트 V3/4756242498";
         let links = LinkExtractor::extract_links(content);
         assert!(links.contains(&"doxus://my-project/source-123".to_string()));
         assert!(links.contains(&"doxus://AI 리포트 V3/4756242498".to_string()));
@@ -225,9 +247,15 @@ mod tests {
         let doc_a_id = db.conn.last_insert_rowid();
 
         // 1. Match by source_doc_id in same project
-        assert_eq!(LinkResolver::resolve_link(&db.conn, p1_id, "doc-a"), Some(doc_a_id));
+        assert_eq!(
+            LinkResolver::resolve_link(&db.conn, p1_id, "doc-a"),
+            Some(doc_a_id)
+        );
         // 2. Match by title in same project
-        assert_eq!(LinkResolver::resolve_link(&db.conn, p1_id, "Doc A"), Some(doc_a_id));
+        assert_eq!(
+            LinkResolver::resolve_link(&db.conn, p1_id, "Doc A"),
+            Some(doc_a_id)
+        );
     }
 
     #[test]
@@ -239,7 +267,10 @@ mod tests {
         let doc_a_id = db.conn.last_insert_rowid();
 
         // Cross-project resolution via doxus://
-        assert_eq!(LinkResolver::resolve_link(&db.conn, 999, "doxus://proj-1/doc-a"), Some(doc_a_id));
+        assert_eq!(
+            LinkResolver::resolve_link(&db.conn, 999, "doxus://proj-1/doc-a"),
+            Some(doc_a_id)
+        );
     }
 
     #[test]
@@ -252,7 +283,10 @@ mod tests {
         let doc_u_id = db.conn.last_insert_rowid();
 
         // Resolve globally even if in different project (p2)
-        assert_eq!(LinkResolver::resolve_link(&db.conn, 888, "unique-doc"), Some(doc_u_id));
+        assert_eq!(
+            LinkResolver::resolve_link(&db.conn, 888, "unique-doc"),
+            Some(doc_u_id)
+        );
     }
 
     #[tokio::test]
@@ -267,7 +301,12 @@ mod tests {
 
         // Generate 100 unresolved links
         for _ in 0..100 {
-            db.conn.execute("INSERT INTO document_links(source_id, target_raw) VALUES (?1, 'doc-a')", [doc_a_id]).unwrap();
+            db.conn
+                .execute(
+                    "INSERT INTO document_links(source_id, target_raw) VALUES (?1, 'doc-a')",
+                    [doc_a_id],
+                )
+                .unwrap();
         }
 
         let conn_arc = Arc::new(std::sync::Mutex::new(db.conn));
@@ -302,7 +341,11 @@ mod tests {
                 let _: i64 = _guard.query_row("SELECT 1", [], |r| r.get(0)).unwrap();
             }
             let duration = start.elapsed();
-            assert!(duration < std::time::Duration::from_millis(50), "Lock contention is too high during batch resolution: {:?}", duration);
+            assert!(
+                duration < std::time::Duration::from_millis(50),
+                "Lock contention is too high during batch resolution: {:?}",
+                duration
+            );
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
 
