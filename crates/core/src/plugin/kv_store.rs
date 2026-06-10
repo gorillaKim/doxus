@@ -114,7 +114,7 @@ impl KvStore {
     /// Legacy: get without namespace validation (uses empty namespace "").
     /// Only works when "" is in allowed_namespaces or store was created with `new()`.
     pub fn get_raw(&self, key: &str) -> Option<Vec<u8>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.query_row(
             "SELECT value FROM plugin_kv WHERE plugin_id = ?1 AND namespace = '' AND key = ?2",
             params![self.plugin_id, key],
@@ -127,7 +127,7 @@ impl KvStore {
 
     /// Legacy: set without namespace validation.
     pub fn set_raw(&self, key: String, value: Vec<u8>) {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let _ = conn.execute(
             "INSERT INTO plugin_kv(plugin_id, namespace, key, value, updated_at)
              VALUES (?1, '', ?2, ?3, unixepoch())

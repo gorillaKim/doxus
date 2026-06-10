@@ -458,7 +458,7 @@ impl DocSource for ObsidianPlugin {
     async fn fetch_all(&self, opts: FetchAllOpts) -> Result<DocumentStream, PluginError> {
         let vault = self.vault()?;
         let (page_paths, total, offset, page_size) = {
-            let mut cache = self.cached_paths.lock().unwrap();
+            let mut cache = self.cached_paths.lock().unwrap_or_else(|e| e.into_inner());
             let now = std::time::Instant::now();
 
             // Validate or refresh cache
@@ -838,7 +838,7 @@ impl DocSource for ObsidianPlugin {
 
         // 1. Get total sorted paths (cached if possible)
         let all_paths = {
-            let mut cache = self.cached_paths.lock().unwrap();
+            let mut cache = self.cached_paths.lock().unwrap_or_else(|e| e.into_inner());
             let now = std::time::Instant::now();
             if let Some((ts, ref paths)) = *cache {
                 if now.duration_since(ts) < std::time::Duration::from_secs(60) {

@@ -68,13 +68,13 @@ impl<S: SecretStore> SecretStore for CachedSecretStore<S> {
     fn get(&self, service: &str, key: &str) -> Result<String, SecretsError> {
         let cache_key = (service.to_string(), key.to_string());
         {
-            let r = self.cache.read().unwrap();
+            let r = self.cache.read().unwrap_or_else(|e| e.into_inner());
             if let Some(v) = r.get(&cache_key) {
                 return Ok(v.clone());
             }
         }
         let value = self.inner.get(service, key)?;
-        self.cache.write().unwrap().insert(cache_key, value.clone());
+        self.cache.write().unwrap_or_else(|e| e.into_inner()).insert(cache_key, value.clone());
         Ok(value)
     }
 
@@ -82,7 +82,7 @@ impl<S: SecretStore> SecretStore for CachedSecretStore<S> {
         self.inner.set(service, key, value)?;
         self.cache
             .write()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert((service.to_string(), key.to_string()), value.to_string());
         Ok(())
     }
@@ -91,7 +91,7 @@ impl<S: SecretStore> SecretStore for CachedSecretStore<S> {
         self.inner.delete(service, key)?;
         self.cache
             .write()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .remove(&(service.to_string(), key.to_string()));
         Ok(())
     }
@@ -130,12 +130,12 @@ impl UnifiedKeychainStore {
             Ok(json) => {
                 let data: HashMap<String, String> = serde_json::from_str(&json)
                     .map_err(|e| SecretsError::Keychain(format!("json parse error: {}", e)))?;
-                *self.cache.write().unwrap() = data;
+                *self.cache.write().unwrap_or_else(|e| e.into_inner()) = data;
                 Ok(())
             }
             Err(keyring::Error::NoEntry) => {
                 tracing::info!("[Secrets] Unified store entry not found (expected on first run)");
-                *self.cache.write().unwrap() = HashMap::new();
+                *self.cache.write().unwrap_or_else(|e| e.into_inner()) = HashMap::new();
                 Ok(())
             }
             Err(e) => Err(SecretsError::Keychain(e.to_string())),
@@ -160,7 +160,7 @@ impl UnifiedKeychainStore {
             .map_err(|e| SecretsError::Keychain(e.to_string()))?;
 
         let json = {
-            let cache = self.cache.read().unwrap();
+            let cache = self.cache.read().unwrap_or_else(|e| e.into_inner());
             serde_json::to_string(&*cache)
                 .map_err(|e| SecretsError::Keychain(format!("json serialize error: {}", e)))?
         };
@@ -182,7 +182,7 @@ impl UnifiedKeychainStore {
     ) -> Result<(), SecretsError> {
         self.ensure_loaded()?;
         {
-            let mut cache = self.cache.write().unwrap();
+            let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
             for (key, value) in updates {
                 let store_key = Self::make_key(service, key);
                 cache.insert(store_key, value.to_string());
@@ -261,7 +261,7 @@ impl SecretStore for UnifiedKeychainStore {
     fn get(&self, service: &str, key: &str) -> Result<String, SecretsError> {
         self.ensure_loaded()?;
         let store_key = Self::make_key(service, key);
-        let cache = self.cache.read().unwrap();
+        let cache = self.cache.read().unwrap_or_else(|e| e.into_inner());
         cache
             .get(&store_key)
             .cloned()
@@ -270,14 +270,14 @@ impl SecretStore for UnifiedKeychainStore {
 
     fn set(&self, service: &str, key: &str, value: &str) -> Result<(), SecretsError> {
         let store_key = Self::make_key(service, key);
-        let mut cache = self.cache.write().unwrap();
+        let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
         cache.insert(store_key, value.to_string());
         self.save_to_keychain()
     }
 
     fn delete(&self, service: &str, key: &str) -> Result<(), SecretsError> {
         let store_key = Self::make_key(service, key);
-        let mut cache = self.cache.write().unwrap();
+        let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
         if cache.remove(&store_key).is_none() {
             return Err(SecretsError::NotFound(key.to_string()));
         }
@@ -310,20 +310,20 @@ impl Default for MemorySecretStore {
 
 impl SecretStore for MemorySecretStore {
     fn get(&self, service: &str, key: &str) -> Result<String, SecretsError> {
-        let map = self.inner.lock().unwrap();
+        let map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         map.get(&Self::map_key(service, key))
             .cloned()
             .ok_or_else(|| SecretsError::NotFound(key.to_string()))
     }
 
     fn set(&self, service: &str, key: &str, value: &str) -> Result<(), SecretsError> {
-        let mut map = self.inner.lock().unwrap();
+        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         map.insert(Self::map_key(service, key), value.to_string());
         Ok(())
     }
 
     fn delete(&self, service: &str, key: &str) -> Result<(), SecretsError> {
-        let mut map = self.inner.lock().unwrap();
+        let mut map = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         map.remove(&Self::map_key(service, key))
             .map(|_| ())
             .ok_or_else(|| SecretsError::NotFound(key.to_string()))

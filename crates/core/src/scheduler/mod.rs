@@ -35,7 +35,7 @@ impl SchedulerManager {
     }
 
     pub fn set_agent_handler(&self, handler: Arc<dyn AgentHandler>) {
-        let mut h = self.agent_handler.lock().unwrap();
+        let mut h = self.agent_handler.lock().unwrap_or_else(|e| e.into_inner());
         *h = Some(handler);
     }
 
@@ -62,7 +62,7 @@ impl SchedulerManager {
 
             // Get a clone of the agent handler if it exists
             let handler_opt = {
-                let h = self.agent_handler.lock().unwrap();
+                let h = self.agent_handler.lock().unwrap_or_else(|e| e.into_inner());
                 h.clone()
             };
 

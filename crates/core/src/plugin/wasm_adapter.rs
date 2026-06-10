@@ -351,7 +351,7 @@ impl WasmDocSourceAdapter {
         let secret_store = self.secret_store.clone();
 
         let init_data = if auto_init {
-            self.initialized_config.lock().unwrap().clone()
+            self.initialized_config.lock().unwrap_or_else(|e| e.into_inner()).clone()
         } else {
             None
         };
@@ -510,7 +510,7 @@ impl DocSource for WasmDocSourceAdapter {
 
         // 백업 필드 저장
         {
-            let mut guard = self.initialized_config.lock().unwrap();
+            let mut guard = self.initialized_config.lock().unwrap_or_else(|e| e.into_inner());
             *guard = Some((config.clone(), secrets.clone()));
         }
 
