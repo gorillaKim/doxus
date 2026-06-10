@@ -218,7 +218,7 @@ fn is_port_in_use(port: u16) -> bool {
 }
 
 /// doxus HTTP MCP 엔드포인트를 설정 파일에 기록 (테스트 가능한 내부 구현)
-fn write_doxus_http_config_to(port: u16, token: &str, config_path: &std::path::Path) {
+fn write_doxus_http_config_to(port: u16, _token: &str, config_path: &std::path::Path) {
     let mut config: serde_json::Value = if config_path.exists() {
         match std::fs::read_to_string(config_path) {
             Ok(s) => serde_json::from_str(&s).unwrap_or_else(|_| serde_json::json!({})),
@@ -233,8 +233,7 @@ fn write_doxus_http_config_to(port: u16, token: &str, config_path: &std::path::P
 
     let mcp_entry = serde_json::json!({
         "type": "http",
-        "url": format!("http://127.0.0.1:{port}/mcp"),
-        "headers": { "Authorization": format!("Bearer {token}") }
+        "url": format!("http://127.0.0.1:{port}/mcp")
     });
 
     if config.get("mcpServers").is_none() {
@@ -699,10 +698,7 @@ mod tests {
         let config: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(config["mcpServers"]["doxus"]["type"], "http");
         assert_eq!(config["mcpServers"]["doxus"]["url"], "http://127.0.0.1:1421/mcp");
-        assert_eq!(
-            config["mcpServers"]["doxus"]["headers"]["Authorization"],
-            "Bearer tok123"
-        );
+        assert!(config["mcpServers"]["doxus"]["headers"].is_null());
         std::fs::remove_dir_all(&dir).ok();
     }
 

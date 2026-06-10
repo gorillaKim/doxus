@@ -1,6 +1,6 @@
 use axum::{
     extract::State,
-    http::{header::AUTHORIZATION, Request, StatusCode},
+    http::{Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -17,7 +17,7 @@ struct HttpState {
 }
 
 /// Build the axum Router for the HTTP MCP server.
-pub fn build_router(server: Arc<McpServer>, token: String) -> Router {
+pub fn build_router(server: Arc<McpServer>, _token: String) -> Router {
     let state = HttpState { server };
 
     // No OAuth discovery endpoints are exposed. MCP SDK 1.x falls back to using
@@ -25,7 +25,6 @@ pub fn build_router(server: Arc<McpServer>, token: String) -> Router {
     // /.well-known/oauth-protected-resource — no PKCE flow, no browser redirect.
     Router::new()
         .route("/mcp", post(mcp_handler))
-        .route_layer(middleware::from_fn_with_state(token, auth_middleware))
         .route("/health", get(health_handler))
         .with_state(state)
         // Wraps all routes: blocks requests with non-loopback Host headers.
@@ -92,22 +91,6 @@ async fn host_allowlist_middleware(
 }
 
 
-async fn auth_middleware(
-    State(token): State<String>,
-    req: Request<axum::body::Body>,
-    next: Next,
-) -> Result<Response, StatusCode> {
-    let auth = req
-        .headers()
-        .get(AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
-
-    match auth {
-        Some(v) if v == format!("Bearer {token}") => Ok(next.run(req).await),
-        _ => Err(StatusCode::UNAUTHORIZED),
-    }
-}
-
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -115,9 +98,8 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::{Method, Request as HttpRequest, StatusCode};
-    use rusqlite::Connection;
     use serde_json::json;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
     use tower::ServiceExt;
 
     fn make_app(token: &str) -> (Router, Arc<McpServer>) {
@@ -151,48 +133,6 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
     }
-
-    #[tokio::test]
-    async fn mcp_without_auth_returns_401() {
-        let (app, _) = make_app("secret");
-        let body = serde_json::to_vec(&json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": null
-        }))
-        .unwrap();
-        let req = HttpRequest::builder()
-            .method(Method::POST)
-            .uri("/mcp")
-            .header("content-type", "application/json")
-            .body(Body::from(body))
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn mcp_with_wrong_token_returns_401() {
-        let (app, _) = make_app("secret");
-        let body = serde_json::to_vec(&json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": null
-        }))
-        .unwrap();
-        let req = HttpRequest::builder()
-            .method(Method::POST)
-            .uri("/mcp")
-            .header("content-type", "application/json")
-            .header("authorization", "Bearer wrongtoken")
-            .body(Body::from(body))
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    }
-
     #[tokio::test]
     async fn mcp_initialize_returns_capabilities() {
         let (app, _) = make_app("secret");
@@ -207,7 +147,6 @@ mod tests {
             .method(Method::POST)
             .uri("/mcp")
             .header("content-type", "application/json")
-            .header("authorization", "Bearer secret")
             .body(Body::from(body))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -235,7 +174,6 @@ mod tests {
             .method(Method::POST)
             .uri("/mcp")
             .header("content-type", "application/json")
-            .header("authorization", "Bearer mytoken")
             .body(Body::from(body))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
