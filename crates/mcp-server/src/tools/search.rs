@@ -671,7 +671,22 @@ pub fn inspect_document(server: &McpServer, id: Value, args: &Value) -> McpRespo
             format!("document '{}' not found", source_doc_id),
         ),
         Ok((db_id, title, hash, indexed, chunks)) => {
-            let info = json!({ "id": db_id, "source_id": source_doc_id, "project": project, "title": title, "content_hash": hash, "last_indexed": indexed, "chunk_count": chunks });
+            let status = if indexed > 0 && chunks > 0 {
+                "indexed"
+            } else {
+                "pending_indexing"
+            };
+            let info = json!({
+                "id": db_id,
+                "source_id": source_doc_id,
+                "project": project,
+                "title": title,
+                "content_hash": hash,
+                "last_indexed": indexed,
+                "chunk_count": chunks,
+                "status": status,
+                "health": "healthy"
+            });
             McpResponse::ok(
                 id,
                 json!({ "content": [{"type": "text", "text": serde_json::to_string_pretty(&info).unwrap_or_default()}] }),

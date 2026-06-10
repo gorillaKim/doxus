@@ -276,3 +276,169 @@ async fn test_plugin_install_rejects_non_http_scheme() {
         err.message
     );
 }
+
+// --- test 5: doxus_plugin_remove 시 DB 삭제 및 로컬 파일 삭제 검증 ---
+
+#[tokio::test]
+async fn test_plugin_remove_removes_from_db_and_filesystem() {
+    let (conn, tmp) = setup_db();
+    let plugins_dir = tmp.path().join("plugins");
+    std::fs::create_dir_all(&plugins_dir).unwrap();
+
+    let plugin_id = "com.test.plugin";
+    let wasm_file = plugins_dir.join(format!("{}.wasm", plugin_id));
+    std::fs::write(&wasm_file, b"\x00asm\x01\x00\x00\x00").unwrap();
+
+    {
+        let conn_lock = conn.get().unwrap();
+        conn_lock.execute(
+            "INSERT INTO plugins(id, name, version, kind, installed_at)
+             VALUES (?1, ?1, '1.0.0', 'external', unixepoch())",
+            rusqlite::params![plugin_id],
+        ).unwrap();
+    }
+
+    let server = make_server_with_file_scheme(conn.clone(), plugins_dir.clone());
+
+    assert!(wasm_file.exists());
+    {
+        let conn_lock = conn.get().unwrap();
+        let count: i64 = conn_lock.query_row(
+            "SELECT COUNT(*) FROM plugins WHERE id = ?1",
+            rusqlite::params![plugin_id],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    let resp = server
+        .dispatch_tool(
+            "doxus_plugin_remove",
+            json!(1),
+            &json!({ "id": plugin_id }),
+        )
+        .await;
+
+    assert!(resp.error.is_none(), "remove failed: {:?}", resp.error);
+    assert!(!wasm_file.exists(), "wasm file should be removed from disk");
+
+    {
+        let conn_lock = conn.get().unwrap();
+        let count: i64 = conn_lock.query_row(
+            "SELECT COUNT(*) FROM plugins WHERE id = ?1",
+            rusqlite::params![plugin_id],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 0, "DB record should be removed");
+    }
+}
+
+// --- test 6: doxus_plugin_update 로컬 파일 URL을 통한 업데이트 ---
+
+#[tokio::test]
+async fn test_plugin_update_with_local_url_updates_db_and_file() {
+    let (conn, tmp) = setup_db();
+    let plugins_dir = tmp.path().join("plugins");
+    std::fs::create_dir_all(&plugins_dir).unwrap();
+
+    let plugin_id = "com.test.plugin";
+    let wasm_file = plugins_dir.join(format!("{}.wasm", plugin_id));
+    std::fs::write(&wasm_file, b"old content").unwrap();
+
+    {
+        let conn_lock = conn.get().unwrap();
+        conn_lock.execute(
+            "INSERT INTO plugins(id, name, version, kind, installed_at)
+             VALUES (?1, ?1, '1.0.0', 'external', unixepoch())",
+            rusqlite::params![plugin_id],
+        ).unwrap();
+    }
+
+    let wasm_src_dir = tmp.path().join("src");
+    std::fs::create_dir_all(&wasm_src_dir).unwrap();
+    let wasm_src = wasm_src_dir.join("test_v2.wasm");
+    let new_content = b"\x00asm\x01\x00\x00\x00new";
+    std::fs::write(&wasm_src, new_content).unwrap();
+
+    let url = format!("file://{}", wasm_src.display());
+
+    let server = make_server_with_file_scheme(conn.clone(), plugins_dir.clone());
+
+    let resp = server
+        .dispatch_tool(
+            "doxus_plugin_update",
+            json!(1),
+            &json!({ "id": plugin_id, "url": url, "version": "2.0.0" }),
+        )
+        .await;
+
+    assert!(resp.error.is_none(), "update failed: {:?}", resp.error);
+
+    let updated_bytes = std::fs::read(&wasm_file).unwrap();
+    assert_eq!(updated_bytes, new_content);
+
+    {
+        let conn_lock = conn.get().unwrap();
+        let version: String = conn_lock.query_row(
+            "SELECT version FROM plugins WHERE id = ?1",
+            rusqlite::params![plugin_id],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(version, "2.0.0");
+    }
+}
+
+// --- test 7: doxus_plugin_update 존재하지 않는 플러그인 에러 검증 ---
+
+#[tokio::test]
+async fn test_plugin_update_nonexistent_returns_error() {
+    let (conn, tmp) = setup_db();
+    let plugins_dir = tmp.path().join("plugins");
+
+    let server = make_server_with_file_scheme(conn, plugins_dir);
+
+    let resp = server
+        .dispatch_tool(
+            "doxus_plugin_update",
+            json!(1),
+            &json!({ "id": "com.nonexistent.plugin", "url": "file:///tmp/x.wasm" }),
+        )
+        .await;
+
+    assert!(resp.error.is_some(), "updating nonexistent plugin should fail");
+    let err = resp.error.unwrap();
+    assert_eq!(err.code, -32602);
+    assert!(err.message.contains("not found"));
+}
+
+// --- test 8: doxus_plugin_update SSRF 방어 검증 ---
+
+#[tokio::test]
+async fn test_plugin_update_rejects_non_http_scheme_in_production() {
+    let (conn, tmp) = setup_db();
+    let plugins_dir = tmp.path().join("plugins");
+
+    let plugin_id = "com.test.plugin";
+    {
+        let conn_lock = conn.get().unwrap();
+        conn_lock.execute(
+            "INSERT INTO plugins(id, name, version, kind, installed_at)
+             VALUES (?1, ?1, '1.0.0', 'external', unixepoch())",
+            rusqlite::params![plugin_id],
+        ).unwrap();
+    }
+
+    let server = make_server(conn, plugins_dir);
+
+    let resp = server
+        .dispatch_tool(
+            "doxus_plugin_update",
+            json!(1),
+            &json!({ "id": plugin_id, "url": "ftp://evil.com/x.wasm" }),
+        )
+        .await;
+
+    assert!(resp.error.is_some(), "ftp:// should be rejected under production rules");
+    let err = resp.error.unwrap();
+    assert!(err.message.contains("url") || err.message.contains("scheme") || err.message.contains("invalid"));
+}

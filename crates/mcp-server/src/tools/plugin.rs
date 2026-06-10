@@ -56,8 +56,10 @@ pub async fn install(server: &McpServer, id: Value, args: &Value) -> McpResponse
     let version = args["version"].as_str().unwrap_or("0.0.0");
 
     if let Some(registry_url) = args["registry_url"].as_str() {
-        if !server.allow_file_scheme && !registry_url.starts_with("https://") {
-            return McpResponse::err(id, -32602, "registry_url must use https://");
+        if !server.allow_file_scheme {
+            if let Err(e) = doxus_plugin_sdk::validate_base_url(registry_url) {
+                return McpResponse::err(id, -32602, format!("invalid registry_url: {e}"));
+            }
         }
         let client = match doxus_core::marketplace::registry::RegistryClient::new(registry_url) {
             Ok(c) => c,
@@ -82,6 +84,11 @@ pub async fn install(server: &McpServer, id: Value, args: &Value) -> McpResponse
             return McpResponse::err(id, -32603, e.to_string());
         }
     } else if let Some(url) = args["url"].as_str() {
+        if !server.allow_file_scheme {
+            if let Err(e) = doxus_plugin_sdk::validate_base_url(url) {
+                return McpResponse::err(id, -32602, format!("invalid url: {e}"));
+            }
+        }
         let installer = if server.allow_file_scheme {
             doxus_core::marketplace::installer::PluginInstaller::new_with_file_scheme(
                 server.plugins_dir.clone(),
@@ -157,74 +164,104 @@ pub fn remove(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     }
 }
 
-pub fn update(server: &McpServer, id: Value, args: &Value) -> McpResponse {
+pub async fn update(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     let plugin_id = match args["id"].as_str() {
         Some(i) => i,
         None => return McpResponse::err(id, -32602, "missing required arg: id"),
     };
-    let version = args["version"].as_str().unwrap_or("latest");
 
     let conn = server.conn();
     let conn_lock = match conn.get() {
         Ok(l) => l,
         Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
+    let exists: Result<bool, rusqlite::Error> = conn_lock.query_row(
+        "SELECT EXISTS(SELECT 1 FROM plugins WHERE id = ?1)",
+        params![plugin_id],
+        |row| row.get(0),
+    );
+    match exists {
+        Ok(false) | Err(_) => return McpResponse::err(id, -32602, format!("plugin '{plugin_id}' not found")),
+        Ok(true) => {}
+    }
+
+    let mut final_version = "latest".to_string();
+
+    if let Some(url) = args["url"].as_str() {
+        if !server.allow_file_scheme {
+            if let Err(e) = doxus_plugin_sdk::validate_base_url(url) {
+                return McpResponse::err(id, -32602, format!("invalid url: {e}"));
+            }
+        }
+        let installer = if server.allow_file_scheme {
+            doxus_core::marketplace::installer::PluginInstaller::new_with_file_scheme(
+                server.plugins_dir.clone(),
+            )
+        } else {
+            doxus_core::marketplace::installer::PluginInstaller::new(server.plugins_dir.clone())
+        };
+        let expected_sha256 = args["sha256"].as_str();
+        if let Err(e) = installer.install_from_url(plugin_id, url, expected_sha256) {
+            return McpResponse::err(id, -32603, e.to_string());
+        }
+        if let Some(v) = args["version"].as_str() {
+            final_version = v.to_string();
+        }
+    } else {
+        let registry_url = args["registry_url"].as_str()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                std::env::var("DOXUS_REGISTRY_URL")
+                    .unwrap_or_else(|_| "https://YOUR_ORG.github.io/doxus-registry".to_string())
+            });
+
+        if !server.allow_file_scheme {
+            if let Err(e) = doxus_plugin_sdk::validate_base_url(&registry_url) {
+                return McpResponse::err(id, -32602, format!("invalid registry_url: {e}"));
+            }
+        }
+
+        let client = match doxus_core::marketplace::registry::RegistryClient::new(&registry_url) {
+            Ok(c) => c,
+            Err(e) => return McpResponse::err(id, -32603, e.to_string()),
+        };
+        let entry = match client.fetch_entry(plugin_id).await {
+            Ok(Some(e)) => e,
+            Ok(None) => {
+                return McpResponse::err(
+                    id,
+                    -32603,
+                    format!("plugin '{plugin_id}' not found in registry"),
+                )
+            }
+            Err(e) => return McpResponse::err(id, -32603, e.to_string()),
+        };
+        let installer = doxus_core::marketplace::installer::PluginInstaller::new(server.plugins_dir.clone());
+        if let Err(e) = installer.install_from_url(plugin_id, &entry.download_url, Some(&entry.checksum_sha256)) {
+            return McpResponse::err(id, -32603, e.to_string());
+        }
+        final_version = entry.version;
+    }
+
     let n = conn_lock.execute(
         "UPDATE plugins SET version=?2 WHERE id=?1",
-        params![plugin_id, version],
+        params![plugin_id, final_version],
     );
     match n {
         Ok(0) => McpResponse::err(id, -32602, format!("plugin '{plugin_id}' not found")),
-        Ok(_) => McpResponse::text(id, format!("Plugin '{plugin_id}' updated to v{version}.")),
+        Ok(_) => McpResponse::text(id, format!("Plugin '{plugin_id}' updated to v{final_version}.")),
         Err(e) => McpResponse::err(id, -32603, e.to_string()),
     }
 }
 
-pub fn search(server: &McpServer, id: Value, args: &Value) -> McpResponse {
-    let query = match args["query"].as_str() {
-        Some(q) => q,
-        None => return McpResponse::err(id, -32602, "missing required arg: query"),
-    };
-
-    let conn = server.conn();
-    let conn_lock = match conn.get() {
-        Ok(l) => l,
-        Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
-    };
-    let mut stmt = match conn_lock.prepare(
-        "SELECT id, name, version, kind, trust_level FROM plugins
-         WHERE id LIKE ?1 OR name LIKE ?1
-         ORDER BY name LIMIT 20",
-    ) {
-        Ok(s) => s,
-        Err(e) => return McpResponse::err(id, -32603, e.to_string()),
-    };
-
-    let pattern = format!("%{query}%");
-    let rows: Result<Vec<_>, _> = stmt
-        .query_map(params![pattern], |r: &rusqlite::Row<'_>| {
-            Ok(json!({
-                "id": r.get::<_, String>(0)?,
-                "name": r.get::<_, String>(1)?,
-                "version": r.get::<_, String>(2)?,
-                "kind": r.get::<_, String>(3)?,
-                "trust_level": r.get::<_, String>(4)?,
-            }))
-        })
-        .and_then(|it| it.collect());
-
-    match rows {
-        Err(e) => McpResponse::err(id, -32603, e.to_string()),
-        Ok(items) if items.is_empty() => {
-            McpResponse::text(id, format!("No plugins matching '{query}'."))
-        }
-        Ok(items) => McpResponse::ok(
-            id,
-            json!({
-                "content": [{ "type": "text", "text": serde_json::to_string_pretty(&items).unwrap_or_default() }]
-            }),
-        ),
-    }
+pub fn search(server: &McpServer, id: Value, _args: &Value) -> McpResponse {
+    McpResponse::err(
+        id,
+        -32601,
+        "doxus_plugin_search is not implemented. Marketplace registry API is currently unavailable. \
+         To search or install external plugins, use the CLI command: 'doxus plugin install <url>' instead."
+    )
 }
 
 pub fn status(server: &McpServer, id: Value, args: &Value) -> McpResponse {
@@ -329,7 +366,12 @@ pub fn logs(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     match rows {
         Err(e) => McpResponse::err(id, -32603, e.to_string()),
         Ok(items) if items.is_empty() => {
-            McpResponse::text(id, format!("No logs for plugin '{plugin_id}'."))
+            McpResponse::err(
+                id,
+                -32601,
+                format!("No logs for plugin '{plugin_id}' are available. Runtime health status tracking is not implemented. \
+                         Please run CLI command: 'doxus status' for system health or run the plugin directly to generate logs.")
+            )
         }
         Ok(items) => McpResponse::ok(
             id,

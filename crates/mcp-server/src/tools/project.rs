@@ -136,6 +136,44 @@ pub fn remove_project(server: &McpServer, id: Value, args: &Value) -> McpRespons
     }
 }
 
+fn get_project_id(conn: &rusqlite::Connection, name: &str) -> Result<i64, rusqlite::Error> {
+    conn.query_row(
+        "SELECT id FROM projects WHERE name = ?1",
+        params![name],
+        |r| r.get(0),
+    )
+}
+
+fn insert_reindex_history(
+    conn: &rusqlite::Connection,
+    project_id: i64,
+    scope: &str,
+) -> Result<i64, rusqlite::Error> {
+    conn.execute(
+        "INSERT INTO reindex_history(project_id, scope, status, total_docs, processed_docs, started_at)
+         VALUES (?1, ?2, 'running', 0, 0, unixepoch())",
+        params![project_id, scope],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+fn update_reindex_history(
+    conn: &rusqlite::Connection,
+    history_id: i64,
+    status: &str,
+    total: i64,
+    processed: i64,
+    error_msg: Option<&str>,
+) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "UPDATE reindex_history
+         SET status = ?1, total_docs = ?2, processed_docs = ?3, error_message = ?4, completed_at = unixepoch()
+         WHERE id = ?5",
+        params![status, total, processed, error_msg, history_id],
+    )?;
+    Ok(())
+}
+
 pub fn index_project(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     let name = match args["project"].as_str().or_else(|| args["name"].as_str()) {
         Some(n) => n.to_string(),
@@ -143,34 +181,54 @@ pub fn index_project(server: &McpServer, id: Value, args: &Value) -> McpResponse
     };
     let full = args["full"].as_bool().unwrap_or(false);
 
-    let indexing_service = server.indexer();
-
-    let result = match tokio::runtime::Handle::try_current() {
-        Ok(handle) => tokio::task::block_in_place(|| {
-            handle.block_on(indexing_service.index_project(&name, full))
-        }),
-        Err(_) => match tokio::runtime::Runtime::new() {
-            Ok(rt) => rt.block_on(indexing_service.index_project(&name, full)),
-            Err(e) => return McpResponse::err(id, -32603, format!("runtime error: {e}")),
-        },
+    let conn = server.conn();
+    let conn_lock = match conn.get() {
+        Ok(l) => l,
+        Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
 
-    match result {
-        Ok(indexed) => McpResponse::text(
-            id,
-            format!("Project '{name}' indexed: {indexed} documents."),
-        ),
-        Err(e) => McpResponse::err(id, -32603, format!("index failed: {e}")),
-    }
+    let project_id = match get_project_id(&conn_lock, &name) {
+        Ok(pid) => pid,
+        Err(_) => return McpResponse::err(id, -32602, format!("project '{}' not found", name)),
+    };
+
+    let history_id = match insert_reindex_history(&conn_lock, project_id, if full { "full" } else { "incremental" }) {
+        Ok(hid) => hid,
+        Err(e) => return McpResponse::err(id, -32603, format!("failed to insert history: {e}")),
+    };
+
+    let indexing_service = server.indexer();
+    let conn_clone = conn.clone();
+    let name_clone = name.clone();
+
+    tokio::spawn(async move {
+        let result = indexing_service.index_project(&name_clone, full).await;
+        if let Ok(c) = conn_clone.get() {
+            match result {
+                Ok(indexed) => {
+                    let _ = update_reindex_history(&c, history_id, "completed", indexed as i64, indexed as i64, None);
+                }
+                Err(e) => {
+                    let _ = update_reindex_history(&c, history_id, "failed", 0, 0, Some(&e.to_string()));
+                }
+            }
+        }
+    });
+
+    McpResponse::text(
+        id,
+        format!("Indexing for project '{name}' has been started in the background. History ID: {history_id}. Use doxus_reindex_status to check status."),
+    )
 }
 
 pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     use doxus_core::search::{DocMeta, SyncSearchEngine};
-    use doxus_plugin_sdk::{FetchChangesOpts, PluginConfig, PluginSecrets, SourceDocId};
+    use doxus_plugin_sdk::{DocSource, FetchChangesOpts, PluginConfig, PluginSecrets, SourceDocId};
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     let name = match args["project"].as_str() {
-        Some(n) => n,
+        Some(n) => n.to_string(),
         None => return McpResponse::err(id, -32602, "missing required arg: project"),
     };
 
@@ -179,204 +237,181 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
         Ok(l) => l,
         Err(e) => return McpResponse::err(id.clone(), -32603, format!("db pool error: {e}")),
     };
-    type SourceRow = (i64, String, Option<String>, Option<i64>, String);
-    let row: Result<SourceRow, _> = conn_lock.query_row(
-        "SELECT si.id, si.plugin_id, si.sync_cursor, si.last_synced, si.config_json
-         FROM source_instances si
-         JOIN projects p ON si.project_id = p.id
-         WHERE p.name = ?1
-         ORDER BY si.id LIMIT 1",
-        params![name],
-        |r: &rusqlite::Row<'_>| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-    );
 
-    let (si_id, plugin_id, sync_cursor, last_synced, config_json) = match row {
-        Err(_) => {
-            return McpResponse::text(
-                id,
-                format!("Project '{name}' has no source instance configured — no source instance"),
-            )
-        }
-        Ok(r) => r,
-    };
-
-    let project_id: i64 = match conn_lock.query_row(
-        "SELECT p.id FROM projects p
-         JOIN source_instances si ON si.project_id = p.id
-         WHERE si.id = ?1",
-        params![si_id],
-        |r: &rusqlite::Row<'_>| r.get(0),
-    ) {
+    let project_id = match get_project_id(&conn_lock, &name) {
         Ok(pid) => pid,
-        Err(e) => return McpResponse::err(id, -32603, format!("project lookup: {e}")),
+        Err(_) => return McpResponse::err(id, -32602, format!("project '{}' not found", name)),
     };
 
-    let known_ids: Vec<SourceDocId> = {
-        let mut stmt =
-            match conn_lock.prepare("SELECT source_doc_id FROM documents WHERE project_id = ?1") {
-                Ok(s) => s,
-                Err(e) => return McpResponse::err(id, -32603, format!("prepare known_ids: {e}")),
+    let history_id = match insert_reindex_history(&conn_lock, project_id, "sync") {
+        Ok(hid) => hid,
+        Err(e) => return McpResponse::err(id, -32603, format!("failed to insert history: {e}")),
+    };
+
+    let conn_clone = conn.clone();
+    let name_clone = name.clone();
+    let plugin_manager_clone = Arc::clone(server.plugin_manager());
+
+    tokio::spawn(async move {
+        let result = async {
+            let conn_lock = conn_clone.get().map_err(|e| format!("db pool error: {e}"))?;
+
+            type SourceRow = (i64, String, Option<String>, Option<i64>, String);
+            let row: Result<SourceRow, _> = conn_lock.query_row(
+                "SELECT si.id, si.plugin_id, si.sync_cursor, si.last_synced, si.config_json
+                 FROM source_instances si
+                 JOIN projects p ON si.project_id = p.id
+                 WHERE p.name = ?1
+                 ORDER BY si.id LIMIT 1",
+                params![name_clone],
+                |r: &rusqlite::Row<'_>| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            );
+
+            let (si_id, plugin_id, sync_cursor, last_synced, config_json) = match row {
+                Err(_) => {
+                    return Err(format!("Project '{name_clone}' has no source instance configured"))
+                }
+                Ok(r) => r,
             };
-        let ids: Result<Vec<String>, _> = stmt
-            .query_map(params![project_id], |r: &rusqlite::Row<'_>| {
-                r.get::<_, String>(0)
-            })
-            .map_err(|e| format!("query known_ids: {e}"))
-            .and_then(|rows| {
-                rows.collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| e.to_string())
-            });
-        match ids {
-            Ok(v) => v.into_iter().map(SourceDocId).collect(),
-            Err(e) => return McpResponse::err(id, -32603, e),
-        }
-    };
 
-    let since = last_synced.unwrap_or(0);
-    let cursor = sync_cursor;
-
-    let plugin = server
-        .plugin_manager()
-        .get_source(&plugin_id)
-        .ok_or_else(|| {
-            McpResponse::err(id.clone(), -32603, format!("plugin not found: {plugin_id}"))
-        });
-
-    let mut plugin = match plugin {
-        Ok(p) => p,
-        Err(e) => return e,
-    };
-
-    let fields: HashMap<String, serde_json::Value> =
-        serde_json::from_str(&config_json).unwrap_or_default();
-    let mut config = PluginConfig { fields };
-    let mut secrets = PluginSecrets {
-        fields: HashMap::new(),
-    };
-
-    // Inject keychain auth (Wait synchronously in sync function)
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        tokio::task::block_in_place(|| {
-            handle.block_on(doxus_core::auth::inject_keychain_auth(
-                &plugin_id,
-                &mut config,
-                &mut secrets,
-            ))
-        });
-    } else {
-        let _ = tokio::runtime::Runtime::new().map(|rt| {
-            rt.block_on(doxus_core::auth::inject_keychain_auth(
-                &plugin_id,
-                &mut config,
-                &mut secrets,
-            ))
-        });
-    }
-
-    let run_async = async move {
-        plugin.initialize(config, secrets).await?;
-        let changeset = plugin
-            .fetch_changes(FetchChangesOpts {
-                since,
-                cursor,
-                page_size: 1000,
-                known_ids,
-            })
-            .await?;
-        Ok::<_, doxus_plugin_sdk::PluginError>(changeset)
-    };
-
-    let changeset = match tokio::runtime::Handle::try_current() {
-        Ok(handle) => match tokio::task::block_in_place(|| handle.block_on(run_async)) {
-            Ok(c) => c,
-            Err(e) => return McpResponse::err(id, -32603, format!("fetch_changes error: {e}")),
-        },
-        Err(_) => {
-            match tokio::runtime::Runtime::new()
-                .map_err(|e| format!("runtime error: {e}"))
-                .and_then(|rt| rt.block_on(run_async).map_err(|e| e.to_string()))
-            {
-                Ok(c) => c,
-                Err(e) => return McpResponse::err(id, -32603, e),
-            }
-        }
-    };
-
-    let n_updated = changeset.updated.len();
-    let n_deleted = changeset.deleted_ids.len();
-
-    let result: Result<(), String> = (|| {
-        conn_lock
-            .execute_batch("BEGIN")
-            .map_err(|e| format!("begin: {e}"))?;
-
-        let strategy: String = conn_lock
-            .query_row(
-                "SELECT storage_strategy FROM projects WHERE id = ?1",
-                [project_id],
+            let project_id: i64 = conn_lock.query_row(
+                "SELECT p.id FROM projects p
+                 JOIN source_instances si ON si.project_id = p.id
+                 WHERE si.id = ?1",
+                params![si_id],
                 |r: &rusqlite::Row<'_>| r.get(0),
-            )
-            .unwrap_or_else(|_| "full".to_string());
+            ).map_err(|e| format!("project lookup: {e}"))?;
 
-        let engine = SyncSearchEngine::from_conn(&conn_lock);
-
-        for doc in &changeset.updated {
-            let title = doc.title.as_deref().unwrap_or("");
-            let meta = DocMeta {
-                url: doc.url.clone(),
-                tags: doc.tags.clone(),
-                metadata: doc.metadata.clone(),
-                created_at: doc.created_at,
-                updated_at: doc.updated_at,
-                relative_path: doc.relative_path.clone(),
-                ..Default::default()
+            let known_ids: Vec<SourceDocId> = {
+                let mut stmt = conn_lock.prepare("SELECT source_doc_id FROM documents WHERE project_id = ?1")
+                    .map_err(|e| format!("prepare known_ids: {e}"))?;
+                let ids: Result<Vec<String>, _> = stmt
+                    .query_map(params![project_id], |r: &rusqlite::Row<'_>| {
+                        r.get::<_, String>(0)
+                    })
+                    .map_err(|e| format!("query known_ids: {e}"))
+                    .and_then(|rows| {
+                        rows.collect::<Result<Vec<_>, _>>()
+                            .map_err(|e| e.to_string())
+                    });
+                ids.map_err(|e| e.to_string())?.into_iter().map(SourceDocId).collect()
             };
-            if let Err(e) = engine.index_document_with_meta(
-                project_id,
-                &doc.id.0,
-                title,
-                &doc.content,
-                &meta,
-                &strategy,
-            ) {
-                let _ = conn_lock.execute_batch("ROLLBACK");
-                return Err(format!("index error for '{}': {e}", doc.id.0));
+
+            let since = last_synced.unwrap_or(0);
+            let cursor = sync_cursor;
+
+            let mut plugin = plugin_manager_clone
+                .get_source(&plugin_id)
+                .ok_or_else(|| format!("plugin not found: {plugin_id}"))?;
+
+            let fields: HashMap<String, serde_json::Value> =
+                serde_json::from_str(&config_json).unwrap_or_default();
+            let mut config = PluginConfig { fields };
+            let mut secrets = PluginSecrets {
+                fields: HashMap::new(),
+            };
+
+            // Inject keychain auth (async)
+            doxus_core::auth::inject_keychain_auth(&plugin_id, &mut config, &mut secrets).await;
+
+            plugin.initialize(config, secrets).await
+                .map_err(|e| format!("plugin init error: {e}"))?;
+
+            let changeset = plugin
+                .fetch_changes(FetchChangesOpts {
+                    since,
+                    cursor,
+                    page_size: 1000,
+                    known_ids,
+                })
+                .await
+                .map_err(|e| format!("fetch_changes error: {e}"))?;
+
+            let n_updated = changeset.updated.len();
+            let n_deleted = changeset.deleted_ids.len();
+
+            let mut conn_mut = conn_clone.get().map_err(|e| format!("db pool error: {e}"))?;
+            let tx = conn_mut.transaction().map_err(|e| format!("tx begin: {e}"))?;
+
+            let db_tx_result: Result<(), String> = (|| {
+                let strategy: String = tx
+                    .query_row(
+                        "SELECT storage_strategy FROM projects WHERE id = ?1",
+                        [project_id],
+                        |r: &rusqlite::Row<'_>| r.get(0),
+                    )
+                    .unwrap_or_else(|_| "full".to_string());
+
+                let engine = SyncSearchEngine::from_conn(&tx);
+
+                for doc in &changeset.updated {
+                    let title = doc.title.as_deref().unwrap_or("");
+                    let meta = DocMeta {
+                        url: doc.url.clone(),
+                        tags: doc.tags.clone(),
+                        metadata: doc.metadata.clone(),
+                        created_at: doc.created_at,
+                        updated_at: doc.updated_at,
+                        relative_path: doc.relative_path.clone(),
+                        ..Default::default()
+                    };
+                    engine.index_document_with_meta(
+                        project_id,
+                        &doc.id.0,
+                        title,
+                        &doc.content,
+                        &meta,
+                        &strategy,
+                    ).map_err(|e| format!("index error for '{}': {e}", doc.id.0))?;
+                }
+
+                for del_id in &changeset.deleted_ids {
+                    tx.execute(
+                        "DELETE FROM documents WHERE project_id = ?1 AND source_doc_id = ?2",
+                        params![project_id, &del_id.0],
+                    ).map_err(|e| format!("delete error for '{}': {e}", del_id.0))?;
+                }
+
+                let new_cursor: Option<&str> = changeset.next_cursor.as_deref();
+                tx.execute(
+                    "UPDATE source_instances SET sync_cursor = ?1, last_synced = unixepoch() WHERE id = ?2",
+                    params![new_cursor, si_id],
+                ).map_err(|e| format!("update cursor: {e}"))?;
+
+                Ok(())
+            })();
+
+            match db_tx_result {
+                Ok(_) => {
+                    tx.commit().map_err(|e| format!("commit: {e}"))?;
+                }
+                Err(e) => {
+                    let _ = tx.rollback();
+                    return Err(e);
+                }
+            }
+
+            Ok::<_, String>((n_updated, n_deleted))
+        }.await;
+
+        if let Ok(c) = conn_clone.get() {
+            match result {
+                Ok((updated, deleted)) => {
+                    let _ = update_reindex_history(&c, history_id, "completed", (updated + deleted) as i64, updated as i64, None);
+                }
+                Err(e) => {
+                    let _ = update_reindex_history(&c, history_id, "failed", 0, 0, Some(&e));
+                }
             }
         }
+    });
 
-        for del_id in &changeset.deleted_ids {
-            if let Err(e) = conn_lock.execute(
-                "DELETE FROM documents WHERE project_id = ?1 AND source_doc_id = ?2",
-                params![project_id, &del_id.0],
-            ) {
-                let _ = conn_lock.execute_batch("ROLLBACK");
-                return Err(format!("delete error for '{}': {e}", del_id.0));
-            }
-        }
-
-        let new_cursor: Option<&str> = changeset.next_cursor.as_deref();
-        if let Err(e) = conn_lock.execute(
-            "UPDATE source_instances SET sync_cursor = ?1, last_synced = unixepoch() WHERE id = ?2",
-            params![new_cursor, si_id],
-        ) {
-            let _ = conn_lock.execute_batch("ROLLBACK");
-            return Err(format!("update cursor: {e}"));
-        }
-
-        conn_lock
-            .execute_batch("COMMIT")
-            .map_err(|e| format!("commit: {e}"))?;
-        Ok(())
-    })();
-
-    match result {
-        Ok(()) => McpResponse::text(
-            id,
-            format!("Synced project '{name}': {n_updated} updated, {n_deleted} deleted."),
-        ),
-        Err(e) => McpResponse::err(id, -32603, format!("sync failed (rolled back): {e}")),
-    }
+    McpResponse::text(
+        id,
+        format!("Synchronization for project '{name}' has been started in the background. History ID: {history_id}. Use doxus_reindex_status to check status."),
+    )
 }
+
 pub fn setup_project_agent(_server: &McpServer, id: Value, args: &Value) -> McpResponse {
     let path_str = args["path"].as_str().unwrap_or(".");
     let project_path = std::path::PathBuf::from(path_str);

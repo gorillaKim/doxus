@@ -80,7 +80,7 @@ pub async fn dispatch_tool(server: &McpServer, name: &str, id: Value, args: &Val
         "doxus_plugin_list" => tools::plugin::list(server, id),
         "doxus_plugin_install" => tools::plugin::install(server, id, args).await,
         "doxus_plugin_remove" => tools::plugin::remove(server, id, args),
-        "doxus_plugin_update" => tools::plugin::update(server, id, args),
+        "doxus_plugin_update" => tools::plugin::update(server, id, args).await,
         "doxus_plugin_search" => tools::plugin::search(server, id, args),
         "doxus_plugin_status" => tools::plugin::status(server, id, args),
         "doxus_plugin_logs" => tools::plugin::logs(server, id, args),
