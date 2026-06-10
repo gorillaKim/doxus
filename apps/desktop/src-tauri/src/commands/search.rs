@@ -4,25 +4,29 @@ use std::sync::Arc;
 
 #[cfg(test)]
 pub(crate) fn run_reindex(
-    conn: &rusqlite::Connection,
-    plugin_manager: &doxus_core::plugin::PluginManager,
+    pool: &doxus_core::db::DbPool,
+    plugin_manager: Arc<doxus_core::plugin::PluginManager>,
 ) -> Result<usize, String> {
-    use doxus_plugin_sdk::FetchAllOpts;
-    use sha2::{Digest, Sha256};
+    use doxus_core::indexing::IndexingService;
+    use doxus_core::search::SearchEngine;
 
-    let projects: Vec<(i64, String, String)> = {
+    let engine = Arc::new(SearchEngine::with_embedder(
+        pool.clone(),
+        Arc::new(doxus_core::embedding::MockEmbedder::new(384)),
+    ));
+    let service = IndexingService::new(pool.clone(), plugin_manager, engine);
+
+    let projects = {
+        let conn = pool.get().map_err(|e| e.to_string())?;
         let mut stmt = conn.prepare(
-            "SELECT id, name, COALESCE(source_type, 'obsidian') FROM projects WHERE status = 'active'"
+            "SELECT name FROM projects WHERE status = 'active'"
         ).map_err(|e| e.to_string())?;
-        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
         let mut acc = Vec::new();
-        while let Ok(Some(row)) = rows.next() {
-            if let (Ok(id), Ok(name), Ok(st)) = (
-                row.get::<_, i64>(0),
-                row.get::<_, String>(1),
-                row.get::<_, String>(2),
-            ) {
-                acc.push((id, name, st));
+        for r in rows {
+            if let Ok(name) = r {
+                acc.push(name);
             }
         }
         acc
@@ -33,76 +37,10 @@ pub(crate) fn run_reindex(
         .build()
         .map_err(|e| e.to_string())?;
 
-    let mut total = 0usize;
-    for (project_id, project_name, source_type) in projects {
-        let plugin_id = doxus_core::plugin::PluginManager::normalize_id(&source_type);
-        let mut source = match plugin_manager.get_source(&plugin_id) {
-            Some(s) => s,
-            None => continue,
-        };
-
-        let path: String = conn
-            .query_row(
-                "SELECT path FROM projects WHERE id = ?1",
-                rusqlite::params![project_id],
-                |r| r.get(0),
-            )
-            .map_err(|e| e.to_string())?;
-
-        let config = doxus_plugin_sdk::PluginConfig {
-            fields: {
-                let mut m = std::collections::HashMap::new();
-                m.insert("path".to_string(), serde_json::Value::String(path));
-                m
-            },
-        };
-        if let Err(e) =
-            rt.block_on(source.initialize(config, doxus_plugin_sdk::PluginSecrets::default()))
-        {
-            eprintln!("plugin init error for {}: {}", project_name, e);
-            continue;
-        }
-
-        let opts = FetchAllOpts {
-            cursor: None,
-            page_size: 100,
-        };
-        let stream = match rt.block_on(source.fetch_all(opts)) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("fetch_all error: {}", e);
-                continue;
-            }
-        };
-
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-
-        for doc in stream.documents {
-            let hash = format!("{:x}", Sha256::digest(doc.content.as_bytes()));
-            conn.execute(
-                "INSERT INTO documents (project_id, source_doc_id, title, content_hash, last_indexed)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(project_id, source_doc_id) DO UPDATE SET title=excluded.title, content_hash=excluded.content_hash, last_indexed=excluded.last_indexed",
-                rusqlite::params![project_id, &doc.id.0, doc.title, hash, now],
-            ).map_err(|e| e.to_string())?;
-            let doc_id: i64 = conn
-                .query_row(
-                    "SELECT id FROM documents WHERE project_id = ?1 AND source_doc_id = ?2",
-                    rusqlite::params![project_id, &doc.id.0],
-                    |r| r.get(0),
-                )
-                .map_err(|e| e.to_string())?;
-            conn.execute(
-                "INSERT INTO chunks (document_id, content, chunk_index) VALUES (?1, ?2, 0)
-                 ON CONFLICT(document_id, chunk_index) DO UPDATE SET content=excluded.content",
-                rusqlite::params![doc_id, doc.content],
-            )
-            .map_err(|e| e.to_string())?;
-            total += 1;
-        }
+    let mut total = 0;
+    for project_name in projects {
+        let count = rt.block_on(service.index_project(&project_name, true))?;
+        total += count;
     }
     Ok(total)
 }
@@ -262,6 +200,8 @@ pub fn reindex_if_stale(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     fn make_conn() -> rusqlite::Connection {
         doxus_core::db::ensure_vec_extension();
         let conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -327,7 +267,10 @@ mod tests {
         fs::create_dir(&vault).unwrap();
         fs::write(vault.join("note.md"), "# Hello\nThis is a test note.").unwrap();
 
-        let conn = make_conn();
+        let db_path = dir.path().join("doxus.db");
+        doxus_core::db::ensure_vec_extension();
+        let pool = doxus_core::db::create_pool(&db_path).unwrap();
+        let conn = pool.get().unwrap();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -342,15 +285,18 @@ mod tests {
             .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
             .unwrap();
 
+        drop(conn);
+
         let mut plugin_manager = doxus_core::plugin::PluginManager::new(dir.path().to_path_buf());
         let plugin_id = doxus_core::plugin::PluginManager::normalize_id("obsidian");
         plugin_manager.register_factory(&plugin_id, || {
             Box::new(doxus_plugin_obsidian::ObsidianPlugin::new())
         });
 
-        let indexed = super::run_reindex(&conn, &plugin_manager).unwrap();
+        let indexed = super::run_reindex(&pool, Arc::new(plugin_manager)).unwrap();
         assert!(indexed >= 1, "at least 1 document should be indexed");
 
+        let conn = pool.get().unwrap();
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM documents WHERE project_id = ?1",
