@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio::time::{Duration, Instant};
 
-type ProgressCallback = Box<dyn Fn(String, usize, usize) + Send + Sync>;
+type ProgressCallback = Arc<dyn Fn(String, usize, usize) + Send + Sync>;
 type EventSender = mpsc::Sender<(String, usize)>;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -48,32 +48,54 @@ pub struct SyncTriggerSummary {
     pub timestamp: i64,
 }
 
+/// # SyncManager 내부 상태 구조체 (Thread-safe Shared State)
+pub struct SyncManagerState {
+    pub last_sync_times: HashMap<String, Instant>,
+    pub jitter_map: HashMap<String, f64>,
+    pub watcher_manager: Option<Arc<crate::watcher::WatcherManager>>,
+    pub active_tasks: std::collections::HashMap<String, i64>,
+    pub recent_triggers: VecDeque<SyncTriggerSummary>,
+    pub event_tx: Option<EventSender>,
+    pub progress_callback: Option<ProgressCallback>,
+}
+
+/// # SyncManager 동시성 및 락 획득 설계 (Concurrency & Locking Strategy)
+///
+/// SyncManager는 다양한 비동기 트리거(Focus, Periodic, FileEvent 등)에 반응하여
+/// 여러 프로젝트의 인덱싱 및 증분 동기화 작업을 스케줄링하고 조율합니다.
+///
+/// ## 락 교착 상태(Deadlock) 원천 배제
+/// 기존에 개별적으로 분리되어 존재하던 8개의 Mutex 필드들을 하나의 단일 상태 구조체인 `SyncManagerState`로 통합하여,
+/// `state: Arc<Mutex<SyncManagerState>>` 단 1개의 Mutex만을 사용하도록 설계했습니다.
+/// - 단일 락(state lock) 구조이므로 다중 Mutex 획득으로 인한 교착 상태 발생 가능성이 **근본적으로 차단**됩니다.
+///
+/// ## 비동기 대기(Await) 중 락 소유 금지 원칙
+/// 락을 획득한 상태에서 비동기 I/O나 대기(`.await`)를 수행하면 성능 병목이 발생할 수 있습니다.
+/// - `EventSender` (mpsc::Sender) 및 `ProgressCallback` (Arc) 등의 설정 필드들은 락 내부에서 클론(Clone)하여
+///   바깥으로 빼낸 뒤, 락을 해제한 상태에서 비동기 전송 및 스폰을 처리합니다.
 pub struct SyncManager {
     indexing_service: Arc<IndexingService>,
     tx: mpsc::Sender<SyncTrigger>,
-    last_sync_times: Arc<Mutex<HashMap<String, Instant>>>,
-    jitter_map: Arc<Mutex<HashMap<String, f64>>>,
-    watcher_manager: Arc<Mutex<Option<Arc<crate::watcher::WatcherManager>>>>,
-    active_tasks: Arc<Mutex<std::collections::HashMap<String, i64>>>,
-    recent_triggers: Arc<Mutex<VecDeque<SyncTriggerSummary>>>,
-    event_tx: Arc<Mutex<Option<EventSender>>>,
-    progress_callback: Arc<Mutex<Option<ProgressCallback>>>,
+    state: Arc<Mutex<SyncManagerState>>,
 }
 
 impl SyncManager {
     pub fn new(indexing_service: Arc<IndexingService>) -> (Self, mpsc::Receiver<SyncTrigger>) {
         let (tx, rx) = mpsc::channel(32);
+        let state = SyncManagerState {
+            last_sync_times: HashMap::new(),
+            jitter_map: HashMap::new(),
+            watcher_manager: None,
+            active_tasks: std::collections::HashMap::new(),
+            recent_triggers: VecDeque::with_capacity(10),
+            event_tx: None,
+            progress_callback: None,
+        };
         (
             Self {
                 indexing_service,
                 tx,
-                last_sync_times: Arc::new(Mutex::new(HashMap::new())),
-                jitter_map: Arc::new(Mutex::new(HashMap::new())),
-                watcher_manager: Arc::new(Mutex::new(None)),
-                active_tasks: Arc::new(Mutex::new(std::collections::HashMap::new())),
-                recent_triggers: Arc::new(Mutex::new(VecDeque::with_capacity(10))),
-                event_tx: Arc::new(Mutex::new(None)),
-                progress_callback: Arc::new(Mutex::new(None)),
+                state: Arc::new(Mutex::new(state)),
             },
             rx,
         )
@@ -93,7 +115,8 @@ impl SyncManager {
         project_name: Option<String>,
         details: Option<String>,
     ) {
-        let mut recent = self.recent_triggers.lock().await;
+        let mut state = self.state.lock().await;
+        let recent = &mut state.recent_triggers;
         if recent.len() >= 10 {
             recent.pop_back();
         }
@@ -128,7 +151,8 @@ impl SyncManager {
     }
 
     pub async fn mark_task_started(&self, project_name: &str) -> bool {
-        let mut active = self.active_tasks.lock().await;
+        let mut state = self.state.lock().await;
+        let active = &mut state.active_tasks;
         if active.contains_key(project_name) {
             return false;
         }
@@ -142,7 +166,8 @@ impl SyncManager {
 
     /// 중복 여부와 관계없이 태스크를 강제 등록. 수동 인덱싱 커맨드에서 사용.
     pub async fn force_mark_task_started(&self, project_name: &str) {
-        let mut active = self.active_tasks.lock().await;
+        let mut state = self.state.lock().await;
+        let active = &mut state.active_tasks;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -151,8 +176,8 @@ impl SyncManager {
     }
 
     pub async fn mark_task_done(&self, project_name: &str) {
-        let mut active = self.active_tasks.lock().await;
-        active.remove(project_name);
+        let mut state = self.state.lock().await;
+        state.active_tasks.remove(project_name);
     }
 
     pub fn indexer(&self) -> Arc<IndexingService> {
@@ -160,16 +185,16 @@ impl SyncManager {
     }
 
     pub async fn set_event_sender(&self, tx: EventSender) {
-        let mut guard = self.event_tx.lock().await;
-        *guard = Some(tx);
+        let mut state = self.state.lock().await;
+        state.event_tx = Some(tx);
     }
 
     pub async fn set_progress_callback(
         &self,
         cb: impl Fn(String, usize, usize) + Send + Sync + 'static,
     ) {
-        let mut guard = self.progress_callback.lock().await;
-        *guard = Some(Box::new(cb));
+        let mut state = self.state.lock().await;
+        state.progress_callback = Some(Arc::new(cb));
     }
 
     pub async fn init_watchers(&self) {
@@ -188,8 +213,8 @@ impl SyncManager {
             self.tx.clone(),
         ));
         let _ = wm.restart_all().await;
-        let mut guard = self.watcher_manager.lock().await;
-        *guard = Some(wm);
+        let mut state = self.state.lock().await;
+        state.watcher_manager = Some(wm);
     }
 
     pub async fn start_loop(self: Arc<Self>, mut rx: mpsc::Receiver<SyncTrigger>) {
@@ -200,7 +225,8 @@ impl SyncManager {
 
             // Record trigger to recent list
             {
-                let mut recent = self.recent_triggers.lock().await;
+                let mut state = self.state.lock().await;
+                let recent = &mut state.recent_triggers;
                 if recent.len() >= 10 {
                     recent.pop_back();
                 }
@@ -269,8 +295,8 @@ impl SyncManager {
                 SyncTrigger::FileEvent { project_name, .. } => {
                     // 쿨다운 적용: 마지막 동기화 이후 너무 짧은 시간(예: 2초) 내에는 스킵
                     let should_skip = {
-                        let last_syncs = self.last_sync_times.lock().await;
-                        if let Some(last) = last_syncs.get(&project_name) {
+                        let state = self.state.lock().await;
+                        if let Some(last) = state.last_sync_times.get(&project_name) {
                             last.elapsed() < Duration::from_secs(2)
                         } else {
                             false
@@ -301,29 +327,26 @@ impl SyncManager {
             project_name,
             full
         );
-        // force_mark_task_started: trigger_reindex may have pre-registered the task for UI visibility;
-        // always update the start time and proceed rather than skipping.
         self.force_mark_task_started(project_name).await;
 
         let cb = {
-            let guard = self.progress_callback.lock().await;
-            guard.as_ref().map(|_| {
-                let progress_callback = Arc::clone(&self.progress_callback);
-                let name = project_name.to_string();
-                move |done: usize, total: usize| {
-                    let cb_clone = Arc::clone(&progress_callback);
-                    let n = name.clone();
-                    tokio::spawn(async move {
-                        let guard = cb_clone.lock().await;
-                        if let Some(f) = guard.as_ref() {
-                            f(n, done, total);
-                        }
-                    });
-                }
-            })
+            let state = self.state.lock().await;
+            state.progress_callback.clone()
         };
+
+        let progress_cb = cb.map(|cb_func| {
+            let name = project_name.to_string();
+            move |done: usize, total: usize| {
+                let cb_clone = cb_func.clone();
+                let n = name.clone();
+                tokio::spawn(async move {
+                    cb_clone(n, done, total);
+                });
+            }
+        });
+
         let result = if full {
-            if let Some(on_progress) = cb {
+            if let Some(on_progress) = progress_cb {
                 self.indexing_service
                     .index_project_with_progress(project_name, true, on_progress)
                     .await
@@ -332,7 +355,7 @@ impl SyncManager {
                     .index_project(project_name, true)
                     .await
             }
-        } else if let Some(on_progress) = cb {
+        } else if let Some(on_progress) = progress_cb {
             self.indexing_service
                 .index_project_changes(project_name, on_progress)
                 .await
@@ -357,9 +380,12 @@ impl SyncManager {
         }
 
         if let Ok(count) = result {
-            let guard = self.event_tx.lock().await;
-            if let Some(tx) = guard.as_ref() {
-                let _ = tx.send((project_name.to_string(), count)).await;
+            let tx = {
+                let state = self.state.lock().await;
+                state.event_tx.clone()
+            };
+            if let Some(sender) = tx {
+                let _ = sender.send((project_name.to_string(), count)).await;
             }
         }
 
@@ -389,17 +415,16 @@ impl SyncManager {
     }
 
     pub async fn get_status(&self) -> SyncStatus {
-        let active = self.active_tasks.lock().await;
-        let recent = self.recent_triggers.lock().await;
+        let state = self.state.lock().await;
         SyncStatus {
-            active_tasks: active
+            active_tasks: state.active_tasks
                 .iter()
                 .map(|(name, started_at)| ActiveTaskSummary {
                     project_name: name.clone(),
                     started_at: *started_at,
                 })
                 .collect(),
-            recent_triggers: recent.iter().cloned().collect(),
+            recent_triggers: state.recent_triggers.iter().cloned().collect(),
         }
     }
 
@@ -417,17 +442,17 @@ impl SyncManager {
 
         match (policy, trigger) {
             (SyncPolicy::Realtime(_), _) => {
-                // Realtime은 FileEvent가 직접 index_project를 호출하므로 global_sync에서는 스킵
                 false
             }
             (SyncPolicy::OnFocus, SyncTrigger::Focus) => {
-                let last_syncs = self.last_sync_times.lock().await;
-                if let Some(last) = last_syncs.get(project_name) {
-                    // 플러그인 유형에 따라 쿨다운 차등 적용
-                    // TODO: 인덱싱 서비스에서 플러그인 정보를 미리 가져오도록 최적화 가능
+                let last = {
+                    let state = self.state.lock().await;
+                    state.last_sync_times.get(project_name).cloned()
+                };
+                if let Some(last_time) = last {
                     let plugin_id = match self.get_project_plugin_id(project_name).await {
                         Ok(id) => id,
-                        Err(_) => "com.doxus.obsidian".to_string(), // 기본값
+                        Err(_) => "com.doxus.obsidian".to_string(),
                     };
 
                     let is_external = plugin_id.contains("confluence")
@@ -435,7 +460,7 @@ impl SyncManager {
                         || !plugin_id.starts_with("com.doxus");
                     let cooldown_secs = if is_external { 15 * 60 } else { 60 };
 
-                    if last.elapsed() < Duration::from_secs(cooldown_secs) {
+                    if last_time.elapsed() < Duration::from_secs(cooldown_secs) {
                         crate::log_d!(
                             "sync",
                             "[SyncManager] Skipping Focus trigger for {} (cooldown {}s)",
@@ -450,11 +475,17 @@ impl SyncManager {
                 }
             }
             (SyncPolicy::Interval { seconds }, SyncTrigger::Periodic) => {
-                let last_syncs = self.last_sync_times.lock().await;
-                if let Some(last) = last_syncs.get(project_name) {
-                    let jitter = self.get_jitter(project_name).await;
+                let mut state = self.state.lock().await;
+                if let Some(last_time) = state.last_sync_times.get(project_name).cloned() {
+                    let jitter = *state.jitter_map
+                        .entry(project_name.to_string())
+                        .or_insert_with(|| {
+                            use rand::Rng;
+                            let mut rng = rand::thread_rng();
+                            rng.gen_range(-0.1..0.1)
+                        });
                     let interval = Duration::from_secs_f64(seconds as f64 * (1.0 + jitter));
-                    last.elapsed() >= interval
+                    last_time.elapsed() >= interval
                 } else {
                     true
                 }
@@ -465,22 +496,20 @@ impl SyncManager {
     }
 
     async fn get_jitter(&self, project_name: &str) -> f64 {
-        let mut jitter_map = self.jitter_map.lock().await;
-        *jitter_map
+        let mut state = self.state.lock().await;
+        *state.jitter_map
             .entry(project_name.to_string())
             .or_insert_with(|| {
                 use rand::Rng;
                 let mut rng = rand::thread_rng();
-                rng.gen_range(-0.1..0.1) // ±10% jitter
+                rng.gen_range(-0.1..0.1)
             })
     }
 
     async fn update_last_sync(&self, project_name: &str) {
-        let mut last_syncs = self.last_sync_times.lock().await;
-        last_syncs.insert(project_name.to_string(), Instant::now());
-        // Reset jitter
-        let mut jitter_map = self.jitter_map.lock().await;
-        jitter_map.remove(project_name);
+        let mut state = self.state.lock().await;
+        state.last_sync_times.insert(project_name.to_string(), Instant::now());
+        state.jitter_map.remove(project_name);
     }
 
     async fn get_project_plugin_id(&self, project_name: &str) -> Result<String, String> {
