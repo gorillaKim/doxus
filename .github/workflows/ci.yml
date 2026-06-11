@@ -10,6 +10,7 @@ env:
   CARGO_TERM_COLOR: always
   # Avoids needing onnxruntime pre-installed on runners
   ORT_STRATEGY: download
+  DOXUS_SKIP_KEYCHAIN: "1"
 
 jobs:
   test-rust:
