@@ -241,7 +241,7 @@ pub fn index_project(server: &McpServer, id: Value, args: &Value) -> McpResponse
 
 pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse {
     use doxus_core::search::{DocMeta, SyncSearchEngine};
-    use doxus_plugin_sdk::{DocSource, FetchChangesOpts, PluginConfig, PluginSecrets, SourceDocId};
+    use doxus_plugin_sdk::{FetchChangesOpts, PluginConfig, PluginSecrets, SourceDocId};
     use std::collections::HashMap;
     use std::sync::Arc;
 

@@ -264,7 +264,7 @@ pub async fn update(server: &McpServer, id: Value, args: &Value) -> McpResponse 
     }
 }
 
-pub fn search(server: &McpServer, id: Value, _args: &Value) -> McpResponse {
+pub fn search(_server: &McpServer, id: Value, _args: &Value) -> McpResponse {
     McpResponse::err(
         id,
         -32601,

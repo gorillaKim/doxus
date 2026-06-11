@@ -859,7 +859,7 @@ fn render_compact_hits(hits: &[doxus_core::db::schema::Hit], include_summary: bo
         } else {
             h.snippet.as_ref()
         };
-        let snippet_part = if let Some(ref snippet) = snippet_part {
+        let snippet_part = if let Some(snippet) = snippet_part {
             let cleaned = snippet.replace(['\n', '\r'], " ");
             let truncated: String = cleaned.chars().take(120).collect();
             let suffix = if cleaned.chars().count() > 120 {

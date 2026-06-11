@@ -495,18 +495,6 @@ impl SyncManager {
         }
     }
 
-    async fn get_jitter(&self, project_name: &str) -> f64 {
-        let mut state = self.state.lock().await;
-        *state
-            .jitter_map
-            .entry(project_name.to_string())
-            .or_insert_with(|| {
-                use rand::Rng;
-                let mut rng = rand::thread_rng();
-                rng.gen_range(-0.1..0.1)
-            })
-    }
-
     async fn update_last_sync(&self, project_name: &str) {
         let mut state = self.state.lock().await;
         state

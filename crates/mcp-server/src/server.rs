@@ -4,6 +4,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+/// session 문서 추적용 공유 맵: project_key → (doc_id 집합, 마지막 접근 시각)
+pub(crate) type SessionDocsMap = Arc<Mutex<HashMap<String, (HashSet<i64>, std::time::Instant)>>>;
+
 pub struct McpServer {
     pub(crate) conn: DbPool,
     pub(crate) db_path: PathBuf,
@@ -11,7 +14,7 @@ pub struct McpServer {
     pub(crate) plugin_manager: Arc<doxus_core::plugin::PluginManager>,
     pub(crate) plugins_dir: PathBuf,
     pub(crate) allow_file_scheme: bool,
-    pub(crate) session_docs: Arc<Mutex<HashMap<String, (HashSet<i64>, std::time::Instant)>>>,
+    pub(crate) session_docs: SessionDocsMap,
 }
 
 impl McpServer {

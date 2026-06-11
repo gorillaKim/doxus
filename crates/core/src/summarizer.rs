@@ -29,7 +29,7 @@ pub fn lead3_extract(content: &str) -> String {
         if first_line.trim() == "---" {
             lines.next(); // 첫 --- 건너뜀
             let mut found_end = false;
-            while let Some(line) = lines.next() {
+            for line in lines.by_ref() {
                 if line.trim() == "---" {
                     found_end = true;
                     break;
@@ -90,9 +90,8 @@ fn extract_frontmatter_description(content: &str) -> Option<String> {
                 if trimmed == "---" {
                     break;
                 }
-                if trimmed.starts_with("description:") {
-                    let val = trimmed["description:".len()..].trim();
-                    let val = val.trim_matches('"').trim_matches('\'');
+                if let Some(val) = trimmed.strip_prefix("description:") {
+                    let val = val.trim().trim_matches('"').trim_matches('\'');
                     if !val.is_empty() {
                         return Some(val.to_string());
                     }
