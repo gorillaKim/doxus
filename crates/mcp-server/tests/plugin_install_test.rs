@@ -291,11 +291,13 @@ async fn test_plugin_remove_removes_from_db_and_filesystem() {
 
     {
         let conn_lock = conn.get().unwrap();
-        conn_lock.execute(
-            "INSERT INTO plugins(id, name, version, kind, installed_at)
+        conn_lock
+            .execute(
+                "INSERT INTO plugins(id, name, version, kind, installed_at)
              VALUES (?1, ?1, '1.0.0', 'external', unixepoch())",
-            rusqlite::params![plugin_id],
-        ).unwrap();
+                rusqlite::params![plugin_id],
+            )
+            .unwrap();
     }
 
     let server = make_server_with_file_scheme(conn.clone(), plugins_dir.clone());
@@ -303,20 +305,18 @@ async fn test_plugin_remove_removes_from_db_and_filesystem() {
     assert!(wasm_file.exists());
     {
         let conn_lock = conn.get().unwrap();
-        let count: i64 = conn_lock.query_row(
-            "SELECT COUNT(*) FROM plugins WHERE id = ?1",
-            rusqlite::params![plugin_id],
-            |r| r.get(0),
-        ).unwrap();
+        let count: i64 = conn_lock
+            .query_row(
+                "SELECT COUNT(*) FROM plugins WHERE id = ?1",
+                rusqlite::params![plugin_id],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 1);
     }
 
     let resp = server
-        .dispatch_tool(
-            "doxus_plugin_remove",
-            json!(1),
-            &json!({ "id": plugin_id }),
-        )
+        .dispatch_tool("doxus_plugin_remove", json!(1), &json!({ "id": plugin_id }))
         .await;
 
     assert!(resp.error.is_none(), "remove failed: {:?}", resp.error);
@@ -324,11 +324,13 @@ async fn test_plugin_remove_removes_from_db_and_filesystem() {
 
     {
         let conn_lock = conn.get().unwrap();
-        let count: i64 = conn_lock.query_row(
-            "SELECT COUNT(*) FROM plugins WHERE id = ?1",
-            rusqlite::params![plugin_id],
-            |r| r.get(0),
-        ).unwrap();
+        let count: i64 = conn_lock
+            .query_row(
+                "SELECT COUNT(*) FROM plugins WHERE id = ?1",
+                rusqlite::params![plugin_id],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count, 0, "DB record should be removed");
     }
 }
@@ -347,11 +349,13 @@ async fn test_plugin_update_with_local_url_updates_db_and_file() {
 
     {
         let conn_lock = conn.get().unwrap();
-        conn_lock.execute(
-            "INSERT INTO plugins(id, name, version, kind, installed_at)
+        conn_lock
+            .execute(
+                "INSERT INTO plugins(id, name, version, kind, installed_at)
              VALUES (?1, ?1, '1.0.0', 'external', unixepoch())",
-            rusqlite::params![plugin_id],
-        ).unwrap();
+                rusqlite::params![plugin_id],
+            )
+            .unwrap();
     }
 
     let wasm_src_dir = tmp.path().join("src");
@@ -379,11 +383,13 @@ async fn test_plugin_update_with_local_url_updates_db_and_file() {
 
     {
         let conn_lock = conn.get().unwrap();
-        let version: String = conn_lock.query_row(
-            "SELECT version FROM plugins WHERE id = ?1",
-            rusqlite::params![plugin_id],
-            |r| r.get(0),
-        ).unwrap();
+        let version: String = conn_lock
+            .query_row(
+                "SELECT version FROM plugins WHERE id = ?1",
+                rusqlite::params![plugin_id],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(version, "2.0.0");
     }
 }
@@ -405,7 +411,10 @@ async fn test_plugin_update_nonexistent_returns_error() {
         )
         .await;
 
-    assert!(resp.error.is_some(), "updating nonexistent plugin should fail");
+    assert!(
+        resp.error.is_some(),
+        "updating nonexistent plugin should fail"
+    );
     let err = resp.error.unwrap();
     assert_eq!(err.code, -32602);
     assert!(err.message.contains("not found"));
@@ -421,11 +430,13 @@ async fn test_plugin_update_rejects_non_http_scheme_in_production() {
     let plugin_id = "com.test.plugin";
     {
         let conn_lock = conn.get().unwrap();
-        conn_lock.execute(
-            "INSERT INTO plugins(id, name, version, kind, installed_at)
+        conn_lock
+            .execute(
+                "INSERT INTO plugins(id, name, version, kind, installed_at)
              VALUES (?1, ?1, '1.0.0', 'external', unixepoch())",
-            rusqlite::params![plugin_id],
-        ).unwrap();
+                rusqlite::params![plugin_id],
+            )
+            .unwrap();
     }
 
     let server = make_server(conn, plugins_dir);
@@ -438,7 +449,14 @@ async fn test_plugin_update_rejects_non_http_scheme_in_production() {
         )
         .await;
 
-    assert!(resp.error.is_some(), "ftp:// should be rejected under production rules");
+    assert!(
+        resp.error.is_some(),
+        "ftp:// should be rejected under production rules"
+    );
     let err = resp.error.unwrap();
-    assert!(err.message.contains("url") || err.message.contains("scheme") || err.message.contains("invalid"));
+    assert!(
+        err.message.contains("url")
+            || err.message.contains("scheme")
+            || err.message.contains("invalid")
+    );
 }

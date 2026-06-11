@@ -74,7 +74,10 @@ impl<S: SecretStore> SecretStore for CachedSecretStore<S> {
             }
         }
         let value = self.inner.get(service, key)?;
-        self.cache.write().unwrap_or_else(|e| e.into_inner()).insert(cache_key, value.clone());
+        self.cache
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(cache_key, value.clone());
         Ok(value)
     }
 

@@ -657,7 +657,8 @@ impl DocSource for ObsidianPlugin {
         let final_path;
 
         loop {
-            let current_title = doxus_plugin_sdk::path_utils::resolve_unique_title(base_title, attempts)?;
+            let current_title =
+                doxus_plugin_sdk::path_utils::resolve_unique_title(base_title, attempts)?;
             attempts += 1;
 
             // Sanitize title for filesystem

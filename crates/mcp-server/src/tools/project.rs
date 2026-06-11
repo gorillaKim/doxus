@@ -192,7 +192,11 @@ pub fn index_project(server: &McpServer, id: Value, args: &Value) -> McpResponse
         Err(_) => return McpResponse::err(id, -32602, format!("project '{}' not found", name)),
     };
 
-    let history_id = match insert_reindex_history(&conn_lock, project_id, if full { "full" } else { "incremental" }) {
+    let history_id = match insert_reindex_history(
+        &conn_lock,
+        project_id,
+        if full { "full" } else { "incremental" },
+    ) {
         Ok(hid) => hid,
         Err(e) => return McpResponse::err(id, -32603, format!("failed to insert history: {e}")),
     };
@@ -206,10 +210,24 @@ pub fn index_project(server: &McpServer, id: Value, args: &Value) -> McpResponse
         if let Ok(c) = conn_clone.get() {
             match result {
                 Ok(indexed) => {
-                    let _ = update_reindex_history(&c, history_id, "completed", indexed as i64, indexed as i64, None);
+                    let _ = update_reindex_history(
+                        &c,
+                        history_id,
+                        "completed",
+                        indexed as i64,
+                        indexed as i64,
+                        None,
+                    );
                 }
                 Err(e) => {
-                    let _ = update_reindex_history(&c, history_id, "failed", 0, 0, Some(&e.to_string()));
+                    let _ = update_reindex_history(
+                        &c,
+                        history_id,
+                        "failed",
+                        0,
+                        0,
+                        Some(&e.to_string()),
+                    );
                 }
             }
         }
@@ -397,7 +415,14 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
         if let Ok(c) = conn_clone.get() {
             match result {
                 Ok((updated, deleted)) => {
-                    let _ = update_reindex_history(&c, history_id, "completed", (updated + deleted) as i64, updated as i64, None);
+                    let _ = update_reindex_history(
+                        &c,
+                        history_id,
+                        "completed",
+                        (updated + deleted) as i64,
+                        updated as i64,
+                        None,
+                    );
                 }
                 Err(e) => {
                     let _ = update_reindex_history(&c, history_id, "failed", 0, 0, Some(&e));

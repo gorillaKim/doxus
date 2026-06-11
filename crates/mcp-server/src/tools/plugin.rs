@@ -181,7 +181,9 @@ pub async fn update(server: &McpServer, id: Value, args: &Value) -> McpResponse 
         |row| row.get(0),
     );
     match exists {
-        Ok(false) | Err(_) => return McpResponse::err(id, -32602, format!("plugin '{plugin_id}' not found")),
+        Ok(false) | Err(_) => {
+            return McpResponse::err(id, -32602, format!("plugin '{plugin_id}' not found"))
+        }
         Ok(true) => {}
     }
 
@@ -208,7 +210,8 @@ pub async fn update(server: &McpServer, id: Value, args: &Value) -> McpResponse 
             final_version = v.to_string();
         }
     } else {
-        let registry_url = args["registry_url"].as_str()
+        let registry_url = args["registry_url"]
+            .as_str()
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string())
             .unwrap_or_else(|| {
@@ -237,8 +240,11 @@ pub async fn update(server: &McpServer, id: Value, args: &Value) -> McpResponse 
             }
             Err(e) => return McpResponse::err(id, -32603, e.to_string()),
         };
-        let installer = doxus_core::marketplace::installer::PluginInstaller::new(server.plugins_dir.clone());
-        if let Err(e) = installer.install_from_url(plugin_id, &entry.download_url, Some(&entry.checksum_sha256)) {
+        let installer =
+            doxus_core::marketplace::installer::PluginInstaller::new(server.plugins_dir.clone());
+        if let Err(e) =
+            installer.install_from_url(plugin_id, &entry.download_url, Some(&entry.checksum_sha256))
+        {
             return McpResponse::err(id, -32603, e.to_string());
         }
         final_version = entry.version;
@@ -250,7 +256,10 @@ pub async fn update(server: &McpServer, id: Value, args: &Value) -> McpResponse 
     );
     match n {
         Ok(0) => McpResponse::err(id, -32602, format!("plugin '{plugin_id}' not found")),
-        Ok(_) => McpResponse::text(id, format!("Plugin '{plugin_id}' updated to v{final_version}.")),
+        Ok(_) => McpResponse::text(
+            id,
+            format!("Plugin '{plugin_id}' updated to v{final_version}."),
+        ),
         Err(e) => McpResponse::err(id, -32603, e.to_string()),
     }
 }

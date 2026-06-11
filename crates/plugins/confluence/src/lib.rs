@@ -1282,8 +1282,12 @@ fn page_to_doc_v2(params: PageToDocParams<'_>) -> RawDocumentWasm {
     let is_parent = hierarchy
         .values()
         .any(|(_, parent_id)| parent_id.as_deref() == Some(&p.id));
-    let relative_path =
-        doxus_plugin_sdk::path_utils::build_relative_path(&final_root_name, &ancestor_titles, &p.title, is_parent);
+    let relative_path = doxus_plugin_sdk::path_utils::build_relative_path(
+        &final_root_name,
+        &ancestor_titles,
+        &p.title,
+        is_parent,
+    );
     log_d!(
         "confluence:doc",
         "[Confluence-Doc-Debug] Final Result - Title: {}, Path: {}",

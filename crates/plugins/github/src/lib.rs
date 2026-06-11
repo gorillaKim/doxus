@@ -488,7 +488,8 @@ impl DocSource for GitHubPlugin {
 
         // 2. Resolve 'Option B' (Auto-suffixing) for GitHub
         loop {
-            let current_title = doxus_plugin_sdk::path_utils::resolve_unique_title(base_title, attempts)?;
+            let current_title =
+                doxus_plugin_sdk::path_utils::resolve_unique_title(base_title, attempts)?;
             attempts += 1;
 
             let path = if folder_part.is_empty() {

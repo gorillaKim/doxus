@@ -18,10 +18,11 @@ pub(crate) fn run_reindex(
 
     let projects = {
         let conn = pool.get().map_err(|e| e.to_string())?;
-        let mut stmt = conn.prepare(
-            "SELECT name FROM projects WHERE status = 'active'"
-        ).map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(0))
+        let mut stmt = conn
+            .prepare("SELECT name FROM projects WHERE status = 'active'")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
             .map_err(|e| e.to_string())?;
         let mut acc = Vec::new();
         for r in rows {

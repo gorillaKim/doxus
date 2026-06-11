@@ -417,7 +417,8 @@ impl SyncManager {
     pub async fn get_status(&self) -> SyncStatus {
         let state = self.state.lock().await;
         SyncStatus {
-            active_tasks: state.active_tasks
+            active_tasks: state
+                .active_tasks
                 .iter()
                 .map(|(name, started_at)| ActiveTaskSummary {
                     project_name: name.clone(),
@@ -441,9 +442,7 @@ impl SyncManager {
         use doxus_plugin_sdk::SyncPolicy;
 
         match (policy, trigger) {
-            (SyncPolicy::Realtime(_), _) => {
-                false
-            }
+            (SyncPolicy::Realtime(_), _) => false,
             (SyncPolicy::OnFocus, SyncTrigger::Focus) => {
                 let last = {
                     let state = self.state.lock().await;
@@ -477,7 +476,8 @@ impl SyncManager {
             (SyncPolicy::Interval { seconds }, SyncTrigger::Periodic) => {
                 let mut state = self.state.lock().await;
                 if let Some(last_time) = state.last_sync_times.get(project_name).cloned() {
-                    let jitter = *state.jitter_map
+                    let jitter = *state
+                        .jitter_map
                         .entry(project_name.to_string())
                         .or_insert_with(|| {
                             use rand::Rng;
@@ -497,7 +497,8 @@ impl SyncManager {
 
     async fn get_jitter(&self, project_name: &str) -> f64 {
         let mut state = self.state.lock().await;
-        *state.jitter_map
+        *state
+            .jitter_map
             .entry(project_name.to_string())
             .or_insert_with(|| {
                 use rand::Rng;
@@ -508,7 +509,9 @@ impl SyncManager {
 
     async fn update_last_sync(&self, project_name: &str) {
         let mut state = self.state.lock().await;
-        state.last_sync_times.insert(project_name.to_string(), Instant::now());
+        state
+            .last_sync_times
+            .insert(project_name.to_string(), Instant::now());
         state.jitter_map.remove(project_name);
     }
 
