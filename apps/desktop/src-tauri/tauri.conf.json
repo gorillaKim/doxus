@@ -1,6 +1,6 @@
 {
   "productName": "doxus",
-  "version": "0.1.15",
+  "version": "0.2.0",
   "identifier": "io.doxus.desktop",
   "build": {
     "frontendDist": "../dist",

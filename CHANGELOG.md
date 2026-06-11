@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+---
+
+## [0.2.0] — 2026-06-11
+
 ### Phase 4~8 — Marketplace, Plugins, Sync, Workspace, Desktop
 
 **Added**
@@ -13,6 +17,20 @@
 - Workspace + template management with SQLite V8 migration
 - Desktop Tauri IPC stubs (`market_list_installed`, `get_workspaces`)
 - React UI stubs: `MarketPage`, `WorkspacePage`, `useMarketStore`, `useWorkspaceStore`
+- MCP: `doxus_plugin_install`, `doxus_plugin_remove`, `doxus_plugin_update` 실구현 (WASM 다운로드·검증·파일 정리 연동)
+- MCP: `doxus_index_project`, `doxus_sync_project` core IndexingService 기반 실구현
+- MCP: `doxus_plugin_info`, `doxus_resolve_alias` 실구현
+
+**Changed**
+- `SyncManager`: 8개 분산 Mutex → `SyncManagerState` 1개로 통합 (데드락 위험 구조 해소)
+- `run_reindex()` (desktop): 독립 SQL → core `IndexingService` 경유로 통합
+- `log_d!` 매크로: `eprintln!` → `tracing::debug!` 치환 (stdio 오염 방지)
+- Plugin SDK: github/confluence/obsidian 공통 경로 조작·suffixing 로직을 `plugin-sdk`로 추출
+- Migration: V18 중복 파일 제거, V22 placeholder 추가로 버전 연속성 확보
+
+**Fixed**
+- `lock().unwrap()` poison-unsafe 패턴을 `unwrap_or_else(|e| e.into_inner())` 로 일괄 치환
+- CI: `cargo test --workspace` 전체 범위로 확대 + `cargo fmt --check` 게이트 추가
 
 **Security**
 - Fixed path traversal in plugin installer (`plugin_id` character validation)
@@ -21,6 +39,7 @@
 - Fixed owner/repo URL injection (`/` and `..` blocked in config validation)
 
 ---
+
 
 ## [0.1.0-phase3] — Phase 0~3
 
