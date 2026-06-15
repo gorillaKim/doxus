@@ -20,6 +20,8 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
 
       - name: Rust build cache
         uses: swatinem/rust-cache@v2
@@ -31,6 +33,9 @@ jobs:
           mkdir -p apps/desktop/src-tauri/binaries
           touch apps/desktop/src-tauri/binaries/doxus-mcp-aarch64-apple-darwin
           touch apps/desktop/src-tauri/binaries/doxus-mcp-x86_64-apple-darwin
+
+      - name: Build WASM plugins for integration tests
+        run: cargo build -p doxus-plugin-confluence --target wasm32-unknown-unknown
 
       - name: Format Check
         run: cargo fmt --check
