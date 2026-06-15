@@ -4,6 +4,13 @@
 
 ---
 
+## [0.2.1] — 2026-06-15
+
+### Fixed
+- Fixed Obsidian plugin failing to initialize due to missing 'path' configuration during sync loop, fetch, and project sync operations.
+
+---
+
 ## [0.2.0] — 2026-06-11
 
 ### Phase 4~8 — Marketplace, Plugins, Sync, Workspace, Desktop
