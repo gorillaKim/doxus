@@ -274,18 +274,18 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
         let result = async {
             let conn_lock = conn_clone.get().map_err(|e| format!("db pool error: {e}"))?;
 
-            type SourceRow = (i64, String, Option<String>, Option<i64>, String);
+            type SourceRow = (i64, String, Option<String>, Option<i64>, String, String);
             let row: Result<SourceRow, _> = conn_lock.query_row(
-                "SELECT si.id, si.plugin_id, si.sync_cursor, si.last_synced, si.config_json
+                "SELECT si.id, si.plugin_id, si.sync_cursor, si.last_synced, si.config_json, p.path
                  FROM source_instances si
                  JOIN projects p ON si.project_id = p.id
                  WHERE p.name = ?1
                  ORDER BY si.id LIMIT 1",
                 params![name_clone],
-                |r: &rusqlite::Row<'_>| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                |r: &rusqlite::Row<'_>| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
             );
 
-            let (si_id, plugin_id, sync_cursor, last_synced, config_json) = match row {
+            let (si_id, plugin_id, sync_cursor, last_synced, config_json, project_path) = match row {
                 Err(_) => {
                     return Err(format!("Project '{name_clone}' has no source instance configured"))
                 }
@@ -322,8 +322,11 @@ pub fn sync_project(server: &McpServer, id: Value, args: &Value) -> McpResponse 
                 .get_source(&plugin_id)
                 .ok_or_else(|| format!("plugin not found: {plugin_id}"))?;
 
-            let fields: HashMap<String, serde_json::Value> =
+            let mut fields: HashMap<String, serde_json::Value> =
                 serde_json::from_str(&config_json).unwrap_or_default();
+            if !project_path.is_empty() {
+                fields.insert("path".to_string(), serde_json::Value::String(project_path));
+            }
             let mut config = PluginConfig { fields };
             let mut secrets = PluginSecrets {
                 fields: HashMap::new(),

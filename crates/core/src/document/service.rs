@@ -84,7 +84,7 @@ impl DocumentService {
             source_doc_id
         ));
         // 1. Get project metadata first
-        let (_project_id, source_type, config_json, file_path) = {
+        let (_project_id, source_type, config_json, project_path, file_path) = {
             ds_log("[DS] Loading project metadata...");
             tracing::info!("[DS] Loading project metadata...");
 
@@ -92,15 +92,16 @@ impl DocumentService {
                 ds_log("[DS] Opening READ-ONLY DB for project metadata...");
                 tracing::info!("[DS] Opening READ-ONLY DB for project metadata...");
                 let conn = crate::db::open_readonly(path).map_err(ServiceError::Db)?;
-                let (pid, stype, cjson) = conn
+                let (pid, stype, cjson, proj_path) = conn
                     .query_row(
-                        "SELECT id, source_type, config_json FROM projects WHERE name = ?1",
+                        "SELECT id, source_type, config_json, path FROM projects WHERE name = ?1",
                         params![project_name],
                         |row| {
                             Ok((
                                 row.get::<_, i64>(0)?,
                                 row.get::<_, String>(1)?,
                                 row.get::<_, String>(2)?,
+                                row.get::<_, String>(3)?,
                             ))
                         },
                     )
@@ -114,18 +115,19 @@ impl DocumentService {
                     |row| row.get::<_, Option<String>>(0),
                 ).ok().flatten();
 
-                (pid, stype, cjson, fpath)
+                (pid, stype, cjson, proj_path, fpath)
             } else {
                 let conn = self.conn.read_conn()?;
-                let (pid, stype, cjson) = conn
+                let (pid, stype, cjson, proj_path) = conn
                     .query_row(
-                        "SELECT id, source_type, config_json FROM projects WHERE name = ?1",
+                        "SELECT id, source_type, config_json, path FROM projects WHERE name = ?1",
                         params![project_name],
                         |row| {
                             Ok((
                                 row.get::<_, i64>(0)?,
                                 row.get::<_, String>(1)?,
                                 row.get::<_, String>(2)?,
+                                row.get::<_, String>(3)?,
                             ))
                         },
                     )
@@ -139,7 +141,7 @@ impl DocumentService {
                     |row| row.get::<_, Option<String>>(0),
                 ).ok().flatten();
 
-                (pid, stype, cjson, fpath)
+                (pid, stype, cjson, proj_path, fpath)
             }
         };
         ds_log("[DS] Project metadata loaded.");
@@ -302,6 +304,13 @@ impl DocumentService {
                 // Tauri style fix: extract from "fields" if nested
                 if let Some(inner) = config_fields.get("fields").and_then(|v| v.as_object()) {
                     config_fields = inner.clone().into_iter().collect();
+                }
+
+                if !project_path.is_empty() {
+                    config_fields.insert(
+                        "path".to_string(),
+                        serde_json::Value::String(project_path.clone()),
+                    );
                 }
 
                 let mut plugin_config = PluginConfig {
@@ -493,13 +502,19 @@ impl DocumentService {
         folder: Option<&str>,
         metadata: Option<std::collections::HashMap<String, serde_json::Value>>,
     ) -> Result<doxus_plugin_sdk::SourceDocId, ServiceError> {
-        let (source_type, config_json) = {
+        let (source_type, config_json, project_path) = {
             if let Some(path) = &self.db_path {
                 let conn = crate::db::open_readonly(path).map_err(ServiceError::Db)?;
                 conn.query_row(
-                    "SELECT source_type, config_json FROM projects WHERE name = ?1",
+                    "SELECT source_type, config_json, path FROM projects WHERE name = ?1",
                     params![project_name],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
                 )
                 .map_err(|_| {
                     ServiceError::NotFound(format!("Project '{}' not found", project_name))
@@ -507,9 +522,15 @@ impl DocumentService {
             } else {
                 let conn = self.conn.read_conn()?;
                 conn.query_row(
-                    "SELECT source_type, config_json FROM projects WHERE name = ?1",
+                    "SELECT source_type, config_json, path FROM projects WHERE name = ?1",
                     params![project_name],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
                 )
                 .map_err(|_| {
                     ServiceError::NotFound(format!("Project '{}' not found", project_name))
@@ -531,6 +552,12 @@ impl DocumentService {
             serde_json::from_str(&config_json).unwrap_or_default();
         if let Some(inner) = config_fields.get("fields").and_then(|v| v.as_object()) {
             config_fields = inner.clone().into_iter().collect();
+        }
+        if !project_path.is_empty() {
+            config_fields.insert(
+                "path".to_string(),
+                serde_json::Value::String(project_path.clone()),
+            );
         }
 
         let mut plugin_config = doxus_plugin_sdk::PluginConfig {

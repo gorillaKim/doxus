@@ -294,6 +294,12 @@ pub fn spawn_sync_loop_with_sink<S: EventSink>(
                             let mut plugin_config = PluginConfig {
                                 fields: config_fields,
                             };
+                            if !inst.project_path.is_empty() {
+                                plugin_config.fields.insert(
+                                    "path".to_string(),
+                                    serde_json::Value::String(inst.project_path.clone()),
+                                );
+                            }
                             let mut plugin_secrets = PluginSecrets::default();
 
                             // 키체인에서 인증 정보 로드하여 설정 및 시크릿에 주입
