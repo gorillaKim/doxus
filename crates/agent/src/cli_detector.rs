@@ -259,9 +259,27 @@ mod tests {
 
     #[test]
     fn detect_cli_returns_claude_code_from_env() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempdir().unwrap();
+        let bin = tmp.path().join("claude");
+
+        #[cfg(unix)]
+        {
+            std::fs::write(&bin, b"#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"Claude Code 1.0.0\"; else echo \"failed\"; exit 1; fi\n").unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            std::fs::write(
+                &bin,
+                b"@echo off\nif \"%~1\"==\"--version\" (echo Claude Code 1.0.0) else (exit 1)\n",
+            )
+            .unwrap();
+        }
+
         let orig = std::env::var("CLAUDE_CODE_ENTRYPOINT").ok();
-        std::env::set_var("CLAUDE_CODE_ENTRYPOINT", "/usr/bin/claude");
+        std::env::set_var("CLAUDE_CODE_ENTRYPOINT", &bin);
         let kind = detect_cli();
         match orig {
             Some(v) => std::env::set_var("CLAUDE_CODE_ENTRYPOINT", v),
@@ -272,19 +290,34 @@ mod tests {
 
     #[test]
     fn gemini_cli_path_env_is_recognized() {
-        // GEMINI_CLI_PATH is respected as an explicit override path.
-        // We test that the env var is parsed into the correct variant
-        // when CLAUDE_CODE_ENTRYPOINT also points to a real path (so claude wins),
-        // but we at least confirm the env var machinery doesn't panic.
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let orig_claude = std::env::var("CLAUDE_CODE_ENTRYPOINT").ok();
         let orig_gemini = std::env::var("GEMINI_CLI_PATH").ok();
-        // Point CLAUDE_CODE_ENTRYPOINT at a nonexistent path to suppress auto-detect
+        let orig_path = std::env::var("PATH").ok();
+        let orig_shell = std::env::var("SHELL").ok();
+        let orig_home = std::env::var("HOME").ok();
+
         std::env::set_var("CLAUDE_CODE_ENTRYPOINT", "/nonexistent/claude-not-here");
         std::env::set_var("GEMINI_CLI_PATH", "/nonexistent/gemini-not-here");
-        // detect_cli reads CLAUDE_CODE_ENTRYPOINT first (path may not exist — that's ok for env-var branch)
+        std::env::remove_var("PATH");
+        std::env::set_var("SHELL", "/nonexistent/shell");
+        std::env::set_var("HOME", "/nonexistent/home");
+
         let kind = detect_cli();
-        // Restore
+
+        if let Some(p) = orig_path {
+            std::env::set_var("PATH", p);
+        }
+        if let Some(s) = orig_shell {
+            std::env::set_var("SHELL", s);
+        } else {
+            std::env::remove_var("SHELL");
+        }
+        if let Some(h) = orig_home {
+            std::env::set_var("HOME", h);
+        } else {
+            std::env::remove_var("HOME");
+        }
         match orig_claude {
             Some(v) => std::env::set_var("CLAUDE_CODE_ENTRYPOINT", v),
             None => std::env::remove_var("CLAUDE_CODE_ENTRYPOINT"),
@@ -293,13 +326,13 @@ mod tests {
             Some(v) => std::env::set_var("GEMINI_CLI_PATH", v),
             None => std::env::remove_var("GEMINI_CLI_PATH"),
         }
-        // CLAUDE_CODE_ENTRYPOINT was set → ClaudeCode wins regardless of gemini env var
-        assert!(matches!(kind, CliKind::ClaudeCode { .. }));
+
+        assert!(matches!(kind, CliKind::GeminiCli { .. }));
     }
 
     #[test]
     fn detect_cli_finds_binary_in_path() {
-        let _lock = ENV_LOCK.lock().unwrap();
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("CLAUDE_CODE_ENTRYPOINT");
         std::env::remove_var("GEMINI_CLI_PATH");
         let tmp = tempdir().unwrap();
